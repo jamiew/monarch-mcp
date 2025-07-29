@@ -143,13 +143,19 @@ import logging
 root_logger = logging.getLogger()
 root_logger.handlers.clear()
 stderr_handler = logging.StreamHandler(sys.stderr)
-stderr_handler.setLevel(logging.WARNING)  # Only show warnings and errors
+stderr_handler.setLevel(logging.ERROR)  # Only show errors to minimize noise
 root_logger.addHandler(stderr_handler)
-root_logger.setLevel(logging.WARNING)
+root_logger.setLevel(logging.ERROR)
 
-# Specifically handle aiohttp and monarchmoney logging
-logging.getLogger('aiohttp').setLevel(logging.WARNING)
-logging.getLogger('monarchmoney').setLevel(logging.WARNING)
+# Specifically handle third-party library logging
+logging.getLogger('aiohttp').setLevel(logging.ERROR)
+logging.getLogger('monarchmoney').setLevel(logging.ERROR)
+logging.getLogger('gql').setLevel(logging.ERROR)
+logging.getLogger('gql.transport').setLevel(logging.ERROR)
+
+# Suppress SSL warnings that might leak to stdout
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="gql.transport.aiohttp")
 
 # Configure logging: all output to stderr with special markers for analytics
 structlog.configure(
@@ -256,7 +262,10 @@ async def initialize_client() -> None:
     # Try to load existing session first
     if session_file.exists() and not os.getenv("MONARCH_FORCE_LOGIN"):
         try:
-            mm_client.load_session(str(session_file))
+            # Load session (suppress any stdout output)
+            import contextlib
+            with contextlib.redirect_stdout(open(os.devnull, 'w')):
+                mm_client.load_session(str(session_file))
             # Test if session is still valid
             await mm_client.get_accounts()
             print("Session loaded successfully", file=sys.stderr)
@@ -271,8 +280,10 @@ async def initialize_client() -> None:
         else:
             await mm_client.login(email, password)
         
-        # Save session for future use
-        mm_client.save_session(str(session_file))
+        # Save session for future use (suppress any stdout output)
+        import contextlib
+        with contextlib.redirect_stdout(open(os.devnull, 'w')):
+            mm_client.save_session(str(session_file))
         if session_file.exists():
             session_file.chmod(0o600)  # Secure permissions
         print("Authentication successful, session saved", file=sys.stderr)
@@ -1075,8 +1086,8 @@ async def main() -> None:
         print(f"Failed to initialize MonarchMoney client: {e}", file=sys.stderr)
         return
     
-    # Run the FastMCP server with stdio transport
-    mcp.run()  # Synchronous method, defaults to stdio transport
+    # Run the FastMCP server with stdio transport (async version)
+    await mcp.run_stdio_async()
 
 
 if __name__ == "__main__":
