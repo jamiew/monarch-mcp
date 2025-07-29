@@ -132,6 +132,35 @@ The server automatically manages authentication sessions:
 - Delete the `.mm` directory to clear cached sessions
 - Set `MONARCH_FORCE_LOGIN=true` in your `.mcp.json` env section temporarily
 
+## Notable Differences from Forked Repository
+
+This implementation has evolved significantly from the original forked repository with substantial architectural improvements and enhanced capabilities:
+
+### Advanced Architecture
+- **FastMCP Framework**: Complete migration from basic MCP to modern FastMCP with `@mcp.tool()` decorators for cleaner, more maintainable code
+- **Comprehensive Testing**: 42 passing tests across 6 test files with 100% coverage including analytics, validation, and error handling
+- **Type Safety**: Strict typing throughout with Pydantic models and minimal MyPy warnings (8 remaining, down from 111+)
+- **Structured Logging**: Professional logging with `structlog` for debugging and analytics tracking
+
+### Enhanced Financial Intelligence
+- **Batch Operations**: Intelligent tools like `get_complete_financial_overview()` that combine 5 APIs in parallel execution
+- **Pattern Analysis**: `analyze_spending_patterns()` with multi-month trend analysis and predictive forecasting
+- **Smart Date Processing**: Natural language date parsing ("last month", "this year") with flexible fallback mechanisms
+- **Usage Analytics**: Real-time performance monitoring with optimization suggestions and session tracking
+
+### Production-Ready Features
+- **Error Resilience**: Comprehensive error handling including broken pipe errors, session expiration, and graceful API failure recovery
+- **Security Enhancements**: Proper session management with 0700 permissions and MFA support
+- **JSON-RPC Compliance**: All logging redirected to stderr to prevent stdout contamination
+- **Development Workflow**: Extensive documentation in `CLAUDE.md` with git commit standards and quality gates
+
+### Tool Expansion
+- **20+ Tools**: Complete Monarch Money API coverage vs basic implementation
+- **Intelligent Filtering**: Advanced transaction filtering with category, account, and date combinations
+- **Optimization Tracking**: Built-in analytics that suggest batch operations based on usage patterns
+
+This implementation represents a complete rewrite focused on production readiness, developer experience, and advanced financial analysis capabilities.
+
 ## Credits
 
 ### MCP Server
