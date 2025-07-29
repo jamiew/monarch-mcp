@@ -8,6 +8,7 @@ dependencies = [
     "mcp[cli]>=1.9.4",
     "monarchmoney>=0.1.15",
     "pydantic>=2.11.7",
+    "python-dateutil>=2.9.0.post0",
     "structlog>=25.4.0",
 ]
 
