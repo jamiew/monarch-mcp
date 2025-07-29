@@ -4,10 +4,11 @@
 import os
 import asyncio
 import json
-from typing import Any, Dict, Optional, List
+from typing import Optional, List, Union, Dict, Any
 from datetime import datetime, date
 from pathlib import Path
 
+from pydantic import BaseModel, Field, validator
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.server.models import InitializationOptions
@@ -15,8 +16,77 @@ from mcp.types import ServerCapabilities
 from mcp.types import Tool, TextContent
 from monarchmoney import MonarchMoney
 
+# Type definitions for Monarch Money API responses
+JsonSerializable = Union[str, int, float, bool, None, List['JsonSerializable'], Dict[str, 'JsonSerializable']]
+DateConvertible = Union[date, datetime, JsonSerializable]
 
-def convert_dates_to_strings(obj: Any) -> Any:
+# Pydantic models for tool arguments (replacing Dict[str, Any])
+class GetTransactionsArgs(BaseModel):  # type: ignore[misc]
+    """Arguments for get_transactions tool."""
+    limit: int = Field(default=100, ge=1, le=1000)
+    offset: int = Field(default=0, ge=0)
+    start_date: Optional[str] = Field(default=None, pattern=r'^\d{4}-\d{2}-\d{2}$')
+    end_date: Optional[str] = Field(default=None, pattern=r'^\d{4}-\d{2}-\d{2}$')
+    account_id: Optional[str] = None
+    category_id: Optional[str] = None
+
+class GetBudgetsArgs(BaseModel):  # type: ignore[misc]
+    """Arguments for get_budgets tool."""
+    start_date: Optional[str] = Field(default=None, pattern=r'^\d{4}-\d{2}-\d{2}$')
+    end_date: Optional[str] = Field(default=None, pattern=r'^\d{4}-\d{2}-\d{2}$')
+
+class GetCashflowArgs(BaseModel):  # type: ignore[misc]
+    """Arguments for get_cashflow tool."""
+    start_date: Optional[str] = Field(default=None, pattern=r'^\d{4}-\d{2}-\d{2}$')
+    end_date: Optional[str] = Field(default=None, pattern=r'^\d{4}-\d{2}-\d{2}$')
+
+class CreateTransactionArgs(BaseModel):  # type: ignore[misc]
+    """Arguments for create_transaction tool."""
+    amount: float
+    description: str = Field(min_length=1)
+    category_id: Optional[str] = None
+    account_id: str
+    date: str = Field(pattern=r'^\d{4}-\d{2}-\d{2}$')
+    notes: Optional[str] = None
+
+class UpdateTransactionArgs(BaseModel):  # type: ignore[misc]
+    """Arguments for update_transaction tool."""
+    transaction_id: str
+    amount: Optional[float] = None
+    description: Optional[str] = Field(default=None, min_length=1)
+    category_id: Optional[str] = None
+    date: Optional[str] = Field(default=None, pattern=r'^\d{4}-\d{2}-\d{2}$')
+    notes: Optional[str] = None
+
+# Union type for all possible tool arguments
+ToolArguments = Union[
+    Dict[str, None],  # For tools with no arguments (get_accounts, etc.)
+    GetTransactionsArgs,
+    GetBudgetsArgs, 
+    GetCashflowArgs,
+    CreateTransactionArgs,
+    UpdateTransactionArgs
+]
+
+
+def parse_tool_arguments(tool_name: str, raw_arguments: Dict[str, Any]) -> ToolArguments:
+    """Parse and validate tool arguments using Pydantic models."""
+    if tool_name == "get_transactions":
+        return GetTransactionsArgs.model_validate(raw_arguments)  # type: ignore[no-any-return]
+    elif tool_name == "get_budgets":
+        return GetBudgetsArgs.model_validate(raw_arguments)  # type: ignore[no-any-return]
+    elif tool_name == "get_cashflow":
+        return GetCashflowArgs.model_validate(raw_arguments)  # type: ignore[no-any-return]
+    elif tool_name == "create_transaction":
+        return CreateTransactionArgs.model_validate(raw_arguments)  # type: ignore[no-any-return]
+    elif tool_name == "update_transaction":
+        return UpdateTransactionArgs.model_validate(raw_arguments)  # type: ignore[no-any-return]
+    else:
+        # Tools with no arguments (get_accounts, get_transaction_categories, refresh_accounts)
+        return {}
+
+
+def convert_dates_to_strings(obj: DateConvertible) -> JsonSerializable:
     """
     Recursively convert all date/datetime objects to ISO format strings.
     
@@ -31,7 +101,7 @@ def convert_dates_to_strings(obj: Any) -> Any:
     elif isinstance(obj, list):
         return [convert_dates_to_strings(item) for item in obj]
     elif isinstance(obj, tuple):
-        return tuple(convert_dates_to_strings(item) for item in obj)
+        return tuple(convert_dates_to_strings(item) for item in obj)  # type: ignore[unreachable]
     else:
         return obj
 
@@ -262,6 +332,8 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
         return [TextContent(type="text", text="Error: MonarchMoney client not initialized")]
     
     try:
+        # Parse and validate arguments using Pydantic models
+        parsed_args = parse_tool_arguments(name, arguments)
         if name == "get_accounts":
             accounts = await mm_client.get_accounts()
             # Convert date objects to strings before serialization
