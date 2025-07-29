@@ -1102,7 +1102,7 @@ async def main() -> None:
         return
     
     # Run the FastMCP server with stdio transport
-    await mcp.run_stdio_async()
+    mcp.run()  # Synchronous method, defaults to stdio transport
 
 
 if __name__ == "__main__":
