@@ -18,9 +18,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Debugging Startup Issues
 - **Session expired**: Delete `.mm/session.pickle` or set `MONARCH_FORCE_LOGIN=true`
-- **JSON parse errors**: All stdout contamination fixed - logs go to stderr only
-- **MCP protocol issues**: Ensure no print statements or logs go to stdout
-- **FastMCP API**: Uses official Anthropic MCP SDK with `mcp.run()` (defaults to stdio transport)
+- **JSON parse errors**: Fixed - all stdout output suppressed with `contextlib.redirect_stdout()`
+- **MCP protocol compliance**: All logging/warnings redirected to stderr, third-party lib output suppressed
+- **AsyncIO errors**: Fixed - uses `run_stdio_async()` in async context
+- **SSL warnings**: Suppressed from gql.transport.aiohttp to prevent stdout contamination
 
 ### Usage Analytics & Optimization Monitoring
 
