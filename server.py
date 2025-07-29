@@ -1102,7 +1102,7 @@ async def main() -> None:
         return
     
     # Run the FastMCP server with stdio transport
-    await mcp.run_stdio()
+    await mcp.run_stdio_async()
 
 
 if __name__ == "__main__":
