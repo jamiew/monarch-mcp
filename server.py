@@ -8,10 +8,11 @@ from typing import Optional, List, Union, Dict, Any
 from datetime import datetime, date
 from pathlib import Path
 
-from pydantic import BaseModel, Field, validator
+import structlog
+from pydantic import BaseModel, Field, ValidationError
 from mcp.server.fastmcp import FastMCP
 from mcp.types import TextContent
-from monarchmoney import MonarchMoney
+from monarchmoney import MonarchMoney, RequireMFAException
 
 # Type definitions for Monarch Money API responses
 JsonSerializable = Union[str, int, float, bool, None, List['JsonSerializable'], Dict[str, 'JsonSerializable']]
@@ -75,12 +76,33 @@ def convert_dates_to_strings(obj: DateConvertible) -> JsonSerializable:
     else:
         return obj
 
+# Configure structured logging
+structlog.configure(
+    processors=[
+        structlog.contextvars.merge_contextvars,
+        structlog.processors.add_log_level,
+        structlog.processors.StackInfoRenderer(),
+        structlog.dev.set_exc_info,
+        structlog.processors.JSONRenderer()
+    ],
+    wrapper_class=structlog.make_filtering_bound_logger(20),  # INFO level
+    context_class=dict,
+    logger_factory=structlog.PrintLoggerFactory(),
+    cache_logger_on_first_use=False,
+)
+
+log = structlog.get_logger()
+
 # Initialize the FastMCP server
 mcp = FastMCP("monarch-money")
 
 # Global variable to store the MonarchMoney client
 mm_client: Optional[MonarchMoney] = None
-session_file = Path.home() / ".monarchmoney_session"
+
+# Secure session directory with proper permissions
+session_dir = Path(".mm")
+session_dir.mkdir(mode=0o700, exist_ok=True)
+session_file = session_dir / "session.pickle"
 
 
 async def initialize_client() -> None:
@@ -92,6 +114,7 @@ async def initialize_client() -> None:
     mfa_secret = os.getenv("MONARCH_MFA_SECRET")
     
     if not email or not password:
+        log.error("Missing required environment variables")
         raise ValueError("MONARCH_EMAIL and MONARCH_PASSWORD environment variables are required")
     
     mm_client = MonarchMoney()
@@ -102,20 +125,30 @@ async def initialize_client() -> None:
             mm_client.load_session(str(session_file))
             # Test if session is still valid
             await mm_client.get_accounts()
-            print("Loaded existing session successfully")
+            log.info("Session loaded successfully")
             return
-        except Exception:
-            print("Existing session invalid, logging in fresh")
+        except Exception as e:
+            log.warning("Session invalid, attempting fresh login", error=str(e))
     
     # Login with credentials
-    if mfa_secret:
-        await mm_client.login(email, password, mfa_secret_key=mfa_secret)
-    else:
-        await mm_client.login(email, password)
-    
-    # Save session for future use
-    mm_client.save_session(str(session_file))
-    print("Logged in and saved session")
+    try:
+        if mfa_secret:
+            await mm_client.login(email, password, mfa_secret_key=mfa_secret)
+        else:
+            await mm_client.login(email, password)
+        
+        # Save session for future use
+        mm_client.save_session(str(session_file))
+        if session_file.exists():
+            session_file.chmod(0o600)  # Secure permissions
+        log.info("Authentication successful, session saved")
+        
+    except RequireMFAException:
+        log.error("MFA required but not provided")
+        raise ValueError("Multi-factor authentication required but MONARCH_MFA_SECRET not set")
+    except Exception as e:
+        log.error("Authentication failed", error=str(e))
+        raise
 
 
 # FastMCP Tool definitions using decorators
@@ -124,11 +157,18 @@ async def initialize_client() -> None:
 async def get_accounts() -> str:
     """Retrieve all linked financial accounts."""
     if not mm_client:
+        log.error("Client not initialized")
         raise ValueError("MonarchMoney client not initialized")
     
-    accounts = await mm_client.get_accounts()
-    accounts = convert_dates_to_strings(accounts)
-    return json.dumps(accounts, indent=2)
+    try:
+        log.info("Fetching accounts")
+        accounts = await mm_client.get_accounts()
+        accounts = convert_dates_to_strings(accounts)
+        log.info("Accounts retrieved successfully", count=len(accounts) if isinstance(accounts, list) else "unknown")
+        return json.dumps(accounts, indent=2)
+    except Exception as e:
+        log.error("Failed to fetch accounts", error=str(e))
+        raise
 
 
 @mcp.tool()
@@ -286,14 +326,132 @@ async def update_transaction(
 
 
 @mcp.tool()
+async def get_account_holdings() -> str:
+    """Get investment portfolio data from brokerage accounts."""
+    if not mm_client:
+        raise ValueError("MonarchMoney client not initialized")
+    
+    try:
+        holdings = await mm_client.get_account_holdings()
+        holdings = convert_dates_to_strings(holdings)
+        return json.dumps(holdings, indent=2)
+    except Exception as e:
+        log.error("Failed to fetch account holdings", error=str(e))
+        raise
+
+
+@mcp.tool()
+async def get_account_history(
+    account_id: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None
+) -> str:
+    """Get historical account balance data."""
+    if not mm_client:
+        raise ValueError("MonarchMoney client not initialized")
+    
+    kwargs: Dict[str, Any] = {"account_id": account_id}
+    if start_date:
+        kwargs["start_date"] = datetime.strptime(start_date, "%Y-%m-%d").date()
+    if end_date:
+        kwargs["end_date"] = datetime.strptime(end_date, "%Y-%m-%d").date()
+    
+    try:
+        history = await mm_client.get_account_history(**kwargs)
+        history = convert_dates_to_strings(history)
+        return json.dumps(history, indent=2)
+    except Exception as e:
+        log.error("Failed to fetch account history", error=str(e), account_id=account_id)
+        raise
+
+
+@mcp.tool()
+async def get_institutions() -> str:
+    """Get linked financial institutions."""
+    if not mm_client:
+        raise ValueError("MonarchMoney client not initialized")
+    
+    try:
+        institutions = await mm_client.get_institutions()
+        institutions = convert_dates_to_strings(institutions)
+        return json.dumps(institutions, indent=2)
+    except Exception as e:
+        log.error("Failed to fetch institutions", error=str(e))
+        raise
+
+
+@mcp.tool()
+async def get_recurring_transactions() -> str:
+    """Get scheduled recurring transactions."""
+    if not mm_client:
+        raise ValueError("MonarchMoney client not initialized")
+    
+    try:
+        recurring = await mm_client.get_recurring_transactions()
+        recurring = convert_dates_to_strings(recurring)
+        return json.dumps(recurring, indent=2)
+    except Exception as e:
+        log.error("Failed to fetch recurring transactions", error=str(e))
+        raise
+
+
+@mcp.tool()
+async def set_budget_amount(
+    category_id: str,
+    amount: float
+) -> str:
+    """Set budget amount for a category."""
+    if not mm_client:
+        raise ValueError("MonarchMoney client not initialized")
+    
+    try:
+        result = await mm_client.set_budget_amount(category_id=category_id, amount=amount)
+        result = convert_dates_to_strings(result)
+        log.info("Budget amount updated", category_id=category_id, amount=amount)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        log.error("Failed to set budget amount", error=str(e), category_id=category_id)
+        raise
+
+
+@mcp.tool()
+async def create_manual_account(
+    account_name: str,
+    account_type: str,
+    balance: float
+) -> str:
+    """Create a manually tracked account."""
+    if not mm_client:
+        raise ValueError("MonarchMoney client not initialized")
+    
+    try:
+        result = await mm_client.create_manual_account(
+            account_name=account_name,
+            account_type=account_type,
+            balance=balance
+        )
+        result = convert_dates_to_strings(result)
+        log.info("Manual account created", name=account_name, type=account_type)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        log.error("Failed to create manual account", error=str(e), name=account_name)
+        raise
+
+
+@mcp.tool()
 async def refresh_accounts() -> str:
     """Request a refresh of all account data from financial institutions."""
     if not mm_client:
         raise ValueError("MonarchMoney client not initialized")
     
-    result = await mm_client.request_accounts_refresh()
-    result = convert_dates_to_strings(result)
-    return json.dumps(result, indent=2)
+    try:
+        result = await mm_client.request_accounts_refresh()
+        result = convert_dates_to_strings(result)
+        log.info("Account refresh requested")
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        log.error("Failed to refresh accounts", error=str(e))
+        raise
 
 
 async def main() -> None:
