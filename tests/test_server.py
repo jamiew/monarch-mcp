@@ -73,9 +73,9 @@ class TestServerInitialization:
     """Test server initialization and configuration."""
     
     def test_server_instance_creation(self) -> None:
-        """Test that server instance is created properly."""
-        assert server.server is not None
-        assert hasattr(server.server, 'name')
+        """Test that FastMCP server instance is created properly."""
+        assert server.mcp is not None
+        assert hasattr(server.mcp, 'name')
 
     @patch.dict('os.environ', {}, clear=True)
     @pytest.mark.asyncio
@@ -113,7 +113,7 @@ class TestBasicFunctionality:
     def test_imports_work(self) -> None:
         """Test that all required imports are working."""
         import server
-        assert hasattr(server, 'Server')
+        assert hasattr(server, 'mcp')  # FastMCP instance
         assert hasattr(server, 'MonarchMoney')
         assert hasattr(server, 'convert_dates_to_strings')
         assert hasattr(server, 'initialize_client')
