@@ -43,7 +43,7 @@ mm_client: Optional[MonarchMoney] = None
 session_file = Path.home() / ".monarchmoney_session"
 
 
-async def initialize_client():
+async def initialize_client() -> None:
     """Initialize the MonarchMoney client with authentication."""
     global mm_client
     
@@ -378,7 +378,7 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
         return [TextContent(type="text", text=f"Error executing {name}: {str(e)}")]
 
 
-async def main():
+async def main() -> None:
     """Main entry point for the server."""
     # Initialize the MonarchMoney client
     try:
