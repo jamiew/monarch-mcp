@@ -143,11 +143,24 @@ import sys
 from pathlib import Path
 import logging
 
-# Configure logger to output to stderr only
+# Configure logger to output to stderr only with error handling
+class SafeStreamHandler(logging.StreamHandler):
+    """Stream handler that gracefully handles broken pipes."""
+    
+    def emit(self, record):
+        try:
+            super().emit(record)
+        except (BrokenPipeError, ConnectionResetError):
+            # Silently ignore broken pipe errors during logging
+            pass
+        except Exception:
+            # Let other logging errors bubble up
+            self.handleError(record)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    stream=sys.stderr
+    handlers=[SafeStreamHandler(sys.stderr)]
 )
 
 # Configure structured logging
@@ -1169,12 +1182,44 @@ async def main() -> None:
     try:
         await initialize_client()
     except Exception as e:
-        print(f"Failed to initialize MonarchMoney client: {e}", file=sys.stderr)
+        logger.error(f"Failed to initialize MonarchMoney client: {e}")
         return
     
-    # Run the FastMCP server with stdio transport (async version)
-    await mcp.run_stdio_async()
+    # Run the FastMCP server with comprehensive error handling
+    try:
+        logger.info("Starting MCP server with stdio transport")
+        await mcp.run_stdio_async()
+    except BrokenPipeError:
+        # This is expected when the client disconnects - exit gracefully
+        logger.info("Client disconnected (broken pipe) - shutting down gracefully")
+    except ConnectionResetError:
+        # Similar to BrokenPipeError but for connection resets
+        logger.info("Connection reset by client - shutting down gracefully")  
+    except KeyboardInterrupt:
+        logger.info("Received interrupt signal - shutting down")
+    except Exception as e:
+        logger.error(f"Unexpected error in MCP server: {e}")
+        raise
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Add signal handling for graceful shutdown
+    import signal
+    
+    def signal_handler(signum, frame):
+        logger.info(f"Received signal {signum}, shutting down gracefully")
+        # Let asyncio handle the shutdown
+        
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+    
+    try:
+        asyncio.run(main())
+    except BrokenPipeError:
+        # Handle broken pipe at the top level as well
+        logger.info("Broken pipe during shutdown - exiting quietly")
+    except KeyboardInterrupt:
+        logger.info("Interrupted by user - exiting")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
+        raise
