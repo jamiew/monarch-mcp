@@ -4,6 +4,7 @@
 import os
 import asyncio
 import json
+import uuid
 from typing import Optional, List, Union, Dict, Any
 from datetime import datetime, date
 from pathlib import Path
@@ -122,9 +123,11 @@ def parse_flexible_date(date_input: str) -> date:
             elif unit == 'week':
                 return today - timedelta(weeks=amount)
             elif unit == 'month':
-                return today - relativedelta(months=amount)
+                result = today - relativedelta(months=amount)
+                return result.date() if hasattr(result, 'date') else result
             elif unit == 'year':
-                return today - relativedelta(years=amount)
+                result = today - relativedelta(years=amount)
+                return result.date() if hasattr(result, 'date') else result
         except (ValueError, OverflowError) as e:
             log.warning("Invalid relative date calculation", input=date_input, amount=amount, unit=unit, error=str(e))
             raise ValueError(f"Invalid relative date: {date_input}")
@@ -296,10 +299,10 @@ from pathlib import Path
 import logging
 
 # Configure logger to output to stderr only with error handling
-class SafeStreamHandler(logging.StreamHandler):
+class SafeStreamHandler(logging.StreamHandler[Any]):
     """Stream handler that gracefully handles broken pipes."""
     
-    def emit(self, record):
+    def emit(self, record: logging.LogRecord) -> None:
         try:
             super().emit(record)
         except (BrokenPipeError, ConnectionResetError):
@@ -357,10 +360,10 @@ import uuid
 current_session_id = str(uuid.uuid4())
 usage_patterns: Dict[str, List[Dict[str, Any]]] = {}
 
-def track_usage(func):
+def track_usage(func: Any) -> Any:
     """Decorator to track tool usage patterns for analytics."""
     @functools.wraps(func)
-    async def wrapper(*args, **kwargs):
+    async def wrapper(*args: Any, **kwargs: Any) -> Any:
         start_time = time.time()
         tool_name = func.__name__
         
@@ -435,7 +438,7 @@ def clear_session() -> None:
         except Exception as e:
             logger.warning(f"Failed to clear mm session file: {e}")
 
-async def api_call_with_retry(func, *args, **kwargs):
+async def api_call_with_retry(func: Any, *args: Any, **kwargs: Any) -> Any:
     """Wrapper for API calls that handles session expiration and retries."""
     try:
         return await func(*args, **kwargs)
