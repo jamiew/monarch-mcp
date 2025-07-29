@@ -22,6 +22,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **MCP protocol issues**: Ensure no print statements or logs go to stdout
 - **FastMCP API**: Uses official Anthropic MCP SDK with `mcp.run()` (defaults to stdio transport)
 
+### Usage Analytics & Optimization Monitoring
+
+**View usage analytics in Claude's MCP log:**
+```bash
+# Monitor all analytics (tool calls, performance, errors)
+tail -f ~/Library/Logs/Claude/mcp-server-monarch-money.log | grep "\[ANALYTICS\]"
+
+# Watch for optimization suggestions
+tail -f ~/Library/Logs/Claude/mcp-server-monarch-money.log | grep "\[OPTIMIZATION\]"
+
+# Monitor performance (slow operations > 1 second)
+tail -f ~/Library/Logs/Claude/mcp-server-monarch-money.log | grep "\[ANALYTICS\]" | grep -E "time: [1-9][0-9]*\.[0-9]+s"
+
+# View session summaries and top tools
+tail -f ~/Library/Logs/Claude/mcp-server-monarch-money.log | grep "session_summary"
+```
+
+**Log Format Examples:**
+- `[ANALYTICS] tool_called: get_transactions | time: 0.234s | status: success`
+- `[OPTIMIZATION] Consider using get_complete_financial_overview instead of separate get_accounts + get_transactions calls`
+- `[ANALYTICS] session_summary: 15 calls | top_tool: get_transactions`
+
 ## Code Philosophy & Standards
 
 ### Human-Centric Design Principles
@@ -150,7 +172,7 @@ Server runs as MCP server configured in `.mcp.json` with:
 - **✅ Usage tracking**: `@track_usage` decorator on all 20 tools for comprehensive analytics
 - **✅ Performance monitoring**: Execution time, error rates, and pattern detection
 - **✅ Intelligent batching**: Real-time analysis of usage patterns to suggest optimizations
-- **✅ Analytics logging**: Dual logging (stderr + `logs/usage_analytics.jsonl`) for debugging and insights
+- **✅ Analytics logging**: Special markers in Claude's MCP log for easy filtering and optimization insights
 - **✅ Session-based tracking**: UUID-based session tracking with in-memory pattern analysis
 
 #### Advanced Financial Analysis Tools (NEW)

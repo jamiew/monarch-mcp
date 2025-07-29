@@ -151,11 +151,7 @@ root_logger.setLevel(logging.WARNING)
 logging.getLogger('aiohttp').setLevel(logging.WARNING)
 logging.getLogger('monarchmoney').setLevel(logging.WARNING)
 
-# Create logs directory
-logs_dir = Path("logs")
-logs_dir.mkdir(exist_ok=True)
-
-# Configure dual logging: stderr for debugging + file for usage analytics
+# Configure logging: all output to stderr with special markers for analytics
 structlog.configure(
     processors=[
         structlog.contextvars.merge_contextvars,
@@ -169,29 +165,7 @@ structlog.configure(
     cache_logger_on_first_use=False,
 )
 
-# Separate usage analytics logger
-usage_log = structlog.get_logger("usage_analytics")
-usage_log = usage_log.bind(logger_type="usage_analytics")
-
-# Configure usage analytics file logging
-import logging
-from structlog.stdlib import LoggerFactory
-
-usage_file_handler = logging.FileHandler(logs_dir / "usage_analytics.jsonl")
-usage_file_handler.setLevel(logging.INFO)
-usage_logger = logging.getLogger("usage_analytics")
-usage_logger.setLevel(logging.INFO)
-usage_logger.addHandler(usage_file_handler)
-
-# Structured logger for usage analytics  
-usage_structlog = structlog.wrap_logger(
-    usage_logger,
-    processors=[
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.add_log_level,
-        structlog.processors.JSONRenderer()
-    ]
-)
+# Usage analytics will go to stderr with special markers for easy filtering
 
 log = structlog.get_logger()
 
@@ -230,11 +204,8 @@ def track_usage(func):
                 "result_size": len(str(result)) if result else 0
             })
             
-            # Log for analytics
-            usage_structlog.info(
-                "tool_called",
-                **call_info
-            )
+            # Log for analytics with special marker
+            print(f"[ANALYTICS] tool_called: {tool_name} | time: {execution_time:.3f}s | status: success", file=sys.stderr)
             
             # Track usage patterns in memory for batching analysis
             if tool_name not in usage_patterns:
@@ -251,10 +222,7 @@ def track_usage(func):
                 "error": str(e)
             })
             
-            usage_structlog.error(
-                "tool_error",
-                **call_info
-            )
+            print(f"[ANALYTICS] tool_error: {tool_name} | time: {execution_time:.3f}s | error: {str(e)}", file=sys.stderr)
             raise
             
     return wrapper
@@ -1084,7 +1052,13 @@ async def get_usage_analytics() -> str:
                 "total_execution_time": sum(execution_times)
             }
         
-        log.info("Usage analytics generated", total_calls=analytics["total_tools_called"])
+        # Output optimization suggestions to log with marker
+        if analytics["optimization_suggestions"]:
+            for suggestion in analytics["optimization_suggestions"]:
+                print(f"[OPTIMIZATION] {suggestion}", file=sys.stderr)
+                
+        print(f"[ANALYTICS] session_summary: {analytics['total_tools_called']} calls | top_tool: {max(analytics['tools_usage_frequency'].items(), key=lambda x: x[1])[0] if analytics['tools_usage_frequency'] else 'none'}", file=sys.stderr)
+        
         return json.dumps(analytics, indent=2)
         
     except Exception as e:

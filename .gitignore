@@ -49,8 +49,7 @@ dmypy.json
 # UV
 uv.lock
 
-# Logs and analytics
-logs/
+# Logs
 *.log
 
 # Session files
