@@ -59,23 +59,36 @@ class UpdateTransactionArgs(BaseModel):  # type: ignore[misc]
 
 
 def parse_flexible_date(date_input: str) -> date:
-    """Parse flexible date input using natural language parsing."""
+    """
+    Parse flexible date inputs including natural language with comprehensive error handling.
+    
+    Supports:
+    - "today", "now"
+    - "yesterday" 
+    - "this month", "current month"
+    - "last month", "previous month" 
+    - "this year", "current year"
+    - "last year", "previous year"
+    - "last week", "this week"
+    - "30 days ago", "6 months ago"
+    - Any date format supported by dateutil.parser
+    """
     if not date_input:
         raise ValueError("Date input cannot be empty")
     
     # Handle common natural language patterns
     date_input = date_input.lower().strip()
-    
-    # Map common phrases to relative dates
     today = date.today()
     
     if date_input in ["today", "now"]:
         return today
     elif date_input == "yesterday":
-        return date(today.year, today.month, today.day - 1) if today.day > 1 else date(today.year, today.month - 1, 30)
+        from datetime import timedelta
+        return today - timedelta(days=1)
     elif date_input in ["this month", "current month"]:
         return date(today.year, today.month, 1)
     elif date_input in ["last month", "previous month"]:
+        # Handle month rollover correctly
         if today.month == 1:
             return date(today.year - 1, 12, 1)
         else:
@@ -84,37 +97,176 @@ def parse_flexible_date(date_input: str) -> date:
         return date(today.year, 1, 1)
     elif date_input in ["last year", "previous year"]:
         return date(today.year - 1, 1, 1)
+    elif date_input == "last week":
+        from datetime import timedelta
+        return today - timedelta(days=7)
+    elif date_input == "this week":
+        from datetime import timedelta
+        # Start of this week (Monday)
+        days_since_monday = today.weekday()
+        return today - timedelta(days=days_since_monday)
     
-    # Try parsing with dateutil for more complex patterns
+    # Handle relative patterns like "30 days ago", "6 months ago"
+    import re
+    relative_pattern = re.match(r'(\d+)\s+(days?|weeks?|months?|years?)\s+ago', date_input)
+    if relative_pattern:
+        from datetime import timedelta
+        from dateutil.relativedelta import relativedelta
+        
+        amount = int(relative_pattern.group(1))
+        unit = relative_pattern.group(2).rstrip('s')  # Remove plural 's'
+        
+        try:
+            if unit == 'day':
+                return today - timedelta(days=amount)
+            elif unit == 'week':
+                return today - timedelta(weeks=amount)
+            elif unit == 'month':
+                return today - relativedelta(months=amount)
+            elif unit == 'year':
+                return today - relativedelta(years=amount)
+        except (ValueError, OverflowError) as e:
+            log.warning("Invalid relative date calculation", input=date_input, amount=amount, unit=unit, error=str(e))
+            raise ValueError(f"Invalid relative date: {date_input}")
+    
+    # Try parsing with dateutil for standard date formats
     try:
         parsed_datetime = date_parser.parse(date_input)
-        return parsed_datetime.date()
-    except (ValueError, TypeError) as e:
-        log.warning("Failed to parse date", input=date_input, error=str(e))
-        raise ValueError(f"Could not parse date: {date_input}")
+        parsed_date = parsed_datetime.date()
+        
+        # Validate reasonable date range (1900 to 50 years in future)
+        min_date = date(1900, 1, 1)
+        max_date = date(today.year + 50, 12, 31)
+        
+        if parsed_date < min_date or parsed_date > max_date:
+            log.warning("Date outside reasonable range", input=date_input, parsed_date=parsed_date.isoformat())
+            raise ValueError(f"Date {parsed_date.isoformat()} is outside reasonable range (1900-{today.year + 50})")
+        
+        return parsed_date
+        
+    except (ValueError, TypeError, OverflowError) as e:
+        log.warning("Failed to parse date with dateutil", input=date_input, error=str(e))
+        
+        # Provide helpful error message with suggestions
+        suggestions = [
+            "Try formats like: 2024-01-15, Jan 15 2024, 15/01/2024",
+            "Or natural language: today, yesterday, last month, this year",
+            "Or relative: 30 days ago, 6 months ago, 1 year ago"
+        ]
+        suggestion_text = ". ".join(suggestions)
+        raise ValueError(f"Could not parse date '{date_input}'. {suggestion_text}")
 
 
 def build_date_filter(start_date: Optional[str], end_date: Optional[str]) -> Dict[str, str]:
-    """Build date filter dictionary with flexible parsing."""
+    """
+    Build date filter dictionary with flexible parsing and comprehensive error recovery.
+    
+    Args:
+        start_date: Start date string (flexible format supported)
+        end_date: End date string (flexible format supported)
+        
+    Returns:
+        Dictionary with ISO format date strings
+        
+    Raises:
+        ValueError: If date parsing fails completely after all fallback attempts
+    """
     filters: Dict[str, str] = {}
     
     if start_date:
         try:
             parsed_date = parse_flexible_date(start_date)
             filters["start_date"] = parsed_date.isoformat()
-        except ValueError:
-            # Fallback to strict parsing
-            parsed_date = datetime.strptime(start_date, "%Y-%m-%d").date()
-            filters["start_date"] = parsed_date.isoformat()
+            log.info("Successfully parsed start_date", input=start_date, parsed=parsed_date.isoformat())
+        except ValueError as e:
+            log.warning("Flexible date parsing failed for start_date", input=start_date, error=str(e))
+            
+            # Fallback 1: Try strict ISO format parsing
+            try:
+                parsed_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+                filters["start_date"] = parsed_date.isoformat()
+                log.info("Successfully parsed start_date with ISO fallback", input=start_date, parsed=parsed_date.isoformat())
+            except ValueError:
+                # Fallback 2: Try common date formats
+                common_formats = [
+                    "%m/%d/%Y",     # MM/DD/YYYY
+                    "%d/%m/%Y",     # DD/MM/YYYY
+                    "%Y/%m/%d",     # YYYY/MM/DD
+                    "%m-%d-%Y",     # MM-DD-YYYY
+                    "%d-%m-%Y",     # DD-MM-YYYY
+                    "%B %d, %Y",    # January 1, 2024
+                    "%b %d, %Y",    # Jan 1, 2024
+                    "%d %B %Y",     # 1 January 2024
+                    "%d %b %Y",     # 1 Jan 2024
+                ]
+                
+                parsed = False
+                for fmt in common_formats:
+                    try:
+                        parsed_date = datetime.strptime(start_date, fmt).date()
+                        filters["start_date"] = parsed_date.isoformat()
+                        log.info("Successfully parsed start_date with format fallback", 
+                                input=start_date, format=fmt, parsed=parsed_date.isoformat())
+                        parsed = True
+                        break
+                    except ValueError:
+                        continue
+                
+                if not parsed:
+                    log.error("All date parsing attempts failed for start_date", input=start_date)
+                    raise ValueError(f"Could not parse start_date '{start_date}'. {str(e)}")
     
     if end_date:
         try:
             parsed_date = parse_flexible_date(end_date)
             filters["end_date"] = parsed_date.isoformat()
-        except ValueError:
-            # Fallback to strict parsing
-            parsed_date = datetime.strptime(end_date, "%Y-%m-%d").date()
-            filters["end_date"] = parsed_date.isoformat()
+            log.info("Successfully parsed end_date", input=end_date, parsed=parsed_date.isoformat())
+        except ValueError as e:
+            log.warning("Flexible date parsing failed for end_date", input=end_date, error=str(e))
+            
+            # Fallback 1: Try strict ISO format parsing
+            try:
+                parsed_date = datetime.strptime(end_date, "%Y-%m-%d").date()
+                filters["end_date"] = parsed_date.isoformat()
+                log.info("Successfully parsed end_date with ISO fallback", input=end_date, parsed=parsed_date.isoformat())
+            except ValueError:
+                # Fallback 2: Try common date formats
+                common_formats = [
+                    "%m/%d/%Y",     # MM/DD/YYYY
+                    "%d/%m/%Y",     # DD/MM/YYYY
+                    "%Y/%m/%d",     # YYYY/MM/DD
+                    "%m-%d-%Y",     # MM-DD-YYYY
+                    "%d-%m-%Y",     # DD-MM-YYYY
+                    "%B %d, %Y",    # January 1, 2024
+                    "%b %d, %Y",    # Jan 1, 2024
+                    "%d %B %Y",     # 1 January 2024
+                    "%d %b %Y",     # 1 Jan 2024
+                ]
+                
+                parsed = False
+                for fmt in common_formats:
+                    try:
+                        parsed_date = datetime.strptime(end_date, fmt).date()
+                        filters["end_date"] = parsed_date.isoformat()
+                        log.info("Successfully parsed end_date with format fallback", 
+                                input=end_date, format=fmt, parsed=parsed_date.isoformat())
+                        parsed = True
+                        break
+                    except ValueError:
+                        continue
+                
+                if not parsed:
+                    log.error("All date parsing attempts failed for end_date", input=end_date)
+                    raise ValueError(f"Could not parse end_date '{end_date}'. {str(e)}")
+    
+    # Validate date range logic
+    if "start_date" in filters and "end_date" in filters:
+        start = date.fromisoformat(filters["start_date"])
+        end = date.fromisoformat(filters["end_date"])
+        
+        if start > end:
+            log.warning("Start date is after end date", start_date=filters["start_date"], end_date=filters["end_date"])
+            raise ValueError(f"Start date ({filters['start_date']}) cannot be after end date ({filters['end_date']})")
     
     return filters
 
