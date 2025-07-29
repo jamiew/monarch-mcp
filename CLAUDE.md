@@ -45,6 +45,75 @@ tail -f ~/Library/Logs/Claude/mcp-server-monarch-money.log | grep "session_summa
 - `[OPTIMIZATION] Consider using get_complete_financial_overview instead of separate get_accounts + get_transactions calls`
 - `[ANALYTICS] session_summary: 15 calls | top_tool: get_transactions`
 
+## Development Workflow & Git Guidelines
+
+### Automated Development Process
+**When no specific instructions are provided, follow this workflow:**
+
+1. **Read Current Status**: Always start by reading the latest TODO items and status in this CLAUDE.md file
+2. **Select Next Task**: Choose the highest priority pending task from the current status section
+3. **Implement & Test**: Work on the task following the quality standards below
+4. **Validate Before Commit**: Always run type checks and tests before committing
+5. **Commit Each Feature**: Make atomic commits for individual features, fixes, or optimizations
+6. **Update Status**: Periodically update CLAUDE.md status section (not every commit)
+
+### Git Commit Standards
+
+**Quality Gates (MANDATORY before any commit):**
+```bash
+# ALWAYS run these before committing - DO NOT commit if either fails
+uv run mypy server.py     # Type checking must pass
+uv run pytest tests/ -v   # All tests must pass
+```
+
+**Commit Message Format:**
+```
+<type>: <concise description>
+
+<optional body explaining why/what changed>
+
+🤖 Generated with [Claude Code](https://claude.ai/code)
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+```
+
+**Commit Types:**
+- **feat**: New feature implementation
+- **fix**: Bug fix or error resolution  
+- **perf**: Performance optimization
+- **refactor**: Code restructuring without behavior change
+- **test**: Test additions or improvements
+- **docs**: Documentation updates (including CLAUDE.md)
+- **chore**: Maintenance tasks, dependency updates
+
+**Examples:**
+```bash
+feat: add intelligent caching for frequently accessed accounts data
+
+fix: resolve date serialization errors in get_transactions tool
+- Convert build_date_filter() to return ISO strings instead of date objects
+- Update tests to expect string dates for JSON serialization safety
+
+perf: implement connection pooling for Monarch Money API requests
+
+refactor: split server.py into modular components (auth, tools, models)
+```
+
+### CLAUDE.md Maintenance Schedule
+
+**Update CLAUDE.md in these situations:**
+- ✅ **Major milestones completed** (Phase completion, significant features)
+- ✅ **Architecture changes** (New dependencies, structural changes)
+- ✅ **Status changes** (Moving between development phases)
+- ✅ **New TODO items discovered** during implementation
+- ❌ **NOT every commit** - only for significant progress or new findings
+
+**What to update:**
+- Move completed tasks from "REMAINING" to "COMPLETED" sections
+- Add newly discovered tasks to appropriate priority sections  
+- Update "Current Status" metrics (test counts, error counts, etc.)
+- Note any breaking changes or migration requirements
+
 ## Code Philosophy & Standards
 
 ### Human-Centric Design Principles
