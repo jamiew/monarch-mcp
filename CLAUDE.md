@@ -20,6 +20,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Session expired**: Delete `.mm/session.pickle` or set `MONARCH_FORCE_LOGIN=true`
 - **JSON parse errors**: All stdout contamination fixed - logs go to stderr only
 - **MCP protocol issues**: Ensure no print statements or logs go to stdout
+- **AttributeError on startup**: Fixed - FastMCP uses `run_stdio_async()`, not `run_stdio()`
 
 ## Code Philosophy & Standards
 
