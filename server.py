@@ -94,23 +94,27 @@ def parse_flexible_date(date_input: str) -> date:
         raise ValueError(f"Could not parse date: {date_input}")
 
 
-def build_date_filter(start_date: Optional[str], end_date: Optional[str]) -> Dict[str, date]:
+def build_date_filter(start_date: Optional[str], end_date: Optional[str]) -> Dict[str, str]:
     """Build date filter dictionary with flexible parsing."""
-    filters: Dict[str, date] = {}
+    filters: Dict[str, str] = {}
     
     if start_date:
         try:
-            filters["start_date"] = parse_flexible_date(start_date)
+            parsed_date = parse_flexible_date(start_date)
+            filters["start_date"] = parsed_date.isoformat()
         except ValueError:
             # Fallback to strict parsing
-            filters["start_date"] = datetime.strptime(start_date, "%Y-%m-%d").date()
+            parsed_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+            filters["start_date"] = parsed_date.isoformat()
     
     if end_date:
         try:
-            filters["end_date"] = parse_flexible_date(end_date)
+            parsed_date = parse_flexible_date(end_date)
+            filters["end_date"] = parsed_date.isoformat()
         except ValueError:
             # Fallback to strict parsing
-            filters["end_date"] = datetime.strptime(end_date, "%Y-%m-%d").date()
+            parsed_date = datetime.strptime(end_date, "%Y-%m-%d").date()
+            filters["end_date"] = parsed_date.isoformat()
     
     return filters
 
@@ -134,20 +138,41 @@ def convert_dates_to_strings(obj: DateConvertible) -> JsonSerializable:
     else:
         return obj
 
-# Configure structured logging (stderr only to avoid interfering with MCP stdio)
+# Configure standard logging (stderr only to avoid interfering with MCP stdio)
 import sys
 from pathlib import Path
 import logging
 
-# Redirect all logging to stderr to prevent stdout contamination
-root_logger = logging.getLogger()
-root_logger.handlers.clear()
-stderr_handler = logging.StreamHandler(sys.stderr)
-stderr_handler.setLevel(logging.ERROR)  # Only show errors to minimize noise
-root_logger.addHandler(stderr_handler)
-root_logger.setLevel(logging.ERROR)
+# Configure logger to output to stderr only
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    stream=sys.stderr
+)
 
-# Specifically handle third-party library logging
+# Configure structured logging
+structlog.configure(
+    processors=[
+        structlog.stdlib.filter_by_level,
+        structlog.stdlib.add_logger_name,
+        structlog.stdlib.add_log_level,
+        structlog.stdlib.PositionalArgumentsFormatter(),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        structlog.processors.UnicodeDecoder(),
+        structlog.processors.JSONRenderer()
+    ],
+    context_class=dict,
+    logger_factory=structlog.stdlib.LoggerFactory(),
+    wrapper_class=structlog.stdlib.BoundLogger,
+    cache_logger_on_first_use=True,
+)
+
+# Get structured logger for this module
+log = structlog.get_logger(__name__)
+logger = logging.getLogger(__name__)
+
+# Suppress third-party library logging to reduce noise
 logging.getLogger('aiohttp').setLevel(logging.ERROR)
 logging.getLogger('monarchmoney').setLevel(logging.ERROR)
 logging.getLogger('gql').setLevel(logging.ERROR)
@@ -156,24 +181,6 @@ logging.getLogger('gql.transport').setLevel(logging.ERROR)
 # Suppress SSL warnings that might leak to stdout
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="gql.transport.aiohttp")
-
-# Configure logging: all output to stderr with special markers for analytics
-structlog.configure(
-    processors=[
-        structlog.contextvars.merge_contextvars,
-        structlog.processors.add_log_level,
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.dev.ConsoleRenderer()  # Human-readable for development
-    ],
-    wrapper_class=structlog.make_filtering_bound_logger(30),  # WARNING level to reduce noise
-    context_class=dict,
-    logger_factory=structlog.WriteLoggerFactory(file=sys.stderr),
-    cache_logger_on_first_use=False,
-)
-
-# Usage analytics will go to stderr with special markers for easy filtering
-
-log = structlog.get_logger()
 
 # Usage analytics tracking
 import functools
@@ -210,8 +217,8 @@ def track_usage(func):
                 "result_size": len(str(result)) if result else 0
             })
             
-            # Log for analytics with special marker
-            print(f"[ANALYTICS] tool_called: {tool_name} | time: {execution_time:.3f}s | status: success", file=sys.stderr)
+            # Log for analytics
+            logger.info(f"[ANALYTICS] tool_called: {tool_name} | time: {execution_time:.3f}s | status: success")
             
             # Track usage patterns in memory for batching analysis
             if tool_name not in usage_patterns:
@@ -228,7 +235,7 @@ def track_usage(func):
                 "error": str(e)
             })
             
-            print(f"[ANALYTICS] tool_error: {tool_name} | time: {execution_time:.3f}s | error: {str(e)}", file=sys.stderr)
+            logger.error(f"[ANALYTICS] tool_error: {tool_name} | time: {execution_time:.3f}s | error: {str(e)}")
             raise
             
     return wrapper
@@ -244,6 +251,42 @@ session_dir = Path(".mm")
 session_dir.mkdir(mode=0o700, exist_ok=True)
 session_file = session_dir / "session.pickle"
 
+def clear_session() -> None:
+    """Clear existing session files for fresh authentication."""
+    # Clear our custom session file
+    if session_file.exists():
+        try:
+            session_file.unlink()
+            logger.info(f"Cleared custom session file: {session_file}")
+        except Exception as e:
+            logger.warning(f"Failed to clear custom session file: {e}")
+    
+    # Clear the monarchmoney library's default session file
+    mm_session_file = session_dir / "mm_session.pickle"
+    if mm_session_file.exists():
+        try:
+            mm_session_file.unlink()
+            logger.info(f"Cleared mm session file: {mm_session_file}")
+        except Exception as e:
+            logger.warning(f"Failed to clear mm session file: {e}")
+
+async def api_call_with_retry(func, *args, **kwargs):
+    """Wrapper for API calls that handles session expiration and retries."""
+    try:
+        return await func(*args, **kwargs)
+    except Exception as e:
+        error_str = str(e).lower()
+        if "401" in error_str or "unauthorized" in error_str or "session" in error_str:
+            logger.warning(f"API call failed with session error: {e}")
+            logger.info("Clearing session and re-initializing client")
+            clear_session()
+            await initialize_client()
+            # Retry once
+            logger.info("Retrying API call after re-authentication")
+            return await func(*args, **kwargs)
+        else:
+            raise
+
 
 async def initialize_client() -> None:
     """Initialize the MonarchMoney client with authentication."""
@@ -254,45 +297,87 @@ async def initialize_client() -> None:
     mfa_secret = os.getenv("MONARCH_MFA_SECRET")
     
     if not email or not password:
-        print("Missing required environment variables", file=sys.stderr)
+        logger.error("Missing required environment variables")
         raise ValueError("MONARCH_EMAIL and MONARCH_PASSWORD environment variables are required")
     
+    logger.info(f"Initializing MonarchMoney client for {email}")
     mm_client = MonarchMoney()
     
     # Try to load existing session first
     if session_file.exists() and not os.getenv("MONARCH_FORCE_LOGIN"):
         try:
-            # Load session (suppress any stdout output)
+            logger.info(f"Attempting to load session from {session_file}")
+            # Load session with comprehensive stdout suppression
             import contextlib
-            with contextlib.redirect_stdout(open(os.devnull, 'w')):
+            import io
+            
+            # Capture and discard both stdout and stderr during session loading
+            stdout_capture = io.StringIO()
+            stderr_capture = io.StringIO()
+            with contextlib.redirect_stdout(stdout_capture), \
+                 contextlib.redirect_stderr(stderr_capture):
                 mm_client.load_session(str(session_file))
-            # Test if session is still valid
-            await mm_client.get_accounts()
-            print("Session loaded successfully", file=sys.stderr)
+            
+            # Log what was captured for debugging
+            if stdout_capture.getvalue():
+                logger.debug(f"Captured stdout during load_session: '{stdout_capture.getvalue()}'")
+            if stderr_capture.getvalue():
+                logger.debug(f"Captured stderr during load_session: '{stderr_capture.getvalue()}'")
+            
+            logger.info("Session loaded, testing validity")
+            # Test if session is still valid with a simple API call
+            accounts = await mm_client.get_accounts()
+            logger.info(f"Session valid - found {len(accounts) if accounts else 0} accounts")
             return
+            
         except Exception as e:
-            print(f"Session invalid, attempting fresh login: {e}", file=sys.stderr)
+            logger.warning(f"Session invalid or expired: {e}")
+            logger.info("Will attempt fresh login")
+    else:
+        if not session_file.exists():
+            logger.info("No existing session file found")
+        if os.getenv("MONARCH_FORCE_LOGIN"):
+            logger.info("MONARCH_FORCE_LOGIN=true, skipping session load")
     
     # Login with credentials
     try:
+        logger.info("Starting fresh authentication")
         if mfa_secret:
+            logger.info("Using MFA authentication")
             await mm_client.login(email, password, mfa_secret_key=mfa_secret)
         else:
+            logger.info("Using password authentication")
             await mm_client.login(email, password)
         
-        # Save session for future use (suppress any stdout output)
+        logger.info("Authentication successful, saving session")
+        # Save session with comprehensive stdout suppression
         import contextlib
-        with contextlib.redirect_stdout(open(os.devnull, 'w')):
+        import io
+        
+        # Capture and discard both stdout and stderr during session saving
+        stdout_capture = io.StringIO()
+        stderr_capture = io.StringIO()
+        with contextlib.redirect_stdout(stdout_capture), \
+             contextlib.redirect_stderr(stderr_capture):
             mm_client.save_session(str(session_file))
+        
+        # Log what was captured for debugging
+        if stdout_capture.getvalue():
+            logger.debug(f"Captured stdout during save_session: '{stdout_capture.getvalue()}'")
+        if stderr_capture.getvalue():
+            logger.debug(f"Captured stderr during save_session: '{stderr_capture.getvalue()}'")
+            
         if session_file.exists():
             session_file.chmod(0o600)  # Secure permissions
-        print("Authentication successful, session saved", file=sys.stderr)
+            logger.info(f"Session saved with secure permissions: {session_file}")
+        else:
+            logger.warning("Session file was not created")
         
     except RequireMFAException:
-        print("MFA required but not provided", file=sys.stderr)
+        logger.error("MFA required but not provided")
         raise ValueError("Multi-factor authentication required but MONARCH_MFA_SECRET not set")
     except Exception as e:
-        print(f"Authentication failed: {e}", file=sys.stderr)
+        logger.error(f"Authentication failed: {e}")
         raise
 
 
@@ -303,17 +388,17 @@ async def initialize_client() -> None:
 async def get_accounts() -> str:
     """Retrieve all linked financial accounts."""
     if not mm_client:
-        log.error("Client not initialized")
+        logger.error("Client not initialized")
         raise ValueError("MonarchMoney client not initialized")
     
     try:
-        log.info("Fetching accounts")
-        accounts = await mm_client.get_accounts()
+        logger.info("Fetching accounts")
+        accounts = await api_call_with_retry(mm_client.get_accounts)
         accounts = convert_dates_to_strings(accounts)
-        log.info("Accounts retrieved successfully", count=len(accounts) if isinstance(accounts, list) else "unknown")
+        logger.info(f"Accounts retrieved successfully, count: {len(accounts) if isinstance(accounts, list) else 'unknown'}")
         return json.dumps(accounts, indent=2)
     except Exception as e:
-        log.error("Failed to fetch accounts", error=str(e))
+        logger.error(f"Failed to fetch accounts: {e}")
         raise
 
 
@@ -332,7 +417,7 @@ async def get_transactions(
         raise ValueError("MonarchMoney client not initialized")
     
     try:
-        log.info("Fetching transactions", limit=limit, offset=offset, start_date=start_date, end_date=end_date)
+        logger.info(f"Fetching transactions: limit={limit}, offset={offset}, start_date={start_date}, end_date={end_date}")
         
         # Build filter parameters with flexible date parsing
         filters: Dict[str, Any] = build_date_filter(start_date, end_date)
@@ -342,16 +427,17 @@ async def get_transactions(
         if category_id:
             filters["category_id"] = category_id
         
-        transactions = await mm_client.get_transactions(
+        transactions = await api_call_with_retry(
+            mm_client.get_transactions,
             limit=limit,
             offset=offset,
             **filters
         )
         transactions = convert_dates_to_strings(transactions)
-        log.info("Transactions retrieved successfully", count=len(transactions) if isinstance(transactions, list) else "unknown")
+        logger.info(f"Transactions retrieved successfully, count: {len(transactions) if isinstance(transactions, list) else 'unknown'}")
         return json.dumps(transactions, indent=2)
     except Exception as e:
-        log.error("Failed to fetch transactions", error=str(e), limit=limit, start_date=start_date)
+        logger.error(f"Failed to fetch transactions: {e} (limit={limit}, start_date={start_date})")
         raise
 
 

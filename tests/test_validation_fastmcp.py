@@ -203,12 +203,11 @@ class TestFastMCPParameterValidation:
             start_date = call_args.kwargs["start_date"]
             end_date = call_args.kwargs["end_date"]
             
-            # Should be date objects, not strings
-            assert hasattr(start_date, "year")
-            assert hasattr(end_date, "year")
-            assert start_date.year == 2024
-            assert start_date.month == 1
-            assert start_date.day == 1
+            # Should be ISO date strings for JSON serialization safety
+            assert isinstance(start_date, str)
+            assert isinstance(end_date, str)
+            assert start_date == "2024-01-01"
+            assert end_date == "2024-12-31"
             
         finally:
             server.mm_client = original_client
