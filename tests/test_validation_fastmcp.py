@@ -29,9 +29,10 @@ class TestFastMCPParameterValidation:
                 start_date="2024-01-01",
                 end_date="2024-01-31",
                 account_id="acc123",
-                category_id="cat456"
+                category_id="cat456",
+                verbose=True  # Get full transaction details for testing
             )
-            
+
             assert isinstance(result, str)
             parsed_result = json.loads(result)
             assert parsed_result == mock_transactions
@@ -58,8 +59,8 @@ class TestFastMCPParameterValidation:
         
         try:
             # Test with no parameters (should use defaults)
-            result = await server.get_transactions()
-            
+            result = await server.get_transactions(verbose=True)  # Get full transaction details for testing
+
             assert isinstance(result, str)
             parsed_result = json.loads(result)
             assert parsed_result == mock_transactions

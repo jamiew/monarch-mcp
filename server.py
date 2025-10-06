@@ -29,6 +29,7 @@ class GetTransactionsArgs(BaseModel):  # type: ignore[misc]
     end_date: Optional[str] = Field(default=None, pattern=r'^\d{4}-\d{2}-\d{2}$')
     account_id: Optional[str] = None
     category_id: Optional[str] = None
+    verbose: bool = Field(default=False)
 
 class GetBudgetsArgs(BaseModel):  # type: ignore[misc]
     """Arguments for get_budgets tool."""
@@ -277,7 +278,7 @@ def build_date_filter(start_date: Optional[str], end_date: Optional[str]) -> Dic
 def convert_dates_to_strings(obj: DateConvertible) -> JsonSerializable:
     """
     Recursively convert all date/datetime objects to ISO format strings.
-    
+
     This ensures that the data can be serialized by any JSON encoder,
     not just our custom one. This is necessary because the MCP framework
     may attempt to serialize the response before we can use our custom encoder.
@@ -292,6 +293,46 @@ def convert_dates_to_strings(obj: DateConvertible) -> JsonSerializable:
         return tuple(convert_dates_to_strings(item) for item in obj)  # type: ignore[unreachable]
     else:
         return obj
+
+
+def format_transactions_compact(transactions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Format transactions in a compact format with only essential fields.
+
+    Returns simplified transaction objects with only:
+    - id, date, amount
+    - merchant name, plaidName (original statement name)
+    - category name
+    - account display name
+    - Basic flags: pending, needsReview
+
+    Use verbose=True to get full transaction details when needed.
+    """
+    compact: List[Dict[str, Any]] = []
+
+    for txn in transactions:
+        if not isinstance(txn, dict):
+            continue
+
+        compact_txn: Dict[str, Any] = {
+            "id": txn.get("id"),
+            "date": txn.get("date"),
+            "amount": txn.get("amount"),
+            "merchant": txn.get("merchant", {}).get("name") if isinstance(txn.get("merchant"), dict) else None,
+            "plaidName": txn.get("plaidName"),
+            "category": txn.get("category", {}).get("name") if isinstance(txn.get("category"), dict) else None,
+            "account": txn.get("account", {}).get("displayName") if isinstance(txn.get("account"), dict) else None,
+            "pending": txn.get("pending", False),
+            "needsReview": txn.get("needsReview", False)
+        }
+
+        # Include notes if present
+        if txn.get("notes"):
+            compact_txn["notes"] = txn.get("notes")
+
+        compact.append(compact_txn)
+
+    return compact
 
 # Configure standard logging (stderr only to avoid interfering with MCP stdio)
 import sys
@@ -574,27 +615,31 @@ async def get_accounts() -> str:
 @track_usage
 async def get_transactions(
     limit: int = 100,
-    offset: int = 0, 
+    offset: int = 0,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     account_id: Optional[str] = None,
-    category_id: Optional[str] = None
+    category_id: Optional[str] = None,
+    verbose: bool = False
 ) -> str:
-    """Fetch transactions with flexible date filtering (supports natural language like 'last month', 'yesterday')."""
+    """Fetch transactions with flexible date filtering (supports natural language like 'last month', 'yesterday').
+
+    By default returns compact format with essential fields only. Set verbose=True for full transaction details.
+    """
     if not mm_client:
         raise ValueError("MonarchMoney client not initialized")
-    
+
     try:
-        logger.info(f"Fetching transactions: limit={limit}, offset={offset}, start_date={start_date}, end_date={end_date}")
-        
+        logger.info(f"Fetching transactions: limit={limit}, offset={offset}, start_date={start_date}, end_date={end_date}, verbose={verbose}")
+
         # Build filter parameters with flexible date parsing
         filters: Dict[str, Any] = build_date_filter(start_date, end_date)
-        
+
         if account_id:
             filters["account_id"] = account_id
         if category_id:
             filters["category_id"] = category_id
-        
+
         transactions = await api_call_with_retry(
             mm_client.get_transactions,
             limit=limit,
@@ -602,6 +647,11 @@ async def get_transactions(
             **filters
         )
         transactions = convert_dates_to_strings(transactions)
+
+        # Format output based on verbose flag
+        if not verbose and isinstance(transactions, list):
+            transactions = format_transactions_compact(transactions)
+
         logger.info(f"Transactions retrieved successfully, count: {len(transactions) if isinstance(transactions, list) else 'unknown'}")
         return json.dumps(transactions, indent=2)
     except Exception as e:
@@ -857,13 +907,15 @@ async def create_manual_account(
 @mcp.tool()
 @track_usage
 async def get_transactions_batch(
-    queries: str
+    queries: str,
+    verbose: bool = False
 ) -> str:
     """Execute multiple transaction queries efficiently in batch.
-    
+
     Args:
         queries: JSON string of query objects, each with optional: limit, offset, start_date, end_date, account_id, category_id
-        
+        verbose: If False (default), returns compact format with essential fields only. Set True for full transaction details.
+
     Example:
         [
             {"start_date": "last month", "category_id": "cat123"},
@@ -873,37 +925,43 @@ async def get_transactions_batch(
     """
     if not mm_client:
         raise ValueError("MonarchMoney client not initialized")
-    
+
     try:
         query_list = json.loads(queries)
         if not isinstance(query_list, list):
             raise ValueError("Queries must be a JSON array")
-        
-        log.info("Executing batch transaction queries", count=len(query_list))
-        
+
+        log.info("Executing batch transaction queries", count=len(query_list), verbose=verbose)
+
         async def execute_single_query(query: Dict[str, Any]) -> Dict[str, Any]:
             filters = build_date_filter(query.get("start_date"), query.get("end_date"))
-            
+
             if query.get("account_id"):
                 filters["account_id"] = query["account_id"]
             if query.get("category_id"):
                 filters["category_id"] = query["category_id"]
-            
+
             transactions = await mm_client.get_transactions(
                 limit=query.get("limit", 100),
                 offset=query.get("offset", 0),
                 **filters
             )
+            transactions = convert_dates_to_strings(transactions)
+
+            # Format output based on verbose flag
+            if not verbose and isinstance(transactions, list):
+                transactions = format_transactions_compact(transactions)
+
             return {
                 "query": query,
-                "results": convert_dates_to_strings(transactions),
+                "results": transactions,
                 "count": len(transactions) if isinstance(transactions, list) else 0
             }
-        
+
         # Execute all queries in parallel for efficiency
         import asyncio
         results = await asyncio.gather(*[execute_single_query(q) for q in query_list])
-        
+
         batch_result = {
             "batch_summary": {
                 "total_queries": len(query_list),
@@ -911,13 +969,13 @@ async def get_transactions_batch(
             },
             "results": results
         }
-        
-        log.info("Batch queries completed", 
-                query_count=len(query_list), 
+
+        log.info("Batch queries completed",
+                query_count=len(query_list),
                 total_transactions=batch_result["batch_summary"]["total_transactions"])
-        
+
         return json.dumps(batch_result, indent=2)
-        
+
     except json.JSONDecodeError:
         log.error("Invalid JSON in batch queries")
         raise ValueError("Queries parameter must be valid JSON")
