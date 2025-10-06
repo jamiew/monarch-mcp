@@ -622,9 +622,23 @@ async def get_transactions(
     category_id: Optional[str] = None,
     verbose: bool = False
 ) -> str:
-    """Fetch transactions with flexible date filtering (supports natural language like 'last month', 'yesterday').
+    """Fetch transactions with flexible date filtering and smart output formatting.
 
-    By default returns compact format with essential fields only. Set verbose=True for full transaction details.
+    Args:
+        limit: Maximum number of transactions to return (default: 100, max: 1000)
+        offset: Number of transactions to skip for pagination (default: 0)
+        start_date: Filter transactions from this date onwards. Supports natural language like 'last month', 'yesterday', '30 days ago'
+        end_date: Filter transactions up to this date. Supports natural language
+        account_id: Filter by specific account ID
+        category_id: Filter by specific category ID
+        verbose: Output format control (default: False)
+            - False: Returns compact format with essential fields only (id, date, amount, merchant, plaidName, category, account, pending, needsReview, notes)
+                     Reduces context usage by ~80% - ideal for most queries
+            - True: Returns complete transaction details with all metadata, nested objects, and timestamps
+                    Use when you need full data for analysis or updates
+
+    Returns:
+        JSON string containing transaction list
     """
     if not mm_client:
         raise ValueError("MonarchMoney client not initialized")
@@ -910,18 +924,23 @@ async def get_transactions_batch(
     queries: str,
     verbose: bool = False
 ) -> str:
-    """Execute multiple transaction queries efficiently in batch.
+    """Execute multiple transaction queries efficiently in parallel batch processing.
 
     Args:
-        queries: JSON string of query objects, each with optional: limit, offset, start_date, end_date, account_id, category_id
-        verbose: If False (default), returns compact format with essential fields only. Set True for full transaction details.
+        queries: JSON string array of query objects. Each query supports: limit, offset, start_date, end_date, account_id, category_id
+        verbose: Output format control (default: False)
+            - False: Returns compact format with essential fields only (~80% reduction in data size)
+            - True: Returns complete transaction details with all metadata
 
-    Example:
+    Example queries:
         [
             {"start_date": "last month", "category_id": "cat123"},
             {"account_id": "acc456", "limit": 50},
             {"start_date": "this year", "end_date": "today"}
         ]
+
+    Returns:
+        JSON with batch_summary (total_queries, total_transactions) and results array
     """
     if not mm_client:
         raise ValueError("MonarchMoney client not initialized")

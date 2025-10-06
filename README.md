@@ -64,12 +64,18 @@ Add the server to your `.mcp.json` configuration file:
 List all accounts with their balances and details.
 
 ### `get_transactions`
-Get transactions with optional filtering:
-- `start_date`: Filter transactions from this date (YYYY-MM-DD)
-- `end_date`: Filter transactions to this date (YYYY-MM-DD)
-- `account_ids`: List of account IDs to filter by
-- `category_ids`: List of category IDs to filter by
-- `limit`: Maximum number of transactions to return
+Get transactions with smart output formatting and flexible filtering:
+- **Smart Output**: Returns compact format by default (reduces data size by ~80%)
+  - Compact fields: `id`, `date`, `amount`, `merchant`, `plaidName`, `category`, `account`, `pending`, `needsReview`, `notes`
+  - Set `verbose=True` for complete transaction details with all metadata
+- **Flexible Date Filtering**: Supports natural language dates
+  - Examples: `"last month"`, `"yesterday"`, `"30 days ago"`, `"this year"`
+  - Also supports standard formats: `"2024-01-01"`, `"01/15/2024"`
+- **Additional Filters**:
+  - `account_id`: Filter by specific account
+  - `category_id`: Filter by specific category
+  - `limit`: Maximum transactions to return (default: 100, max: 1000)
+  - `offset`: Pagination offset
 
 ### `get_categories`
 List all transaction categories.
@@ -96,9 +102,29 @@ Get net worth snapshots over time.
 Use the get_accounts tool to see all my accounts and their current balances.
 ```
 
-### Transaction Analysis
+### Transaction Analysis (Compact Format)
 ```
-Get all transactions from January 2024 using get_transactions with start_date "2024-01-01" and end_date "2024-01-31".
+Get all transactions from last month - returns compact format with essential fields only.
+```
+
+The compact format is perfect for most queries and looks like:
+```json
+{
+  "id": "123456789012345678",
+  "date": "2025-08-24",
+  "amount": -8.49,
+  "merchant": "Corner Deli",
+  "plaidName": "CORNER DELI NYC",
+  "category": "Restaurants & Bars",
+  "account": "Main Credit Card",
+  "pending": false,
+  "needsReview": true
+}
+```
+
+### Transaction Analysis (Verbose Format)
+```
+Get detailed transaction data with verbose=True to see all metadata, nested objects, and timestamps.
 ```
 
 ### Budget Tracking
@@ -143,6 +169,7 @@ This implementation has evolved significantly from the original forked repositor
 - **Structured Logging**: Professional logging with `structlog` for debugging and analytics tracking
 
 ### Enhanced Financial Intelligence
+- **Compact Transaction Format**: Smart output formatting that reduces data size by ~80% while preserving essential fields (verbose mode available for full details)
 - **Batch Operations**: Intelligent tools like `get_complete_financial_overview()` that combine 5 APIs in parallel execution
 - **Pattern Analysis**: `analyze_spending_patterns()` with multi-month trend analysis and predictive forecasting
 - **Smart Date Processing**: Natural language date parsing ("last month", "this year") with flexible fallback mechanisms
