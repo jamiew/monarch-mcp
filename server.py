@@ -485,9 +485,17 @@ async def api_call_with_retry(func: Any, *args: Any, **kwargs: Any) -> Any:
         return await func(*args, **kwargs)
     except Exception as e:
         error_str = str(e).lower()
-        if "401" in error_str or "unauthorized" in error_str or "session" in error_str:
-            logger.warning(f"API call failed with session error: {e}")
-            logger.info("Clearing session and re-initializing client")
+        # Check for various authentication/authorization errors
+        auth_error_indicators = [
+            "401", "unauthorized", "session",
+            "bad credentials", "invalid credentials",
+            "authentication failed", "auth failed",
+            "forbidden", "403", "not authenticated"
+        ]
+
+        if any(indicator in error_str for indicator in auth_error_indicators):
+            logger.warning(f"API call failed with authentication/session error: {e}")
+            logger.info("Clearing session files and re-initializing client with fresh authentication")
             clear_session()
             await initialize_client()
             # Retry once
@@ -519,28 +527,43 @@ async def initialize_client() -> None:
             # Load session with comprehensive stdout suppression
             import contextlib
             import io
-            
+
             # Capture and discard both stdout and stderr during session loading
             stdout_capture = io.StringIO()
             stderr_capture = io.StringIO()
             with contextlib.redirect_stdout(stdout_capture), \
                  contextlib.redirect_stderr(stderr_capture):
                 mm_client.load_session(str(session_file))
-            
+
             # Log what was captured for debugging
             if stdout_capture.getvalue():
                 logger.debug(f"Captured stdout during load_session: '{stdout_capture.getvalue()}'")
             if stderr_capture.getvalue():
                 logger.debug(f"Captured stderr during load_session: '{stderr_capture.getvalue()}'")
-            
+
             logger.info("Session loaded, testing validity")
             # Test if session is still valid with a simple API call
             accounts = await mm_client.get_accounts()
             logger.info(f"Session valid - found {len(accounts) if accounts else 0} accounts")
             return
-            
+
         except Exception as e:
-            logger.warning(f"Session invalid or expired: {e}")
+            error_str = str(e).lower()
+            # Check if it's an authentication error
+            auth_error_indicators = [
+                "401", "unauthorized", "session",
+                "bad credentials", "invalid credentials",
+                "authentication failed", "auth failed",
+                "forbidden", "403", "not authenticated"
+            ]
+
+            if any(indicator in error_str for indicator in auth_error_indicators):
+                logger.warning(f"Session invalid due to authentication error: {e}")
+                logger.info("Clearing old session files before fresh login")
+                clear_session()
+            else:
+                logger.warning(f"Session invalid or expired: {e}")
+
             logger.info("Will attempt fresh login")
     else:
         if not session_file.exists():
