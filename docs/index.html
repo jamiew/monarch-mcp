@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Monarch Money MCP Server</title>
+    <meta name="description" content="An MCP server that provides AI assistants access to Monarch Money financial data through 20+ tools.">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --accent-color: #e85d4d;
+            --text-primary: #000000;
+            --text-secondary: #666666;
+            --bg-primary: #ffffff;
+            --bg-secondary: #fafafa;
+            --border-color: #e0e0e0;
+            --code-bg: #1a1a1a;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: var(--text-primary);
+            background: var(--bg-primary);
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 1.5rem;
+        }
+
+        /* Header */
+        header {
+            background: var(--bg-primary);
+            border-bottom: 1px solid var(--border-color);
+            padding: 1.5rem 0;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            backdrop-filter: blur(10px);
+            background: rgba(255, 255, 255, 0.95);
+        }
+
+        .header-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            text-decoration: none;
+        }
+
+        .logo-icon {
+            width: 36px;
+            height: 36px;
+            background: var(--accent-color);
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 1.25rem;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 2rem;
+            align-items: center;
+        }
+
+        .nav-links a {
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-weight: 500;
+            transition: color 0.2s;
+        }
+
+        .nav-links a:hover {
+            color: var(--text-primary);
+        }
+
+        .btn-primary {
+            background: var(--text-primary);
+            color: white;
+            padding: 0.625rem 1.25rem;
+            border-radius: 6px;
+            text-decoration: none;
+            font-weight: 600;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .btn-primary:hover {
+            background: var(--accent-color);
+        }
+
+        /* Hero Section */
+        .hero {
+            padding: 4rem 0 3rem;
+            text-align: center;
+        }
+
+        .hero h1 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+            color: var(--text-primary);
+        }
+
+        .hero p {
+            font-size: 1.125rem;
+            color: var(--text-secondary);
+            max-width: 650px;
+            margin: 0 auto 2rem;
+        }
+
+        .hero-stats {
+            display: flex;
+            gap: 2rem;
+            justify-content: center;
+            flex-wrap: wrap;
+            margin: 2rem 0;
+        }
+
+        .stat {
+            text-align: center;
+        }
+
+        .stat-number {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--accent-color);
+        }
+
+        .stat-label {
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        /* Tools Section */
+        .tools {
+            padding: 3rem 0;
+            background: var(--bg-secondary);
+        }
+
+        .section-title {
+            font-size: 1.75rem;
+            font-weight: 700;
+            text-align: center;
+            margin-bottom: 0.5rem;
+        }
+
+        .section-subtitle {
+            text-align: center;
+            color: var(--text-secondary);
+            margin-bottom: 3rem;
+        }
+
+        .tools-list {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        .tool-group {
+            margin-bottom: 3rem;
+        }
+
+        .tool-group h3 {
+            font-size: 1.125rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+            color: var(--text-primary);
+            border-bottom: 2px solid var(--accent-color);
+            padding-bottom: 0.5rem;
+        }
+
+        .tool-item {
+            background: var(--bg-primary);
+            padding: 1.25rem;
+            margin-bottom: 1rem;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+        }
+
+        .tool-name {
+            font-family: 'Courier New', monospace;
+            font-size: 0.938rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 0.5rem;
+        }
+
+        .tool-desc {
+            font-size: 0.938rem;
+            color: var(--text-secondary);
+            line-height: 1.5;
+        }
+
+        .tool-params {
+            margin-top: 0.75rem;
+            padding-top: 0.75rem;
+            border-top: 1px solid var(--border-color);
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+        }
+
+        .tool-params-title {
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 0.25rem;
+        }
+
+        .tool-params ul {
+            margin-left: 1.25rem;
+            margin-top: 0.5rem;
+        }
+
+        .tool-params li {
+            margin-bottom: 0.25rem;
+        }
+
+        /* Installation Section */
+        .installation {
+            padding: 3rem 0;
+        }
+
+        .code-block {
+            background: var(--code-bg);
+            color: #e0e0e0;
+            padding: 1.5rem;
+            border-radius: 8px;
+            overflow-x: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 0.875rem;
+            line-height: 1.7;
+            margin: 1.5rem 0;
+        }
+
+        .code-block pre {
+            margin: 0;
+        }
+
+        .info-box {
+            background: var(--bg-secondary);
+            border-left: 3px solid var(--accent-color);
+            padding: 1.25rem;
+            border-radius: 6px;
+            margin: 2rem 0;
+        }
+
+        .info-box h3 {
+            font-size: 1rem;
+            margin-bottom: 0.75rem;
+        }
+
+        .info-box p {
+            color: var(--text-secondary);
+            font-size: 0.938rem;
+        }
+
+        /* Credits Section */
+        .credits {
+            padding: 3rem 0;
+            background: var(--bg-secondary);
+        }
+
+        .credits-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1.5rem;
+            margin-top: 2rem;
+            max-width: 900px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        .credit-card {
+            background: var(--bg-primary);
+            padding: 1.5rem;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+        }
+
+        .credit-card h3 {
+            font-size: 1.125rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+        }
+
+        .credit-card p {
+            color: var(--text-secondary);
+            margin-bottom: 0.5rem;
+            font-size: 0.938rem;
+        }
+
+        .credit-card a {
+            color: var(--accent-color);
+            text-decoration: none;
+            font-weight: 600;
+        }
+
+        .credit-card a:hover {
+            text-decoration: underline;
+        }
+
+        /* Footer */
+        footer {
+            background: var(--bg-primary);
+            padding: 2rem 0;
+            text-align: center;
+            border-top: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+        }
+
+        footer a {
+            color: var(--accent-color);
+            text-decoration: none;
+        }
+
+        footer a:hover {
+            text-decoration: underline;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .hero h1 {
+                font-size: 2rem;
+            }
+
+            .hero p {
+                font-size: 1rem;
+            }
+
+            .nav-links {
+                display: none;
+            }
+
+            .section-title {
+                font-size: 1.5rem;
+            }
+
+            .hero-stats {
+                gap: 1.5rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <div class="header-content">
+                <a href="#" class="logo">
+                    <div class="logo-icon">👑</div>
+                    <span>Monarch Money MCP</span>
+                </a>
+                <nav class="nav-links">
+                    <a href="#tools">Tools</a>
+                    <a href="#installation">Installation</a>
+                    <a href="#credits">Credits</a>
+                    <a href="https://github.com/jamiew/monarch-money-mcp" class="btn-primary">
+                        <span>GitHub</span>
+                        <span>→</span>
+                    </a>
+                </nav>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <section class="hero">
+            <div class="container">
+                <h1>Monarch Money MCP Server</h1>
+                <p>
+                    An MCP server that provides AI assistants with access to Monarch Money financial data.
+                </p>
+                <div class="hero-stats">
+                    <div class="stat">
+                        <div class="stat-number">20+</div>
+                        <div class="stat-label">Tools</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-number">42</div>
+                        <div class="stat-label">Tests</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-number">100%</div>
+                        <div class="stat-label">Type-Safe</div>
+                    </div>
+                </div>
+                <a href="#installation" class="btn-primary" style="font-size: 1rem; padding: 0.75rem 1.5rem; margin-top: 1rem;">
+                    Get Started
+                </a>
+            </div>
+        </section>
+
+        <section id="tools" class="tools">
+            <div class="container">
+                <h2 class="section-title">Available Tools</h2>
+                <p class="section-subtitle">
+                    Complete coverage of the Monarch Money API
+                </p>
+
+                <div class="tools-list">
+                    <div class="tool-group">
+                        <h3>Core Data Access</h3>
+
+                        <div class="tool-item">
+                            <div class="tool-name">get_accounts</div>
+                            <div class="tool-desc">Retrieve all linked financial accounts with balances and details.</div>
+                        </div>
+
+                        <div class="tool-item">
+                            <div class="tool-name">get_transactions</div>
+                            <div class="tool-desc">Fetch transactions with flexible filtering by date, account, and category.</div>
+                            <div class="tool-params">
+                                <div class="tool-params-title">Key features:</div>
+                                <ul>
+                                    <li>Natural language dates: "last month", "30 days ago", "this year"</li>
+                                    <li>Compact format reduces data size by ~80% (verbose mode available)</li>
+                                    <li>Filter by account, category, date range</li>
+                                    <li>Pagination with limit and offset</li>
+                                </ul>
+                            </div>
+                        </div>
+
+                        <div class="tool-item">
+                            <div class="tool-name">get_budgets</div>
+                            <div class="tool-desc">Retrieve budget information and spending analysis.</div>
+                        </div>
+
+                        <div class="tool-item">
+                            <div class="tool-name">get_cashflow</div>
+                            <div class="tool-desc">Analyze income and expense cashflow data.</div>
+                        </div>
+
+                        <div class="tool-item">
+                            <div class="tool-name">get_transaction_categories</div>
+                            <div class="tool-desc">List all available transaction categories.</div>
+                        </div>
+                    </div>
+
+                    <div class="tool-group">
+                        <h3>Transaction Management</h3>
+
+                        <div class="tool-item">
+                            <div class="tool-name">create_transaction</div>
+                            <div class="tool-desc">Create a new transaction with amount, description, category, and date.</div>
+                        </div>
+
+                        <div class="tool-item">
+                            <div class="tool-name">update_transaction</div>
+                            <div class="tool-desc">Update an existing transaction's details.</div>
+                        </div>
+                    </div>
+
+                    <div class="tool-group">
+                        <h3>Investment & Banking</h3>
+
+                        <div class="tool-item">
+                            <div class="tool-name">get_account_holdings</div>
+                            <div class="tool-desc">View investment portfolio holdings from brokerage accounts.</div>
+                        </div>
+
+                        <div class="tool-item">
+                            <div class="tool-name">get_account_history</div>
+                            <div class="tool-desc">Track historical account balance data over time.</div>
+                        </div>
+
+                        <div class="tool-item">
+                            <div class="tool-name">get_institutions</div>
+                            <div class="tool-desc">List all linked financial institutions.</div>
+                        </div>
+
+                        <div class="tool-item">
+                            <div class="tool-name">refresh_accounts</div>
+                            <div class="tool-desc">Request a refresh of account data from financial institutions.</div>
+                        </div>
+                    </div>
+
+                    <div class="tool-group">
+                        <h3>Planning & Budgets</h3>
+
+                        <div class="tool-item">
+                            <div class="tool-name">get_recurring_transactions</div>
+                            <div class="tool-desc">View scheduled recurring transactions and bills.</div>
+                        </div>
+
+                        <div class="tool-item">
+                            <div class="tool-name">set_budget_amount</div>
+                            <div class="tool-desc">Set or update budget amount for a specific category.</div>
+                        </div>
+
+                        <div class="tool-item">
+                            <div class="tool-name">create_manual_account</div>
+                            <div class="tool-desc">Create a manually tracked account for cash or assets.</div>
+                        </div>
+                    </div>
+
+                    <div class="tool-group">
+                        <h3>Intelligent Analysis</h3>
+
+                        <div class="tool-item">
+                            <div class="tool-name">get_transactions_batch</div>
+                            <div class="tool-desc">Execute multiple transaction queries in parallel for efficient batch processing.</div>
+                        </div>
+
+                        <div class="tool-item">
+                            <div class="tool-name">get_spending_summary</div>
+                            <div class="tool-desc">Get spending summaries grouped by category, account, or month.</div>
+                        </div>
+
+                        <div class="tool-item">
+                            <div class="tool-name">get_complete_financial_overview</div>
+                            <div class="tool-desc">Get a comprehensive financial snapshot combining accounts, transactions, budgets, and cashflow in a single call.</div>
+                            <div class="tool-params">
+                                <div class="tool-params-title">Combines 5 API calls:</div>
+                                <ul>
+                                    <li>All accounts with current balances</li>
+                                    <li>Recent transactions for the period</li>
+                                    <li>Budget status and performance</li>
+                                    <li>Cashflow analysis (income vs expenses)</li>
+                                    <li>Transaction categories</li>
+                                </ul>
+                            </div>
+                        </div>
+
+                        <div class="tool-item">
+                            <div class="tool-name">analyze_spending_patterns</div>
+                            <div class="tool-desc">Analyze spending trends with multi-month analysis and optional predictive forecasting.</div>
+                            <div class="tool-params">
+                                <div class="tool-params-title">Provides insights on:</div>
+                                <ul>
+                                    <li>Monthly spending trends by category</li>
+                                    <li>Account usage patterns</li>
+                                    <li>Budget performance over time</li>
+                                    <li>Predictive spending forecasts (optional)</li>
+                                </ul>
+                            </div>
+                        </div>
+
+                        <div class="tool-item">
+                            <div class="tool-name">get_usage_analytics</div>
+                            <div class="tool-desc">View analytics on tool usage patterns to identify optimization opportunities.</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="installation" class="installation">
+            <div class="container">
+                <h2 class="section-title">Installation</h2>
+                <p class="section-subtitle">
+                    Setup takes just a few minutes
+                </p>
+
+                <h3 style="margin-top: 2rem; margin-bottom: 1rem;">1. Install Dependencies</h3>
+                <div class="code-block">
+                    <pre>cd /path/to/monarch-money-mcp
+uv sync</pre>
+                </div>
+
+                <h3 style="margin-top: 2rem; margin-bottom: 1rem;">2. Configure MCP Client</h3>
+                <p style="color: var(--text-secondary); margin-bottom: 1rem;">
+                    Add to your <code>.mcp.json</code> configuration:
+                </p>
+                <div class="code-block">
+                    <pre>{
+  "mcpServers": {
+    "monarch-money": {
+      "command": "/path/to/uv",
+      "args": [
+        "--directory",
+        "/path/to/monarch-money-mcp",
+        "run",
+        "python",
+        "server.py"
+      ],
+      "env": {
+        "MONARCH_EMAIL": "your-email@example.com",
+        "MONARCH_PASSWORD": "your-password",
+        "MONARCH_MFA_SECRET": "your-mfa-secret-key"
+      }
+    }
+  }
+}</pre>
+                </div>
+
+                <div class="info-box">
+                    <h3>Getting Your MFA Secret</h3>
+                    <p>
+                        1. Enable 2FA in Monarch Money settings<br>
+                        2. Click "Can't scan?" when shown the QR code<br>
+                        3. Copy the secret key (format: T5SPVJIBRNPNNINFSH5W7RFVF2XYADYX)<br>
+                        4. Use this as your MONARCH_MFA_SECRET
+                    </p>
+                </div>
+
+                <h3 style="margin-top: 2rem; margin-bottom: 1rem;">3. Use with AI Assistant</h3>
+                <p style="color: var(--text-secondary); margin-bottom: 1rem;">
+                    Example queries:
+                </p>
+                <div class="code-block">
+                    <pre>"Show me my account balances"
+"Get all transactions from last month"
+"Analyze my spending patterns for the last 3 months"
+"What's my complete financial overview for this quarter?"</pre>
+                </div>
+            </div>
+        </section>
+
+        <section id="credits" class="credits">
+            <div class="container">
+                <h2 class="section-title">Credits</h2>
+                <p class="section-subtitle">
+                    Built on open source tools
+                </p>
+                <div class="credits-grid">
+                    <div class="credit-card">
+                        <h3>MCP Server</h3>
+                        <p><strong>Author:</strong> Taurus Colvin</p>
+                        <p>
+                            <a href="https://github.com/colvint" target="_blank">@colvint</a>
+                        </p>
+                        <p>
+                            MCP server wrapper for Monarch Money with type safety and comprehensive testing.
+                        </p>
+                        <p style="margin-top: 1rem;">
+                            <a href="https://github.com/colvint/monarch-money-mcp" target="_blank">
+                                View Original Repository →
+                            </a>
+                        </p>
+                    </div>
+
+                    <div class="credit-card">
+                        <h3>MonarchMoney Library</h3>
+                        <p><strong>Author:</strong> hammem</p>
+                        <p>
+                            <a href="https://github.com/hammem" target="_blank">@hammem</a>
+                        </p>
+                        <p>
+                            The Python library that provides API access to Monarch Money.
+                        </p>
+                        <p style="margin-top: 1rem;">
+                            <a href="https://github.com/hammem/monarchmoney" target="_blank">
+                                View Library →
+                            </a>
+                        </p>
+                    </div>
+
+                    <div class="credit-card">
+                        <h3>Model Context Protocol</h3>
+                        <p><strong>By:</strong> Anthropic</p>
+                        <p>
+                            Open protocol for connecting AI assistants to external data sources.
+                        </p>
+                        <p style="margin-top: 1rem;">
+                            <a href="https://modelcontextprotocol.io" target="_blank">
+                                Learn More →
+                            </a>
+                        </p>
+                    </div>
+
+                    <div class="credit-card">
+                        <h3>Monarch Money</h3>
+                        <p><strong>Service:</strong> Financial Management</p>
+                        <p>
+                            Platform for tracking accounts, budgets, and investments.
+                        </p>
+                        <p style="margin-top: 1rem;">
+                            <a href="https://www.monarchmoney.com" target="_blank">
+                                Visit Monarch Money →
+                            </a>
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <div class="container">
+            <p>
+                MIT License •
+                <a href="https://github.com/jamiew/monarch-money-mcp" target="_blank">GitHub</a> •
+                <a href="https://github.com/jamiew/monarch-money-mcp/issues" target="_blank">Issues</a>
+            </p>
+        </div>
+    </footer>
+</body>
+</html>
