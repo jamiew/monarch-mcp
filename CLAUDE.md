@@ -41,10 +41,21 @@ tail -f ~/Library/Logs/Claude/mcp-server-monarch-money.log | grep "\[ANALYTICS\]
 
 # View session summaries and top tools
 tail -f ~/Library/Logs/Claude/mcp-server-monarch-money.log | grep "session_summary"
+
+# NEW: Debug tool calls with arguments (for optimization)
+tail -f ~/Library/Logs/Claude/mcp-server-monarch-money.log | grep "\[TOOL_CALL\]"
+
+# NEW: Monitor result sizes for context usage optimization
+tail -f ~/Library/Logs/Claude/mcp-server-monarch-money.log | grep "\[RESULT_SIZE\]"
+
+# NEW: Watch for large results (> 50KB) that may need optimization
+tail -f ~/Library/Logs/Claude/mcp-server-monarch-money.log | grep "\[RESULT_SIZE\]" | grep -E "[5-9][0-9]\.[0-9]+ KB|[0-9]{3,}\.[0-9]+ KB"
 ```
 
 **Log Format Examples:**
+- `[TOOL_CALL] get_transactions | args: {'limit': 100, 'start_date': 'last month', 'verbose': False}`
 - `[ANALYTICS] tool_called: get_transactions | time: 0.234s | status: success`
+- `[RESULT_SIZE] get_transactions | chars: 12,543 | size: 12.25 KB | transactions: 42 items`
 - `[OPTIMIZATION] Consider using get_complete_financial_overview instead of separate get_accounts + get_transactions calls`
 - `[ANALYTICS] session_summary: 15 calls | top_tool: get_transactions`
 
@@ -151,10 +162,10 @@ refactor: split server.py into modular components (auth, tools, models)
 - Structured logging with `structlog` for debugging
 - Environment variables: `MONARCH_EMAIL`, `MONARCH_PASSWORD`, `MONARCH_MFA_SECRET`
 
-**Complete Monarch Money API Coverage (20 Tools)**
+**Complete Monarch Money API Coverage (21 Tools)**
 - **Core**: `get_accounts`, `get_transactions`, `get_budgets`, `get_cashflow`
 - **Categories**: `get_transaction_categories`
-- **Transactions**: `create_transaction`, `update_transaction`
+- **Transactions**: `create_transaction`, `update_transaction`, `search_transactions`
 - **Investments**: `get_account_holdings`, `get_account_history`
 - **Banking**: `get_institutions`, `refresh_accounts`
 - **Planning**: `get_recurring_transactions`, `set_budget_amount`
@@ -229,7 +240,7 @@ Server runs as MCP server configured in `.mcp.json` with:
 - **✅ Complete API Coverage**: All 14 Monarch Money API methods as tools
 
 #### Quality Metrics (Updated July 2025)
-- **42 passing tests** with comprehensive coverage including analytics features
+- **61 passing tests** with comprehensive coverage including analytics and search features
 - **MyPy errors reduced**: 111 → 84 (mainly untyped external decorators, ongoing improvement)
 - **Security**: Proper session handling and MFA support
 - **Modern stack**: FastMCP 1.12.2, Pydantic, structlog, pytest
@@ -375,7 +386,7 @@ Server runs as MCP server configured in `.mcp.json` with:
 5. **Phase 5 (Intelligence)**: ML features, advanced analytics, financial insights
 6. **Phase 6 (Ecosystem)**: MCP extensions, developer tools, architectural improvements
 
-**Current Status** (Updated July 2025): Production-ready with 42 passing tests, 20 intelligent tools, comprehensive analytics, robust error handling, and enhanced reliability. Recent critical fixes completed: date serialization, broken pipe handling, dependency updates, and enhanced date parsing. Server is stable and ready for real-world usage with excellent user experience for date filtering and error recovery.
+**Current Status** (Updated October 2025): Production-ready with 61 passing tests, 21 intelligent tools, comprehensive analytics, robust error handling, and enhanced reliability. Recent features: search_transactions tool for efficient context-aware search, detailed tool call debugging with result size tracking. Recent critical fixes completed: date serialization, broken pipe handling, dependency updates, and enhanced date parsing. Server is stable and ready for real-world usage with excellent user experience for date filtering and error recovery.
 
 ## Documentation References
 

@@ -69,3 +69,7 @@ uv.lock
 ._*
 Thumbs.db
 ehthumbs.db
+
+# Newish
+logs.sh
+.claude/settings.local.json

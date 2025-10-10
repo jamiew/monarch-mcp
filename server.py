@@ -295,6 +295,40 @@ def convert_dates_to_strings(obj: DateConvertible) -> JsonSerializable:
         return obj
 
 
+def extract_transactions_list(response: Any) -> List[Dict[str, Any]]:
+    """
+    Extract the transactions list from monarchmoney API response.
+
+    The monarchmoney library returns:
+    {
+        "allTransactions": {
+            "totalCount": 123,
+            "results": [...]  # <-- actual transactions
+        },
+        "transactionRules": ...
+    }
+
+    This function extracts the results list from the nested structure.
+    """
+    if isinstance(response, list):
+        # Already a list (shouldn't happen with current API)
+        return response
+    elif isinstance(response, dict):
+        # Check for the nested structure
+        if "allTransactions" in response:
+            all_txns = response["allTransactions"]
+            if isinstance(all_txns, dict) and "results" in all_txns:
+                results = all_txns["results"]
+                if isinstance(results, list):
+                    return results
+        # Fallback: maybe it's a different structure
+        logger.warning(f"Unexpected transaction response structure: {list(response.keys())}")
+        return []
+    else:
+        logger.error(f"Unexpected transaction response type: {type(response)}")
+        return []
+
+
 def format_transactions_compact(transactions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Format transactions in a compact format with only essential fields.
@@ -402,40 +436,71 @@ current_session_id = str(uuid.uuid4())
 usage_patterns: Dict[str, List[Dict[str, Any]]] = {}
 
 def track_usage(func: Any) -> Any:
-    """Decorator to track tool usage patterns for analytics."""
+    """Decorator to track tool usage patterns for analytics with detailed debugging."""
     @functools.wraps(func)
     async def wrapper(*args: Any, **kwargs: Any) -> Any:
         start_time = time.time()
         tool_name = func.__name__
-        
+
+        # Format args for logging (exclude sensitive data)
+        safe_kwargs = {k: v for k, v in kwargs.items() if k not in ['password', 'mfa_secret']}
+
+        # Log tool call with arguments BEFORE execution
+        logger.info(f"[TOOL_CALL] {tool_name} | args: {safe_kwargs}")
+
         # Track this call
         call_info = {
             "session_id": current_session_id,
             "tool_name": tool_name,
             "timestamp": time.time(),
             "args": list(args),
-            "kwargs": {k: v for k, v in kwargs.items() if k not in ['password', 'mfa_secret']},  # Exclude sensitive data
+            "kwargs": safe_kwargs,
         }
-        
+
         try:
             result = await func(*args, **kwargs)
             execution_time = time.time() - start_time
+
+            # Calculate result size and stats
+            result_chars = len(str(result)) if result else 0
+            result_kb = result_chars / 1024
+
+            # Try to extract additional stats from JSON results
+            extra_stats = ""
+            try:
+                if isinstance(result, str) and result.strip().startswith('{'):
+                    import json
+                    parsed = json.loads(result)
+                    if isinstance(parsed, dict):
+                        # Look for common list fields to count items
+                        for key in ['transactions', 'accounts', 'budgets', 'categories', 'results']:
+                            if key in parsed and isinstance(parsed[key], list):
+                                extra_stats += f" | {key}: {len(parsed[key])} items"
+                        # Check for batch summaries
+                        if 'batch_summary' in parsed:
+                            summary = parsed['batch_summary']
+                            if isinstance(summary, dict):
+                                extra_stats += f" | batch: {summary}"
+            except (json.JSONDecodeError, KeyError, TypeError):
+                pass
+
             call_info.update({
                 "status": "success",
                 "execution_time": execution_time,
-                "result_size": len(str(result)) if result else 0
+                "result_size": result_chars
             })
-            
-            # Log for analytics
+
+            # Log for analytics with detailed size info
             logger.info(f"[ANALYTICS] tool_called: {tool_name} | time: {execution_time:.3f}s | status: success")
-            
+            logger.info(f"[RESULT_SIZE] {tool_name} | chars: {result_chars:,} | size: {result_kb:.2f} KB{extra_stats}")
+
             # Track usage patterns in memory for batching analysis
             if tool_name not in usage_patterns:
                 usage_patterns[tool_name] = []
             usage_patterns[tool_name].append(call_info)
-            
+
             return result
-            
+
         except Exception as e:
             execution_time = time.time() - start_time
             call_info.update({
@@ -443,10 +508,10 @@ def track_usage(func: Any) -> Any:
                 "execution_time": execution_time,
                 "error": str(e)
             })
-            
+
             logger.error(f"[ANALYTICS] tool_error: {tool_name} | time: {execution_time:.3f}s | error: {str(e)}")
             raise
-            
+
     return wrapper
 
 # Initialize the FastMCP server
@@ -672,27 +737,117 @@ async def get_transactions(
         # Build filter parameters with flexible date parsing
         filters: Dict[str, Any] = build_date_filter(start_date, end_date)
 
+        # monarchmoney expects account_ids and category_ids as LISTS
         if account_id:
-            filters["account_id"] = account_id
+            filters["account_ids"] = [account_id]
         if category_id:
-            filters["category_id"] = category_id
+            filters["category_ids"] = [category_id]
 
-        transactions = await api_call_with_retry(
+        response = await api_call_with_retry(
             mm_client.get_transactions,
             limit=limit,
             offset=offset,
             **filters
         )
+        # Extract transactions list from nested response structure
+        transactions = extract_transactions_list(response)
         transactions = convert_dates_to_strings(transactions)
 
         # Format output based on verbose flag
         if not verbose and isinstance(transactions, list):
             transactions = format_transactions_compact(transactions)
 
-        logger.info(f"Transactions retrieved successfully, count: {len(transactions) if isinstance(transactions, list) else 'unknown'}")
+        logger.info(f"Transactions retrieved successfully, count: {len(transactions)}")
         return json.dumps(transactions, indent=2)
     except Exception as e:
         logger.error(f"Failed to fetch transactions: {e} (limit={limit}, start_date={start_date})")
+        raise
+
+
+@mcp.tool()
+@track_usage
+async def search_transactions(
+    query: str,
+    limit: int = 500,
+    offset: int = 0,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    account_id: Optional[str] = None,
+    category_id: Optional[str] = None,
+    verbose: bool = False
+) -> str:
+    """Search transactions by text using Monarch Money's built-in search.
+
+    Uses the Monarch Money API's native search functionality to find transactions
+    matching the query across merchant names, descriptions, notes, and other fields.
+    Returns only matching results to reduce context usage.
+
+    Args:
+        query: Search term to find in transactions (searches merchant names, descriptions, notes)
+        limit: Maximum transactions to return (default: 500, max: 1000)
+        offset: Number of transactions to skip for pagination (default: 0)
+        start_date: Filter transactions from this date onwards (supports natural language)
+        end_date: Filter transactions up to this date (supports natural language)
+        account_id: Filter by specific account ID
+        category_id: Filter by specific category ID
+        verbose: Output format control (default: False)
+            - False: Returns compact format (~80% reduction)
+            - True: Returns complete transaction details
+
+    Returns:
+        JSON string with search results (list of transactions matching the query)
+    """
+    if not mm_client:
+        raise ValueError("MonarchMoney client not initialized")
+
+    if not query or not query.strip():
+        raise ValueError("Query parameter cannot be empty")
+
+    try:
+        query_str = query.strip()
+        logger.info(f"Searching transactions for '{query_str}': limit={limit}, start_date={start_date}, end_date={end_date}")
+
+        # Build filter parameters
+        filters: Dict[str, Any] = build_date_filter(start_date, end_date)
+
+        # monarchmoney expects account_ids and category_ids as LISTS
+        if account_id:
+            filters["account_ids"] = [account_id]
+        if category_id:
+            filters["category_ids"] = [category_id]
+
+        # Use the library's built-in search parameter
+        filters["search"] = query_str
+
+        # Fetch transactions from API with search filter
+        response = await api_call_with_retry(
+            mm_client.get_transactions,
+            limit=limit,
+            offset=offset,
+            **filters
+        )
+        # Extract transactions list from nested response structure
+        transactions = extract_transactions_list(response)
+        transactions = convert_dates_to_strings(transactions)
+
+        # Format output based on verbose flag
+        if not verbose:
+            transactions = format_transactions_compact(transactions)
+
+        result = {
+            "search_metadata": {
+                "query": query_str,
+                "result_count": len(transactions),
+                "filters_applied": {k: v for k, v in filters.items() if k != "search"}
+            },
+            "transactions": transactions
+        }
+
+        logger.info(f"Search complete: '{query_str}' returned {len(transactions)} results")
+        return json.dumps(result, indent=2)
+
+    except Exception as e:
+        logger.error(f"Failed to search transactions: {e} (query='{query}')")
         raise
 
 
@@ -978,16 +1133,19 @@ async def get_transactions_batch(
         async def execute_single_query(query: Dict[str, Any]) -> Dict[str, Any]:
             filters = build_date_filter(query.get("start_date"), query.get("end_date"))
 
+            # monarchmoney expects account_ids and category_ids as LISTS
             if query.get("account_id"):
-                filters["account_id"] = query["account_id"]
+                filters["account_ids"] = [query["account_id"]]
             if query.get("category_id"):
-                filters["category_id"] = query["category_id"]
+                filters["category_ids"] = [query["category_id"]]
 
-            transactions = await mm_client.get_transactions(
+            response = await mm_client.get_transactions(
                 limit=query.get("limit", 100),
                 offset=query.get("offset", 0),
                 **filters
             )
+            # Extract transactions list from nested response structure
+            transactions = extract_transactions_list(response)
             transactions = convert_dates_to_strings(transactions)
 
             # Format output based on verbose flag
@@ -1048,10 +1206,9 @@ async def get_spending_summary(
         
         # Get transactions for the period
         filters = build_date_filter(start_date, end_date)
-        transactions = await mm_client.get_transactions(limit=1000, **filters)
-        
-        if not isinstance(transactions, list):
-            transactions = []
+        response = await mm_client.get_transactions(limit=1000, **filters)
+        # Extract transactions list from nested response structure
+        transactions = extract_transactions_list(response)
         
         # Aggregate spending data
         summary = {"period": {"start": start_date, "end": end_date}, "groups": {}, "totals": {"income": 0, "expenses": 0, "net": 0}}
@@ -1174,15 +1331,17 @@ async def get_complete_financial_overview(
             results["cashflow"] = {"error": str(cashflow)}
         
         if not isinstance(transactions, Exception):
-            results["transactions"] = convert_dates_to_strings(transactions)
+            # Extract transactions list from nested response structure
+            transactions_list = extract_transactions_list(transactions)
+            results["transactions"] = convert_dates_to_strings(transactions_list)
             # Add intelligent transaction analysis
-            if isinstance(transactions, list):
+            if isinstance(transactions_list, list):
                 results["transaction_summary"] = {
-                    "total_count": len(transactions),
-                    "total_income": sum(float(t.get("amount", 0)) for t in transactions if float(t.get("amount", 0)) > 0),
-                    "total_expenses": sum(abs(float(t.get("amount", 0))) for t in transactions if float(t.get("amount", 0)) < 0),
-                    "unique_categories": len(set(t.get("category", {}).get("name", "Unknown") for t in transactions if isinstance(t.get("category"), dict))),
-                    "unique_accounts": len(set(t.get("account", {}).get("name", "Unknown") for t in transactions if isinstance(t.get("account"), dict)))
+                    "total_count": len(transactions_list),
+                    "total_income": sum(float(t.get("amount", 0)) for t in transactions_list if float(t.get("amount", 0)) > 0),
+                    "total_expenses": sum(abs(float(t.get("amount", 0))) for t in transactions_list if float(t.get("amount", 0)) < 0),
+                    "unique_categories": len(set(t.get("category", {}).get("name", "Unknown") for t in transactions_list if isinstance(t.get("category"), dict))),
+                    "unique_accounts": len(set(t.get("account", {}).get("name", "Unknown") for t in transactions_list if isinstance(t.get("account"), dict)))
                 }
         else:
             results["transactions"] = {"error": str(transactions)}
@@ -1267,13 +1426,16 @@ async def analyze_spending_patterns(
             "budget_performance": {},
         }
         
-        if not isinstance(transactions, Exception) and isinstance(transactions, list):
+        if not isinstance(transactions, Exception):
+            # Extract transactions list from nested response structure
+            transactions_list = extract_transactions_list(transactions)
+
             # Monthly spending trends
             monthly_data = {}
             category_totals = {}
             account_usage = {}
-            
-            for txn in transactions:
+
+            for txn in transactions_list:
                 txn_date = txn.get("date", "")
                 amount = float(txn.get("amount", 0))
                 category_name = txn.get("category", {}).get("name", "Uncategorized") if isinstance(txn.get("category"), dict) else "Uncategorized"
@@ -1331,17 +1493,18 @@ async def analyze_spending_patterns(
         
         if not isinstance(budgets, Exception):
             analysis["budget_performance"] = convert_dates_to_strings(budgets)
-        
+
         # Add metadata
+        txn_count = len(transactions_list) if not isinstance(transactions, Exception) else 0
         analysis["_metadata"] = {
             "api_calls_made": 4,
-            "total_transactions_analyzed": len(transactions) if isinstance(transactions, list) else 0,
+            "total_transactions_analyzed": txn_count,
             "analysis_timestamp": datetime.now().isoformat()
         }
-        
+
         log.info("Spending pattern analysis completed",
                 lookback_months=lookback_months,
-                transactions_analyzed=len(transactions) if isinstance(transactions, list) else 0,
+                transactions_analyzed=txn_count,
                 include_forecasting=include_forecasting)
         
         return json.dumps(analysis, indent=2)
@@ -1460,19 +1623,35 @@ async def main() -> None:
 if __name__ == "__main__":
     # Add signal handling for graceful shutdown
     import signal
-    
+
     def signal_handler(signum, frame):
         logger.info(f"Received signal {signum}, shutting down gracefully")
         # Let asyncio handle the shutdown
-        
+
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
-    
+
     try:
         asyncio.run(main())
+    except ExceptionGroup as eg:  # type: ignore[misc]
+        # Handle exception groups (from anyio TaskGroups) - filter out expected shutdown errors
+        remaining_exceptions = []
+        for exc in eg.exceptions:
+            if not isinstance(exc, (BrokenPipeError, ConnectionResetError, OSError)):
+                remaining_exceptions.append(exc)
+
+        if remaining_exceptions:
+            logger.error(f"Fatal error: {eg}")
+            raise
+        else:
+            # All exceptions were shutdown-related - exit quietly
+            logger.info("Shutdown complete (broken pipe expected during client disconnect)")
     except BrokenPipeError:
-        # Handle broken pipe at the top level as well
+        # Handle broken pipe at the top level (direct exception, not in ExceptionGroup)
         logger.info("Broken pipe during shutdown - exiting quietly")
+    except ConnectionResetError:
+        # Handle connection reset at the top level (direct exception)
+        logger.info("Connection reset during shutdown - exiting quietly")
     except KeyboardInterrupt:
         logger.info("Interrupted by user - exiting")
     except Exception as e:
