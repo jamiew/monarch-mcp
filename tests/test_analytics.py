@@ -41,50 +41,6 @@ class TestUsageAnalytics:
         finally:
             server.mm_client = original_client
 
-    @pytest.mark.asyncio
-    async def test_get_usage_analytics(self) -> None:
-        """Test usage analytics generation."""
-        # Clear and setup test data
-        server.usage_patterns.clear()
-        server.usage_patterns["get_accounts"] = [
-            {"tool_name": "get_accounts", "timestamp": 1000, "status": "success", "execution_time": 0.5},
-            {"tool_name": "get_accounts", "timestamp": 1001, "status": "success", "execution_time": 0.3}
-        ]
-        server.usage_patterns["get_transactions"] = [
-            {"tool_name": "get_transactions", "timestamp": 1002, "status": "success", "execution_time": 1.2}
-        ]
-        
-        mock_client = AsyncMock()
-        original_client = server.mm_client
-        server.mm_client = mock_client
-        
-        try:
-            result = await server.get_usage_analytics()
-            
-            assert isinstance(result, str)
-            analytics = json.loads(result)
-            
-            # Verify basic analytics structure
-            assert "session_id" in analytics
-            assert "total_tools_called" in analytics
-            assert "tools_usage_frequency" in analytics
-            assert "performance_metrics" in analytics
-            
-            # Verify counts
-            assert analytics["total_tools_called"] == 3
-            assert analytics["tools_usage_frequency"]["get_accounts"] == 2
-            assert analytics["tools_usage_frequency"]["get_transactions"] == 1
-            
-            # Verify performance metrics
-            perf = analytics["performance_metrics"]
-            assert "avg_execution_time" in perf
-            assert "max_execution_time" in perf
-            assert perf["max_execution_time"] == 1.2
-            
-        finally:
-            server.mm_client = original_client
-
-
 class TestBatchTools:
     """Test intelligent batch operations."""
     
@@ -282,13 +238,12 @@ class TestToolCounts:
         """Test that new batch analysis tools are available."""
         new_tools = [
             "get_complete_financial_overview",
-            "analyze_spending_patterns", 
-            "get_usage_analytics"
+            "analyze_spending_patterns"
         ]
-        
+
         for tool_name in new_tools:
             assert hasattr(server, tool_name), f"Tool {tool_name} not found"
-        
+
         # Verify tools are decorated properly
         for tool_name in new_tools:
             func = getattr(server, tool_name)

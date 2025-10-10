@@ -857,16 +857,21 @@ async def get_budgets(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None
 ) -> str:
-    """Retrieve budget information."""
+    """Retrieve budget information with flexible date filtering.
+
+    Args:
+        start_date: Filter budgets from this date onwards. Supports natural language like 'last month', 'this year'
+        end_date: Filter budgets up to this date. Supports natural language
+
+    Returns:
+        JSON string containing budget information
+    """
     if not mm_client:
         raise ValueError("MonarchMoney client not initialized")
-    
-    kwargs: Dict[str, Any] = {}
-    if start_date:
-        kwargs["start_date"] = datetime.strptime(start_date, "%Y-%m-%d").date()
-    if end_date:
-        kwargs["end_date"] = datetime.strptime(end_date, "%Y-%m-%d").date()
-    
+
+    # Use build_date_filter for consistent natural language date support
+    kwargs = build_date_filter(start_date, end_date)
+
     try:
         budgets = await mm_client.get_budgets(**kwargs)
         budgets = convert_dates_to_strings(budgets)
@@ -889,16 +894,21 @@ async def get_cashflow(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None
 ) -> str:
-    """Analyze cashflow data."""
+    """Analyze cashflow data with flexible date filtering.
+
+    Args:
+        start_date: Filter cashflow from this date onwards. Supports natural language like 'last month', 'this year'
+        end_date: Filter cashflow up to this date. Supports natural language
+
+    Returns:
+        JSON string containing cashflow analysis
+    """
     if not mm_client:
         raise ValueError("MonarchMoney client not initialized")
-    
-    kwargs: Dict[str, Any] = {}
-    if start_date:
-        kwargs["start_date"] = datetime.strptime(start_date, "%Y-%m-%d").date()
-    if end_date:
-        kwargs["end_date"] = datetime.strptime(end_date, "%Y-%m-%d").date()
-    
+
+    # Use build_date_filter for consistent natural language date support
+    kwargs = build_date_filter(start_date, end_date)
+
     cashflow = await mm_client.get_cashflow(**kwargs)
     cashflow = convert_dates_to_strings(cashflow)
     return json.dumps(cashflow, indent=2)
@@ -1423,86 +1433,6 @@ async def analyze_spending_patterns(
         
     except Exception as e:
         log.error("Failed to analyze spending patterns", error=str(e), lookback_months=lookback_months)
-        raise
-
-
-@mcp.tool()
-@track_usage
-async def get_usage_analytics() -> str:
-    """Get usage analytics to understand tool usage patterns and optimize batching."""
-    try:
-        # Analyze current session usage patterns
-        analytics = {
-            "session_id": current_session_id,
-            "total_tools_called": sum(len(calls) for calls in usage_patterns.values()),
-            "tools_usage_frequency": {tool: len(calls) for tool, calls in usage_patterns.items()},
-            "common_patterns": [],
-            "optimization_suggestions": []
-        }
-        
-        # Identify common usage patterns
-        if len(usage_patterns) > 1:
-            # Look for tools called in sequence within short time windows
-            all_calls = []
-            for tool_calls in usage_patterns.values():
-                all_calls.extend(tool_calls)
-            all_calls.sort(key=lambda x: x["timestamp"])
-            
-            # Identify potential batching opportunities
-            time_window = 30  # 30 seconds
-            sequences = []
-            current_sequence = []
-            
-            for call in all_calls:
-                if not current_sequence or call["timestamp"] - current_sequence[-1]["timestamp"] <= time_window:
-                    current_sequence.append(call)
-                else:
-                    if len(current_sequence) > 1:
-                        sequences.append([c["tool_name"] for c in current_sequence])
-                    current_sequence = [call]
-            
-            if len(current_sequence) > 1:
-                sequences.append([c["tool_name"] for c in current_sequence])
-            
-            analytics["common_patterns"] = sequences
-            
-            # Generate optimization suggestions
-            suggestions = []
-            for seq in sequences:
-                if len(seq) >= 2:
-                    if "get_accounts" in seq and "get_transactions" in seq:
-                        suggestions.append("Consider using get_complete_financial_overview instead of separate get_accounts + get_transactions calls")
-                    if seq.count("get_transactions") > 1:
-                        suggestions.append("Multiple get_transactions calls detected - consider using get_transactions_batch")
-                    if "get_transactions" in seq and "get_budgets" in seq and "get_cashflow" in seq:
-                        suggestions.append("Full financial analysis pattern detected - use get_complete_financial_overview for better performance")
-            
-            analytics["optimization_suggestions"] = list(set(suggestions))
-        
-        # Performance metrics
-        execution_times = []
-        for calls in usage_patterns.values():
-            execution_times.extend([call.get("execution_time", 0) for call in calls])
-        
-        if execution_times:
-            analytics["performance_metrics"] = {
-                "avg_execution_time": sum(execution_times) / len(execution_times),
-                "max_execution_time": max(execution_times),
-                "min_execution_time": min(execution_times),
-                "total_execution_time": sum(execution_times)
-            }
-        
-        # Output optimization suggestions to log with marker
-        if analytics["optimization_suggestions"]:
-            for suggestion in analytics["optimization_suggestions"]:
-                print(f"[OPTIMIZATION] {suggestion}", file=sys.stderr)
-                
-        print(f"[ANALYTICS] session_summary: {analytics['total_tools_called']} calls | top_tool: {max(analytics['tools_usage_frequency'].items(), key=lambda x: x[1])[0] if analytics['tools_usage_frequency'] else 'none'}", file=sys.stderr)
-        
-        return json.dumps(analytics, indent=2)
-        
-    except Exception as e:
-        log.error("Failed to generate usage analytics", error=str(e))
         raise
 
 
