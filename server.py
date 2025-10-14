@@ -517,16 +517,85 @@ def track_usage(func: Any) -> Any:
 # Initialize the FastMCP server
 mcp = FastMCP("monarch-money")
 
-# Global variable to store the MonarchMoney client
+# Authentication state management
+from enum import Enum
+
+class AuthState(Enum):
+    """Track authentication state to prevent duplicate initialization attempts."""
+    NOT_INITIALIZED = "not_initialized"
+    INITIALIZING = "initializing"
+    AUTHENTICATED = "authenticated"
+    FAILED = "failed"
+
+# Global variables for authentication
 mm_client: Optional[MonarchMoney] = None
+auth_state: AuthState = AuthState.NOT_INITIALIZED
+auth_lock: Optional[asyncio.Lock] = None  # Created in async context
+auth_error: Optional[str] = None  # Store last auth error for debugging
 
 # Secure session directory with proper permissions
 session_dir = Path(".mm")
 session_dir.mkdir(mode=0o700, exist_ok=True)
 session_file = session_dir / "session.pickle"
 
-def clear_session() -> None:
-    """Clear existing session files for fresh authentication."""
+def is_auth_error(error: Exception) -> bool:
+    """Determine if an error is a genuine authentication/authorization failure.
+
+    Only returns True for actual auth failures like 401, 403, invalid credentials.
+    Does NOT treat library errors, connection issues, or other problems as auth failures.
+    """
+    error_str = str(error).lower()
+
+    # Exclude false positives first - these are NOT auth errors
+    false_positives = [
+        "connector",  # Library compatibility issue
+        "aiohttp",    # Library issue
+        "transport",  # Library issue
+        "connection refused", # Network issue, not auth
+        "connection reset",   # Network issue, not auth
+        "timeout",    # Network issue, not auth
+    ]
+
+    # Check for false positives first
+    if any(fp in error_str for fp in false_positives):
+        return False
+
+    # Genuine authentication/authorization error indicators
+    auth_indicators = [
+        "401",
+        "403",
+        "unauthorized",
+        "forbidden",
+        "invalid credentials",
+        "bad credentials",
+        "authentication failed",
+        "auth failed",  # Match "auth failed" messages
+        "not authenticated",
+        "invalid token",
+        "token expired",
+        "session expired",
+        "session has expired"
+    ]
+
+    # Check for genuine auth errors
+    return any(indicator in error_str for indicator in auth_indicators)
+
+
+def clear_session(reason: str = "unknown") -> None:
+    """Clear existing session files - only call when genuinely needed.
+
+    Args:
+        reason: Why the session is being cleared (for logging/debugging)
+    """
+    global mm_client
+
+    logger.info(f"Clearing session files (reason: {reason})")
+
+    # Clear the client instance to ensure fresh initialization
+    if mm_client is not None:
+        logger.info("[AUTH] Clearing mm_client instance")
+        mm_client = None
+
     # Clear our custom session file
     if session_file.exists():
         try:
@@ -534,7 +603,7 @@ def clear_session() -> None:
             logger.info(f"Cleared custom session file: {session_file}")
         except Exception as e:
             logger.warning(f"Failed to clear custom session file: {e}")
-    
+
     # Clear the monarchmoney library's default session file
     mm_session_file = session_dir / "mm_session.pickle"
     if mm_session_file.exists():
@@ -545,55 +614,69 @@ def clear_session() -> None:
             logger.warning(f"Failed to clear mm session file: {e}")
 
 async def api_call_with_retry(func: Any, *args: Any, **kwargs: Any) -> Any:
-    """Wrapper for API calls that handles session expiration and retries."""
+    """Wrapper for API calls that handles session expiration and retries.
+
+    Only clears sessions and re-authenticates for genuine auth errors.
+    Other errors (network, library issues, etc.) are raised immediately.
+    """
+    global auth_state
+
     try:
         return await func(*args, **kwargs)
     except Exception as e:
-        error_str = str(e).lower()
-        # Check for various authentication/authorization errors
-        auth_error_indicators = [
-            "401", "unauthorized", "session",
-            "bad credentials", "invalid credentials",
-            "authentication failed", "auth failed",
-            "forbidden", "403", "not authenticated"
-        ]
+        # Use the new helper to determine if this is a real auth error
+        if is_auth_error(e):
+            logger.warning(f"API call failed with authentication error: {e}")
+            logger.info("Clearing session and re-authenticating")
 
-        if any(indicator in error_str for indicator in auth_error_indicators):
-            logger.warning(f"API call failed with authentication/session error: {e}")
-            logger.info("Clearing session files and re-initializing client with fresh authentication")
-            clear_session()
-            await initialize_client()
-            # Retry once
+            # Reset auth state BEFORE clearing session so ensure_authenticated knows to re-init
+            logger.info(f"[AUTH] Resetting auth state from {auth_state.value} to not_initialized")
+            auth_state = AuthState.NOT_INITIALIZED
+
+            clear_session(reason="authentication failure during API call")
+
+            # Re-authenticate and retry once
+            await ensure_authenticated()
             logger.info("Retrying API call after re-authentication")
             return await func(*args, **kwargs)
         else:
+            # Not an auth error - raise immediately without clearing session
             raise
 
 
 async def initialize_client() -> None:
-    """Initialize the MonarchMoney client with authentication."""
-    global mm_client
-    
+    """Initialize the MonarchMoney client with authentication.
+
+    This function attempts to use cached sessions when possible and only
+    performs fresh authentication when necessary. It does NOT validate
+    sessions immediately - validation happens on first API call.
+    """
+    global mm_client, auth_state, auth_error
+
     email = os.getenv("MONARCH_EMAIL")
     password = os.getenv("MONARCH_PASSWORD")
     mfa_secret = os.getenv("MONARCH_MFA_SECRET")
-    
+
     if not email or not password:
-        logger.error("Missing required environment variables")
-        raise ValueError("MONARCH_EMAIL and MONARCH_PASSWORD environment variables are required")
-    
-    logger.info(f"Initializing MonarchMoney client for {email}")
+        error_msg = "MONARCH_EMAIL and MONARCH_PASSWORD environment variables are required"
+        logger.error(error_msg)
+        auth_state = AuthState.FAILED
+        auth_error = error_msg
+        raise ValueError(error_msg)
+
+    logger.info(f"[AUTH] Initializing MonarchMoney client for {email}")
     mm_client = MonarchMoney()
-    
-    # Try to load existing session first
-    if session_file.exists() and not os.getenv("MONARCH_FORCE_LOGIN"):
+
+    # Try to load existing session first (unless forced to skip)
+    force_login = os.getenv("MONARCH_FORCE_LOGIN") == "true"
+    if session_file.exists() and not force_login:
         try:
-            logger.info(f"Attempting to load session from {session_file}")
-            # Load session with comprehensive stdout suppression
+            logger.info(f"[AUTH] Found existing session file: {session_file}")
+            logger.info(f"[AUTH] Attempting to load session (no validation at this stage)")
+            # Load session with stdout/stderr suppression
             import contextlib
             import io
 
-            # Capture and discard both stdout and stderr during session loading
             stdout_capture = io.StringIO()
             stderr_capture = io.StringIO()
             with contextlib.redirect_stdout(stdout_capture), \
@@ -602,61 +685,54 @@ async def initialize_client() -> None:
 
             # Log what was captured for debugging
             if stdout_capture.getvalue():
-                logger.debug(f"Captured stdout during load_session: '{stdout_capture.getvalue()}'")
+                logger.debug(f"[AUTH] Captured stdout during load_session: '{stdout_capture.getvalue()}'")
             if stderr_capture.getvalue():
-                logger.debug(f"Captured stderr during load_session: '{stderr_capture.getvalue()}'")
+                logger.debug(f"[AUTH] Captured stderr during load_session: '{stderr_capture.getvalue()}'")
 
-            logger.info("Session loaded, testing validity")
-            # Test if session is still valid with a simple API call
-            accounts = await mm_client.get_accounts()
-            logger.info(f"Session valid - found {len(accounts) if accounts else 0} accounts")
+            logger.info("[AUTH] ✓ Session loaded successfully - no validation performed")
+            logger.info("[AUTH] Session validity will be tested on first API call")
+            auth_state = AuthState.AUTHENTICATED
             return
 
         except Exception as e:
-            error_str = str(e).lower()
-            # Check if it's an authentication error
-            auth_error_indicators = [
-                "401", "unauthorized", "session",
-                "bad credentials", "invalid credentials",
-                "authentication failed", "auth failed",
-                "forbidden", "403", "not authenticated"
-            ]
-
-            if any(indicator in error_str for indicator in auth_error_indicators):
-                logger.warning(f"Session invalid due to authentication error: {e}")
-                logger.info("Clearing old session files before fresh login")
-                clear_session()
+            logger.warning(f"[AUTH] Failed to load session: {e}")
+            # Only clear session if it's a genuine auth error
+            if is_auth_error(e):
+                logger.info("[AUTH] Session file appears invalid (auth error), clearing before fresh login")
+                clear_session(reason="invalid session file")
             else:
-                logger.warning(f"Session invalid or expired: {e}")
+                logger.info(f"[AUTH] Non-auth error loading session (error type: {type(e).__name__}), will try fresh login anyway")
 
-            logger.info("Will attempt fresh login")
     else:
         if not session_file.exists():
-            logger.info("No existing session file found")
-        if os.getenv("MONARCH_FORCE_LOGIN"):
-            logger.info("MONARCH_FORCE_LOGIN=true, skipping session load")
-    
-    # Login with credentials (with retry for transient failures)
+            logger.info(f"[AUTH] No existing session file found at {session_file}")
+        if force_login:
+            logger.info("[AUTH] MONARCH_FORCE_LOGIN=true, forcing fresh authentication")
+            clear_session(reason="forced login requested")
+
+    # Perform fresh authentication
     max_retries = 2
-    retry_delay = 2  # seconds
+    retry_delay = 3  # Increase delay to avoid rate limiting
+
+    logger.info(f"[AUTH] Starting fresh authentication (max {max_retries} attempts)")
 
     for attempt in range(max_retries):
         try:
-            logger.info(f"Starting fresh authentication (attempt {attempt + 1}/{max_retries})")
+            logger.info(f"[AUTH] Attempt {attempt + 1}/{max_retries}: Calling Monarch Money login API")
             if mfa_secret:
-                logger.info("Using MFA authentication")
+                logger.info("[AUTH] Using MFA authentication (TOTP)")
                 await mm_client.login(email, password, mfa_secret_key=mfa_secret, use_saved_session=False)
             else:
-                logger.info("Using password authentication")
+                logger.info("[AUTH] Using password-only authentication")
                 await mm_client.login(email, password, use_saved_session=False)
 
-            logger.info("Authentication successful, saving session")
+            logger.info("[AUTH] ✓ Login API call successful")
+            logger.info("[AUTH] Saving session to disk")
 
-            # Save session with comprehensive stdout suppression
+            # Save session with stdout/stderr suppression
             import contextlib
             import io
 
-            # Capture and discard both stdout and stderr during session saving
             stdout_capture = io.StringIO()
             stderr_capture = io.StringIO()
             with contextlib.redirect_stdout(stdout_capture), \
@@ -671,24 +747,100 @@ async def initialize_client() -> None:
 
             if session_file.exists():
                 session_file.chmod(0o600)  # Secure permissions
-                logger.info(f"Session saved with secure permissions: {session_file}")
+                logger.info(f"[AUTH] ✓ Session saved with secure permissions: {session_file}")
             else:
-                logger.warning("Session file was not created")
+                logger.warning("[AUTH] ⚠ Session file was not created by save_session()")
 
-            break  # Success, exit retry loop
+            auth_state = AuthState.AUTHENTICATED
+            auth_error = None
+            logger.info(f"[AUTH] ✓ Authentication complete - state: {auth_state.value}")
+            return  # Success!
 
         except RequireMFAException:
-            logger.error("MFA required but not provided")
-            raise ValueError("Multi-factor authentication required but MONARCH_MFA_SECRET not set")
+            error_msg = "Multi-factor authentication required but MONARCH_MFA_SECRET not set"
+            logger.error(f"[AUTH] ✗ {error_msg}")
+            auth_state = AuthState.FAILED
+            auth_error = error_msg
+            raise ValueError(error_msg)
+
         except Exception as e:
             if attempt < max_retries - 1:
-                logger.warning(f"Authentication attempt {attempt + 1} failed: {e}. Retrying in {retry_delay}s...")
+                logger.warning(f"[AUTH] Attempt {attempt + 1} failed: {e}")
+                # Determine if this is an auth error or other error
+                if is_auth_error(e):
+                    logger.info(f"[AUTH] Detected auth error, clearing session before retry")
+                    clear_session(reason=f"auth failure on attempt {attempt + 1}")
+                else:
+                    logger.info(f"[AUTH] Non-auth error ({type(e).__name__}), keeping session for retry")
+                logger.info(f"[AUTH] Retrying in {retry_delay}s...")
                 await asyncio.sleep(retry_delay)
-                # Clear any partial state before retry
-                clear_session()
             else:
-                logger.error(f"Authentication failed after {max_retries} attempts: {e}")
+                error_msg = f"Authentication failed after {max_retries} attempts: {e}"
+                logger.error(f"[AUTH] ✗ {error_msg}")
+                auth_state = AuthState.FAILED
+                auth_error = str(e)
                 raise
+
+
+async def ensure_authenticated() -> None:
+    """Ensure the client is authenticated, initializing on-demand if needed.
+
+    This function uses a lock to prevent concurrent initialization attempts
+    and returns immediately if already authenticated.
+
+    Call this at the start of every tool that needs the mm_client.
+    """
+    global mm_client, auth_state, auth_lock, auth_error
+
+    # Initialize lock on first call (must be done in async context)
+    if auth_lock is None:
+        auth_lock = asyncio.Lock()
+        logger.info("[AUTH] Async lock created for authentication")
+
+    # Fast path - already authenticated
+    if auth_state == AuthState.AUTHENTICATED and mm_client is not None:
+        logger.debug("[AUTH] Fast path: already authenticated")
+        return
+
+    logger.info(f"[AUTH] Authentication needed, current state: {auth_state.value}")
+
+    # Use lock to prevent concurrent initialization
+    async with auth_lock:
+        # Check again after acquiring lock (another task may have initialized)
+        if auth_state == AuthState.AUTHENTICATED and mm_client is not None:
+            logger.info("[AUTH] Lock acquired: another task completed authentication")
+            return
+
+        # Check if in failed state
+        if auth_state == AuthState.FAILED:
+            error_msg = f"Authentication previously failed: {auth_error or 'unknown error'}"
+            logger.error(f"[AUTH] Cannot authenticate: {error_msg}")
+            raise ValueError(error_msg)
+
+        # Check if already initializing (shouldn't happen with lock, but defensive)
+        if auth_state == AuthState.INITIALIZING:
+            logger.warning("[AUTH] Already initializing (unexpected with lock)")
+            # Wait a bit and check again
+            await asyncio.sleep(1)
+            if auth_state == AuthState.AUTHENTICATED:
+                logger.info("[AUTH] Initialization completed while waiting")
+                return
+            logger.error("[AUTH] Initialization timeout")
+            raise ValueError("Authentication is taking too long")
+
+        # Perform initialization
+        logger.info("[AUTH] Starting lazy authentication")
+        auth_state = AuthState.INITIALIZING
+
+        try:
+            await initialize_client()
+            # initialize_client sets auth_state to AUTHENTICATED on success
+            logger.info("[AUTH] Lazy authentication completed successfully")
+        except Exception as e:
+            auth_state = AuthState.FAILED
+            auth_error = str(e)
+            logger.error(f"[AUTH] Failed to initialize client: {e}")
+            raise
 
 
 # FastMCP Tool definitions using decorators
@@ -697,10 +849,8 @@ async def initialize_client() -> None:
 @track_usage
 async def get_accounts() -> str:
     """Retrieve all linked financial accounts."""
-    if not mm_client:
-        logger.error("Client not initialized")
-        raise ValueError("MonarchMoney client not initialized")
-    
+    await ensure_authenticated()
+
     try:
         logger.info("Fetching accounts")
         accounts = await api_call_with_retry(mm_client.get_accounts)
@@ -741,8 +891,7 @@ async def get_transactions(
     Returns:
         JSON string containing transaction list
     """
-    if not mm_client:
-        raise ValueError("MonarchMoney client not initialized")
+    await ensure_authenticated()
 
     try:
         logger.info(f"Fetching transactions: limit={limit}, offset={offset}, start_date={start_date}, end_date={end_date}, verbose={verbose}")
@@ -810,8 +959,7 @@ async def search_transactions(
     Returns:
         JSON string with search results (list of transactions matching the query)
     """
-    if not mm_client:
-        raise ValueError("MonarchMoney client not initialized")
+    await ensure_authenticated()
 
     if not query or not query.strip():
         raise ValueError("Query parameter cannot be empty")
@@ -879,8 +1027,7 @@ async def get_budgets(
     Returns:
         JSON string containing budget information
     """
-    if not mm_client:
-        raise ValueError("MonarchMoney client not initialized")
+    await ensure_authenticated()
 
     # Use build_date_filter for consistent natural language date support
     kwargs = build_date_filter(start_date, end_date)
@@ -916,8 +1063,7 @@ async def get_cashflow(
     Returns:
         JSON string containing cashflow analysis
     """
-    if not mm_client:
-        raise ValueError("MonarchMoney client not initialized")
+    await ensure_authenticated()
 
     # Use build_date_filter for consistent natural language date support
     kwargs = build_date_filter(start_date, end_date)
@@ -931,9 +1077,8 @@ async def get_cashflow(
 @track_usage
 async def get_transaction_categories() -> str:
     """List all transaction categories."""
-    if not mm_client:
-        raise ValueError("MonarchMoney client not initialized")
-    
+    await ensure_authenticated()
+
     categories = await mm_client.get_transaction_categories()
     categories = convert_dates_to_strings(categories)
     return json.dumps(categories, indent=2)
@@ -950,8 +1095,7 @@ async def create_transaction(
     notes: Optional[str] = None
 ) -> str:
     """Create a new transaction."""
-    if not mm_client:
-        raise ValueError("MonarchMoney client not initialized")
+    await ensure_authenticated()
 
     try:
         # Convert date string to date object
@@ -991,8 +1135,7 @@ async def update_transaction(
     notes: Optional[str] = None
 ) -> str:
     """Update an existing transaction."""
-    if not mm_client:
-        raise ValueError("MonarchMoney client not initialized")
+    await ensure_authenticated()
 
     try:
         # Build update parameters
@@ -1027,8 +1170,7 @@ async def update_transaction(
 @track_usage
 async def get_account_holdings() -> str:
     """Get investment portfolio data from brokerage accounts."""
-    if not mm_client:
-        raise ValueError("MonarchMoney client not initialized")
+    await ensure_authenticated()
     
     try:
         holdings = await mm_client.get_account_holdings()
@@ -1047,8 +1189,7 @@ async def get_account_history(
     end_date: Optional[str] = None
 ) -> str:
     """Get historical account balance data."""
-    if not mm_client:
-        raise ValueError("MonarchMoney client not initialized")
+    await ensure_authenticated()
     
     kwargs: Dict[str, Any] = {"account_id": account_id}
     if start_date:
@@ -1069,8 +1210,7 @@ async def get_account_history(
 @track_usage
 async def get_institutions() -> str:
     """Get linked financial institutions."""
-    if not mm_client:
-        raise ValueError("MonarchMoney client not initialized")
+    await ensure_authenticated()
     
     try:
         institutions = await mm_client.get_institutions()
@@ -1085,8 +1225,7 @@ async def get_institutions() -> str:
 @track_usage
 async def get_recurring_transactions() -> str:
     """Get scheduled recurring transactions."""
-    if not mm_client:
-        raise ValueError("MonarchMoney client not initialized")
+    await ensure_authenticated()
     
     try:
         recurring = await mm_client.get_recurring_transactions()
@@ -1104,8 +1243,7 @@ async def set_budget_amount(
     amount: float
 ) -> str:
     """Set budget amount for a category."""
-    if not mm_client:
-        raise ValueError("MonarchMoney client not initialized")
+    await ensure_authenticated()
     
     try:
         result = await mm_client.set_budget_amount(category_id=category_id, amount=amount)
@@ -1125,8 +1263,7 @@ async def create_manual_account(
     balance: float
 ) -> str:
     """Create a manually tracked account."""
-    if not mm_client:
-        raise ValueError("MonarchMoney client not initialized")
+    await ensure_authenticated()
     
     try:
         result = await mm_client.create_manual_account(
@@ -1156,8 +1293,7 @@ async def get_spending_summary(
         end_date: End date (supports natural language)
         group_by: Group spending by 'category', 'account', or 'month'
     """
-    if not mm_client:
-        raise ValueError("MonarchMoney client not initialized")
+    await ensure_authenticated()
     
     try:
         log.info("Generating spending summary", start_date=start_date, end_date=end_date, group_by=group_by)
@@ -1224,8 +1360,7 @@ async def get_spending_summary(
 @track_usage
 async def refresh_accounts() -> str:
     """Request a refresh of all account data from financial institutions."""
-    if not mm_client:
-        raise ValueError("MonarchMoney client not initialized")
+    await ensure_authenticated()
     
     try:
         result = await mm_client.request_accounts_refresh()
@@ -1250,8 +1385,7 @@ async def get_complete_financial_overview(
     Args:
         period: Time period for analysis ("this month", "last month", "this year", etc.)
     """
-    if not mm_client:
-        raise ValueError("MonarchMoney client not initialized")
+    await ensure_authenticated()
     
     try:
         # Parse the period into date filters
@@ -1347,8 +1481,7 @@ async def analyze_spending_patterns(
         lookback_months: Number of months to analyze (default 6)
         include_forecasting: Whether to include spending forecasts
     """
-    if not mm_client:
-        raise ValueError("MonarchMoney client not initialized")
+    await ensure_authenticated()
     
     try:
         from dateutil.relativedelta import relativedelta
@@ -1473,14 +1606,18 @@ async def analyze_spending_patterns(
 
 
 async def main() -> None:
-    """Main entry point for the server."""
-    # Initialize the MonarchMoney client
-    try:
-        await initialize_client()
-    except Exception as e:
-        logger.error(f"Failed to initialize MonarchMoney client: {e}")
-        return
-    
+    """Main entry point for the server.
+
+    The server starts immediately without authentication. Authentication
+    happens lazily on the first tool call via ensure_authenticated().
+    """
+    logger.info("=" * 70)
+    logger.info("[AUTH] MCP Server starting - LAZY AUTHENTICATION MODE")
+    logger.info("[AUTH] Authentication will be performed on-demand (first tool call)")
+    logger.info(f"[AUTH] Session file location: {session_file}")
+    logger.info(f"[AUTH] Current auth state: {auth_state.value}")
+    logger.info("=" * 70)
+
     # Run the FastMCP server with comprehensive error handling
     try:
         logger.info("Starting MCP server with stdio transport")
@@ -1490,7 +1627,7 @@ async def main() -> None:
         logger.info("Client disconnected (broken pipe) - shutting down gracefully")
     except ConnectionResetError:
         # Similar to BrokenPipeError but for connection resets
-        logger.info("Connection reset by client - shutting down gracefully")  
+        logger.info("Connection reset by client - shutting down gracefully")
     except KeyboardInterrupt:
         logger.info("Received interrupt signal - shutting down")
     except Exception as e:
