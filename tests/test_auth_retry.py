@@ -11,7 +11,7 @@ class TestAuthenticationRetry:
     @pytest.mark.asyncio
     async def test_api_call_with_retry_handles_401(self):
         """Test that 401 errors trigger session clear and retry."""
-        from server import api_call_with_retry, clear_session, initialize_client
+        from server import api_call_with_retry
 
         # Mock the function to fail first, then succeed
         mock_func = AsyncMock()
@@ -21,13 +21,13 @@ class TestAuthenticationRetry:
         ]
 
         with patch('server.clear_session') as mock_clear, \
-             patch('server.initialize_client') as mock_init:
+             patch('server.ensure_authenticated') as mock_auth:
 
             result = await api_call_with_retry(mock_func)
 
-            # Verify session was cleared and client re-initialized
+            # Verify session was cleared and ensure_authenticated was called
             assert mock_clear.called
-            assert mock_init.called
+            assert mock_auth.called
             assert result == {"success": True}
             assert mock_func.call_count == 2
 
@@ -43,12 +43,12 @@ class TestAuthenticationRetry:
         ]
 
         with patch('server.clear_session') as mock_clear, \
-             patch('server.initialize_client') as mock_init:
+             patch('server.ensure_authenticated') as mock_auth:
 
             result = await api_call_with_retry(mock_func)
 
             assert mock_clear.called
-            assert mock_init.called
+            assert mock_auth.called
             assert result == {"success": True}
 
     @pytest.mark.asyncio
@@ -63,12 +63,12 @@ class TestAuthenticationRetry:
         ]
 
         with patch('server.clear_session') as mock_clear, \
-             patch('server.initialize_client') as mock_init:
+             patch('server.ensure_authenticated') as mock_auth:
 
             result = await api_call_with_retry(mock_func)
 
             assert mock_clear.called
-            assert mock_init.called
+            assert mock_auth.called
 
     @pytest.mark.asyncio
     async def test_api_call_with_retry_handles_403(self):
@@ -82,12 +82,12 @@ class TestAuthenticationRetry:
         ]
 
         with patch('server.clear_session') as mock_clear, \
-             patch('server.initialize_client') as mock_init:
+             patch('server.ensure_authenticated') as mock_auth:
 
             result = await api_call_with_retry(mock_func)
 
             assert mock_clear.called
-            assert mock_init.called
+            assert mock_auth.called
 
     @pytest.mark.asyncio
     async def test_api_call_with_retry_handles_session_expired(self):
@@ -101,12 +101,12 @@ class TestAuthenticationRetry:
         ]
 
         with patch('server.clear_session') as mock_clear, \
-             patch('server.initialize_client') as mock_init:
+             patch('server.ensure_authenticated') as mock_auth:
 
             result = await api_call_with_retry(mock_func)
 
             assert mock_clear.called
-            assert mock_init.called
+            assert mock_auth.called
 
     @pytest.mark.asyncio
     async def test_api_call_with_retry_ignores_other_errors(self):
@@ -117,50 +117,53 @@ class TestAuthenticationRetry:
         mock_func.side_effect = Exception("Network timeout error")
 
         with patch('server.clear_session') as mock_clear, \
-             patch('server.initialize_client') as mock_init:
+             patch('server.ensure_authenticated') as mock_auth:
 
             with pytest.raises(Exception, match="Network timeout"):
                 await api_call_with_retry(mock_func)
 
             # Should not clear session or re-initialize for non-auth errors
             assert not mock_clear.called
-            assert not mock_init.called
+            assert not mock_auth.called
 
     @pytest.mark.asyncio
-    async def test_initialize_client_clears_session_on_auth_error(self):
-        """Test that initialize_client clears session on authentication errors during session load."""
-        from server import initialize_client, mm_client
+    async def test_initialize_client_loads_session_without_validation(self):
+        """Test that initialize_client loads existing sessions without validating them."""
+        import server
         import os
 
-        # Mock environment variables
-        with patch.dict(os.environ, {
-            'MONARCH_EMAIL': 'test@example.com',
-            'MONARCH_PASSWORD': 'testpass'
-        }), \
-        patch('server.session_file') as mock_session_file, \
-        patch('server.MonarchMoney') as mock_mm_class, \
-        patch('server.clear_session') as mock_clear:
+        # Reset auth state before test
+        original_auth_state = server.auth_state
+        server.auth_state = server.AuthState.NOT_INITIALIZED
 
-            # Setup: session file exists
-            mock_session_file.exists.return_value = True
+        try:
+            # Mock environment variables
+            with patch.dict(os.environ, {
+                'MONARCH_EMAIL': 'test@example.com',
+                'MONARCH_PASSWORD': 'testpass'
+            }), \
+            patch('server.session_file') as mock_session_file, \
+            patch('server.MonarchMoney') as mock_mm_class:
 
-            # Mock the client
-            mock_client = AsyncMock()
-            mock_mm_class.return_value = mock_client
+                # Setup: session file exists
+                mock_session_file.exists.return_value = True
 
-            # First call to get_accounts (session validation) fails with 401
-            mock_client.get_accounts.side_effect = [
-                Exception("401 Unauthorized"),
-                [{"id": "acc1"}]  # Success after login
-            ]
+                # Mock the client
+                mock_client = AsyncMock()
+                mock_mm_class.return_value = mock_client
 
-            # Call initialize_client
-            await initialize_client()
+                # Call initialize_client
+                await server.initialize_client()
 
-            # Verify that clear_session was called due to auth error
-            assert mock_clear.called
-            # Verify that login was called after clearing
-            assert mock_client.login.called
+                # Verify that session was loaded (load_session called)
+                assert mock_client.load_session.called
+                # Verify that login was NOT called (we loaded existing session)
+                assert not mock_client.login.called
+                # Verify auth state is AUTHENTICATED after loading session
+                assert server.auth_state == server.AuthState.AUTHENTICATED
+        finally:
+            # Restore original state
+            server.auth_state = original_auth_state
 
     def test_clear_session_removes_both_session_files(self):
         """Test that clear_session removes both custom and monarchmoney session files."""
@@ -208,11 +211,11 @@ class TestAuthenticationRetry:
             ]
 
             with patch('server.clear_session') as mock_clear, \
-                 patch('server.initialize_client') as mock_init:
+                 patch('server.ensure_authenticated') as mock_auth:
 
                 result = await api_call_with_retry(mock_func)
 
                 # All these should trigger session clear
                 assert mock_clear.called, f"Failed to detect auth error: {error_msg}"
-                assert mock_init.called, f"Failed to reinitialize after: {error_msg}"
+                assert mock_auth.called, f"Failed to reinitialize after: {error_msg}"
                 assert result == {"success": True}

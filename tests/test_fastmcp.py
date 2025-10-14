@@ -65,17 +65,22 @@ class TestFastMCPServer:
 
     @pytest.mark.asyncio
     async def test_get_accounts_no_client(self) -> None:
-        """Test get_accounts fails when client not initialized."""
-        # Reset global client
+        """Test get_accounts triggers authentication when client not initialized."""
+        # Reset global client and auth state
         original_client = server.mm_client
+        original_auth_state = server.auth_state
         server.mm_client = None
-        
+        server.auth_state = server.AuthState.NOT_INITIALIZED
+
         try:
-            with pytest.raises(ValueError, match="MonarchMoney client not initialized"):
-                await server.get_accounts()
+            # Mock ensure_authenticated to fail with credentials error
+            with patch('server.ensure_authenticated', side_effect=ValueError("MONARCH_EMAIL and MONARCH_PASSWORD environment variables are required")):
+                with pytest.raises(ValueError, match="MONARCH_EMAIL and MONARCH_PASSWORD"):
+                    await server.get_accounts()
         finally:
-            # Restore original client
+            # Restore original client and state
             server.mm_client = original_client
+            server.auth_state = original_auth_state
 
     @pytest.mark.asyncio
     async def test_get_accounts_with_mock_client(self) -> None:
