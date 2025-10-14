@@ -636,46 +636,59 @@ async def initialize_client() -> None:
         if os.getenv("MONARCH_FORCE_LOGIN"):
             logger.info("MONARCH_FORCE_LOGIN=true, skipping session load")
     
-    # Login with credentials
-    try:
-        logger.info("Starting fresh authentication")
-        if mfa_secret:
-            logger.info("Using MFA authentication")
-            await mm_client.login(email, password, mfa_secret_key=mfa_secret)
-        else:
-            logger.info("Using password authentication")
-            await mm_client.login(email, password)
-        
-        logger.info("Authentication successful, saving session")
-        # Save session with comprehensive stdout suppression
-        import contextlib
-        import io
-        
-        # Capture and discard both stdout and stderr during session saving
-        stdout_capture = io.StringIO()
-        stderr_capture = io.StringIO()
-        with contextlib.redirect_stdout(stdout_capture), \
-             contextlib.redirect_stderr(stderr_capture):
-            mm_client.save_session(str(session_file))
-        
-        # Log what was captured for debugging
-        if stdout_capture.getvalue():
-            logger.debug(f"Captured stdout during save_session: '{stdout_capture.getvalue()}'")
-        if stderr_capture.getvalue():
-            logger.debug(f"Captured stderr during save_session: '{stderr_capture.getvalue()}'")
-            
-        if session_file.exists():
-            session_file.chmod(0o600)  # Secure permissions
-            logger.info(f"Session saved with secure permissions: {session_file}")
-        else:
-            logger.warning("Session file was not created")
-        
-    except RequireMFAException:
-        logger.error("MFA required but not provided")
-        raise ValueError("Multi-factor authentication required but MONARCH_MFA_SECRET not set")
-    except Exception as e:
-        logger.error(f"Authentication failed: {e}")
-        raise
+    # Login with credentials (with retry for transient failures)
+    max_retries = 2
+    retry_delay = 2  # seconds
+
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"Starting fresh authentication (attempt {attempt + 1}/{max_retries})")
+            if mfa_secret:
+                logger.info("Using MFA authentication")
+                await mm_client.login(email, password, mfa_secret_key=mfa_secret, use_saved_session=False)
+            else:
+                logger.info("Using password authentication")
+                await mm_client.login(email, password, use_saved_session=False)
+
+            logger.info("Authentication successful, saving session")
+
+            # Save session with comprehensive stdout suppression
+            import contextlib
+            import io
+
+            # Capture and discard both stdout and stderr during session saving
+            stdout_capture = io.StringIO()
+            stderr_capture = io.StringIO()
+            with contextlib.redirect_stdout(stdout_capture), \
+                 contextlib.redirect_stderr(stderr_capture):
+                mm_client.save_session(str(session_file))
+
+            # Log what was captured for debugging
+            if stdout_capture.getvalue():
+                logger.debug(f"Captured stdout during save_session: '{stdout_capture.getvalue()}'")
+            if stderr_capture.getvalue():
+                logger.debug(f"Captured stderr during save_session: '{stderr_capture.getvalue()}'")
+
+            if session_file.exists():
+                session_file.chmod(0o600)  # Secure permissions
+                logger.info(f"Session saved with secure permissions: {session_file}")
+            else:
+                logger.warning("Session file was not created")
+
+            break  # Success, exit retry loop
+
+        except RequireMFAException:
+            logger.error("MFA required but not provided")
+            raise ValueError("Multi-factor authentication required but MONARCH_MFA_SECRET not set")
+        except Exception as e:
+            if attempt < max_retries - 1:
+                logger.warning(f"Authentication attempt {attempt + 1} failed: {e}. Retrying in {retry_delay}s...")
+                await asyncio.sleep(retry_delay)
+                # Clear any partial state before retry
+                clear_session()
+            else:
+                logger.error(f"Authentication failed after {max_retries} attempts: {e}")
+                raise
 
 
 # FastMCP Tool definitions using decorators
