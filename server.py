@@ -939,20 +939,32 @@ async def create_transaction(
     """Create a new transaction."""
     if not mm_client:
         raise ValueError("MonarchMoney client not initialized")
-    
-    # Convert date string to date object
-    transaction_date = datetime.strptime(date, "%Y-%m-%d").date()
-    
-    result = await mm_client.create_transaction(
-        amount=amount,
-        description=description,
-        category_id=category_id,
-        account_id=account_id,
-        date=transaction_date,
-        notes=notes
-    )
-    result = convert_dates_to_strings(result)
-    return json.dumps(result, indent=2)
+
+    try:
+        # Convert date string to date object
+        transaction_date = datetime.strptime(date, "%Y-%m-%d").date()
+
+        # Use api_call_with_retry for session expiration handling and add timeout
+        result = await asyncio.wait_for(
+            api_call_with_retry(
+                mm_client.create_transaction,
+                amount=amount,
+                description=description,
+                category_id=category_id,
+                account_id=account_id,
+                date=transaction_date,
+                notes=notes
+            ),
+            timeout=30.0  # 30 second timeout
+        )
+        result = convert_dates_to_strings(result)
+        return json.dumps(result, indent=2)
+    except asyncio.TimeoutError:
+        logger.error(f"Timeout creating transaction after 30 seconds")
+        raise ValueError(f"Transaction creation timed out after 30 seconds. Please try again.")
+    except Exception as e:
+        logger.error(f"Failed to create transaction: {e}")
+        raise
 
 
 @mcp.tool()
@@ -968,23 +980,34 @@ async def update_transaction(
     """Update an existing transaction."""
     if not mm_client:
         raise ValueError("MonarchMoney client not initialized")
-    
-    # Build update parameters
-    updates: Dict[str, Any] = {"transaction_id": transaction_id}
-    if amount is not None:
-        updates["amount"] = amount
-    if description is not None:
-        updates["description"] = description
-    if category_id is not None:
-        updates["category_id"] = category_id
-    if date is not None:
-        updates["date"] = datetime.strptime(date, "%Y-%m-%d").date()
-    if notes is not None:
-        updates["notes"] = notes
-    
-    result = await mm_client.update_transaction(**updates)
-    result = convert_dates_to_strings(result)
-    return json.dumps(result, indent=2)
+
+    try:
+        # Build update parameters
+        updates: Dict[str, Any] = {"transaction_id": transaction_id}
+        if amount is not None:
+            updates["amount"] = amount
+        if description is not None:
+            updates["description"] = description
+        if category_id is not None:
+            updates["category_id"] = category_id
+        if date is not None:
+            updates["date"] = datetime.strptime(date, "%Y-%m-%d").date()
+        if notes is not None:
+            updates["notes"] = notes
+
+        # Use api_call_with_retry for session expiration handling and add timeout
+        result = await asyncio.wait_for(
+            api_call_with_retry(mm_client.update_transaction, **updates),
+            timeout=30.0  # 30 second timeout
+        )
+        result = convert_dates_to_strings(result)
+        return json.dumps(result, indent=2)
+    except asyncio.TimeoutError:
+        logger.error(f"Timeout updating transaction {transaction_id} after 30 seconds")
+        raise ValueError(f"Transaction update timed out after 30 seconds. Please try again.")
+    except Exception as e:
+        logger.error(f"Failed to update transaction {transaction_id}: {e}")
+        raise
 
 
 @mcp.tool()
@@ -1479,7 +1502,15 @@ if __name__ == "__main__":
         # Handle exception groups (from anyio TaskGroups) - filter out expected shutdown errors
         remaining_exceptions = []
         for exc in eg.exceptions:
-            if not isinstance(exc, (BrokenPipeError, ConnectionResetError, OSError)):
+            # Check for shutdown-related exceptions including nested ones
+            is_shutdown_error = (
+                isinstance(exc, (BrokenPipeError, ConnectionResetError, OSError, EOFError)) or
+                (isinstance(exc, Exception) and any(
+                    err_str in str(exc).lower()
+                    for err_str in ["broken pipe", "connection reset", "[errno 32]", "eof"]
+                ))
+            )
+            if not is_shutdown_error:
                 remaining_exceptions.append(exc)
 
         if remaining_exceptions:
