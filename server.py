@@ -613,16 +613,27 @@ def clear_session(reason: str = "unknown") -> None:
         except Exception as e:
             logger.warning(f"Failed to clear mm session file: {e}")
 
-async def api_call_with_retry(func: Any, *args: Any, **kwargs: Any) -> Any:
+async def api_call_with_retry(method_name: str, *args: Any, **kwargs: Any) -> Any:
     """Wrapper for API calls that handles session expiration and retries.
 
     Only clears sessions and re-authenticates for genuine auth errors.
     Other errors (network, library issues, etc.) are raised immediately.
+
+    Args:
+        method_name: Name of the method to call on mm_client (e.g., "get_accounts")
+        *args: Positional arguments to pass to the method
+        **kwargs: Keyword arguments to pass to the method
     """
-    global auth_state
+    global auth_state, mm_client
+
+    # Get the method from the current mm_client instance
+    if mm_client is None:
+        raise ValueError("mm_client is not initialized")
+
+    method = getattr(mm_client, method_name)
 
     try:
-        return await func(*args, **kwargs)
+        return await method(*args, **kwargs)
     except Exception as e:
         # Use the new helper to determine if this is a real auth error
         if is_auth_error(e):
@@ -638,7 +649,12 @@ async def api_call_with_retry(func: Any, *args: Any, **kwargs: Any) -> Any:
             # Re-authenticate and retry once
             await ensure_authenticated()
             logger.info("Retrying API call after re-authentication")
-            return await func(*args, **kwargs)
+
+            # CRITICAL: Get the method from the NEW mm_client instance after re-auth
+            if mm_client is None:
+                raise ValueError("mm_client is still None after re-authentication")
+            method = getattr(mm_client, method_name)
+            return await method(*args, **kwargs)
         else:
             # Not an auth error - raise immediately without clearing session
             raise
@@ -853,7 +869,7 @@ async def get_accounts() -> str:
 
     try:
         logger.info("Fetching accounts")
-        accounts = await api_call_with_retry(mm_client.get_accounts)
+        accounts = await api_call_with_retry("get_accounts")
         accounts = convert_dates_to_strings(accounts)
         logger.info(f"Accounts retrieved successfully, count: {len(accounts) if isinstance(accounts, list) else 'unknown'}")
         return json.dumps(accounts, indent=2)
@@ -906,7 +922,7 @@ async def get_transactions(
             filters["category_ids"] = [category_id]
 
         response = await api_call_with_retry(
-            mm_client.get_transactions,
+            "get_transactions",
             limit=limit,
             offset=offset,
             **filters
@@ -982,7 +998,7 @@ async def search_transactions(
 
         # Fetch transactions from API with search filter
         response = await api_call_with_retry(
-            mm_client.get_transactions,
+            "get_transactions",
             limit=limit,
             offset=offset,
             **filters
@@ -1104,7 +1120,7 @@ async def create_transaction(
         # Use api_call_with_retry for session expiration handling and add timeout
         result = await asyncio.wait_for(
             api_call_with_retry(
-                mm_client.create_transaction,
+                "create_transaction",
                 amount=amount,
                 description=description,
                 category_id=category_id,
@@ -1153,7 +1169,7 @@ async def update_transaction(
 
         # Use api_call_with_retry for session expiration handling and add timeout
         result = await asyncio.wait_for(
-            api_call_with_retry(mm_client.update_transaction, **updates),
+            api_call_with_retry("update_transaction", **updates),
             timeout=30.0  # 30 second timeout
         )
         result = convert_dates_to_strings(result)

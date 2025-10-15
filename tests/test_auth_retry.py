@@ -13,39 +13,48 @@ class TestAuthenticationRetry:
         """Test that 401 errors trigger session clear and retry."""
         from server import api_call_with_retry
 
-        # Mock the function to fail first, then succeed
-        mock_func = AsyncMock()
-        mock_func.side_effect = [
+        # Mock the method to fail first, then succeed
+        mock_method = AsyncMock()
+        mock_method.side_effect = [
             Exception("401 Unauthorized"),
             {"success": True}
         ]
 
-        with patch('server.clear_session') as mock_clear, \
+        # Mock mm_client with the method
+        mock_client = MagicMock()
+        mock_client.test_method = mock_method
+
+        with patch('server.mm_client', mock_client), \
+             patch('server.clear_session') as mock_clear, \
              patch('server.ensure_authenticated') as mock_auth:
 
-            result = await api_call_with_retry(mock_func)
+            result = await api_call_with_retry("test_method")
 
             # Verify session was cleared and ensure_authenticated was called
             assert mock_clear.called
             assert mock_auth.called
             assert result == {"success": True}
-            assert mock_func.call_count == 2
+            assert mock_method.call_count == 2
 
     @pytest.mark.asyncio
     async def test_api_call_with_retry_handles_bad_credentials(self):
         """Test that bad credentials error triggers session clear and retry."""
         from server import api_call_with_retry
 
-        mock_func = AsyncMock()
-        mock_func.side_effect = [
+        mock_method = AsyncMock()
+        mock_method.side_effect = [
             Exception("bad credentials provided"),
             {"success": True}
         ]
 
-        with patch('server.clear_session') as mock_clear, \
+        mock_client = MagicMock()
+        mock_client.test_method = mock_method
+
+        with patch('server.mm_client', mock_client), \
+             patch('server.clear_session') as mock_clear, \
              patch('server.ensure_authenticated') as mock_auth:
 
-            result = await api_call_with_retry(mock_func)
+            result = await api_call_with_retry("test_method")
 
             assert mock_clear.called
             assert mock_auth.called
@@ -56,16 +65,20 @@ class TestAuthenticationRetry:
         """Test that 'unauthorized' error triggers session clear and retry."""
         from server import api_call_with_retry
 
-        mock_func = AsyncMock()
-        mock_func.side_effect = [
+        mock_method = AsyncMock()
+        mock_method.side_effect = [
             Exception("Request unauthorized - invalid session"),
             {"success": True}
         ]
 
-        with patch('server.clear_session') as mock_clear, \
+        mock_client = MagicMock()
+        mock_client.test_method = mock_method
+
+        with patch('server.mm_client', mock_client), \
+             patch('server.clear_session') as mock_clear, \
              patch('server.ensure_authenticated') as mock_auth:
 
-            result = await api_call_with_retry(mock_func)
+            result = await api_call_with_retry("test_method")
 
             assert mock_clear.called
             assert mock_auth.called
@@ -75,16 +88,20 @@ class TestAuthenticationRetry:
         """Test that 403 Forbidden errors trigger session clear and retry."""
         from server import api_call_with_retry
 
-        mock_func = AsyncMock()
-        mock_func.side_effect = [
+        mock_method = AsyncMock()
+        mock_method.side_effect = [
             Exception("403 Forbidden - not authenticated"),
             {"success": True}
         ]
 
-        with patch('server.clear_session') as mock_clear, \
+        mock_client = MagicMock()
+        mock_client.test_method = mock_method
+
+        with patch('server.mm_client', mock_client), \
+             patch('server.clear_session') as mock_clear, \
              patch('server.ensure_authenticated') as mock_auth:
 
-            result = await api_call_with_retry(mock_func)
+            result = await api_call_with_retry("test_method")
 
             assert mock_clear.called
             assert mock_auth.called
@@ -94,16 +111,20 @@ class TestAuthenticationRetry:
         """Test that 'session' errors trigger session clear and retry."""
         from server import api_call_with_retry
 
-        mock_func = AsyncMock()
-        mock_func.side_effect = [
+        mock_method = AsyncMock()
+        mock_method.side_effect = [
             Exception("Session has expired, please login again"),
             {"success": True}
         ]
 
-        with patch('server.clear_session') as mock_clear, \
+        mock_client = MagicMock()
+        mock_client.test_method = mock_method
+
+        with patch('server.mm_client', mock_client), \
+             patch('server.clear_session') as mock_clear, \
              patch('server.ensure_authenticated') as mock_auth:
 
-            result = await api_call_with_retry(mock_func)
+            result = await api_call_with_retry("test_method")
 
             assert mock_clear.called
             assert mock_auth.called
@@ -113,14 +134,18 @@ class TestAuthenticationRetry:
         """Test that non-auth errors are re-raised without retry."""
         from server import api_call_with_retry
 
-        mock_func = AsyncMock()
-        mock_func.side_effect = Exception("Network timeout error")
+        mock_method = AsyncMock()
+        mock_method.side_effect = Exception("Network timeout error")
 
-        with patch('server.clear_session') as mock_clear, \
+        mock_client = MagicMock()
+        mock_client.test_method = mock_method
+
+        with patch('server.mm_client', mock_client), \
+             patch('server.clear_session') as mock_clear, \
              patch('server.ensure_authenticated') as mock_auth:
 
             with pytest.raises(Exception, match="Network timeout"):
-                await api_call_with_retry(mock_func)
+                await api_call_with_retry("test_method")
 
             # Should not clear session or re-initialize for non-auth errors
             assert not mock_clear.called
@@ -204,16 +229,20 @@ class TestAuthenticationRetry:
         ]
 
         for error_msg in auth_error_messages:
-            mock_func = AsyncMock()
-            mock_func.side_effect = [
+            mock_method = AsyncMock()
+            mock_method.side_effect = [
                 Exception(error_msg),
                 {"success": True}
             ]
 
-            with patch('server.clear_session') as mock_clear, \
+            mock_client = MagicMock()
+            mock_client.test_method = mock_method
+
+            with patch('server.mm_client', mock_client), \
+                 patch('server.clear_session') as mock_clear, \
                  patch('server.ensure_authenticated') as mock_auth:
 
-                result = await api_call_with_retry(mock_func)
+                result = await api_call_with_retry("test_method")
 
                 # All these should trigger session clear
                 assert mock_clear.called, f"Failed to detect auth error: {error_msg}"
