@@ -1184,6 +1184,139 @@ async def update_transaction(
 
 @mcp.tool()
 @track_usage
+async def update_transactions_bulk(
+    updates: str
+) -> str:
+    """Update multiple transactions in a single call to save round-trips.
+
+    This is much more efficient than calling update_transaction multiple times.
+    Updates are executed in parallel for maximum performance.
+
+    Args:
+        updates: JSON string containing list of transaction updates. Each update should have:
+            - transaction_id (required): ID of transaction to update
+            - amount (optional): New amount
+            - description (optional): New description
+            - category_id (optional): New category ID
+            - date (optional): New date in YYYY-MM-DD format
+            - notes (optional): New notes
+
+    Example:
+        [
+            {"transaction_id": "123", "category_id": "cat_456", "notes": "Updated"},
+            {"transaction_id": "789", "amount": 50.00, "description": "Grocery store"}
+        ]
+
+    Returns:
+        JSON with results for each transaction including successes and any failures
+    """
+    await ensure_authenticated()
+
+    try:
+        # Parse the updates JSON
+        try:
+            updates_list = json.loads(updates)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON in updates parameter: {e}")
+
+        if not isinstance(updates_list, list):
+            raise ValueError("updates parameter must be a JSON array of transaction updates")
+
+        if len(updates_list) == 0:
+            return json.dumps({"message": "No updates provided", "results": []}, indent=2)
+
+        logger.info(f"Starting bulk transaction update: {len(updates_list)} transactions")
+
+        # Build list of update tasks
+        async def update_single(update_data: Dict[str, Any]) -> Dict[str, Any]:
+            """Update a single transaction and return result with transaction_id."""
+            try:
+                if not isinstance(update_data, dict):
+                    return {
+                        "transaction_id": None,
+                        "status": "error",
+                        "error": "Update must be a dictionary"
+                    }
+
+                if "transaction_id" not in update_data:
+                    return {
+                        "transaction_id": None,
+                        "status": "error",
+                        "error": "transaction_id is required"
+                    }
+
+                txn_id = update_data["transaction_id"]
+
+                # Build update parameters
+                update_params: Dict[str, Any] = {"transaction_id": txn_id}
+
+                if "amount" in update_data:
+                    update_params["amount"] = float(update_data["amount"])
+                if "description" in update_data:
+                    update_params["description"] = str(update_data["description"])
+                if "category_id" in update_data:
+                    update_params["category_id"] = str(update_data["category_id"])
+                if "date" in update_data:
+                    date_str = str(update_data["date"])
+                    update_params["date"] = datetime.strptime(date_str, "%Y-%m-%d").date()
+                if "notes" in update_data:
+                    update_params["notes"] = str(update_data["notes"])
+
+                # Execute update with timeout
+                result = await asyncio.wait_for(
+                    api_call_with_retry("update_transaction", **update_params),
+                    timeout=30.0
+                )
+
+                return {
+                    "transaction_id": txn_id,
+                    "status": "success",
+                    "result": convert_dates_to_strings(result)
+                }
+
+            except asyncio.TimeoutError:
+                return {
+                    "transaction_id": update_data.get("transaction_id"),
+                    "status": "error",
+                    "error": "Update timed out after 30 seconds"
+                }
+            except Exception as e:
+                return {
+                    "transaction_id": update_data.get("transaction_id"),
+                    "status": "error",
+                    "error": str(e)
+                }
+
+        # Execute all updates in parallel
+        results = await asyncio.gather(
+            *[update_single(update_data) for update_data in updates_list],
+            return_exceptions=False  # We handle exceptions in update_single
+        )
+
+        # Count successes and failures
+        success_count = sum(1 for r in results if r["status"] == "success")
+        failure_count = len(results) - success_count
+
+        logger.info(f"Bulk update complete: {success_count} succeeded, {failure_count} failed")
+
+        response = {
+            "summary": {
+                "total": len(results),
+                "succeeded": success_count,
+                "failed": failure_count
+            },
+            "results": results
+        }
+
+        return json.dumps(response, indent=2)
+
+    except Exception as e:
+        logger.error(f"Failed to execute bulk transaction update: {e}")
+        raise
+
+
+@mcp.tool()
+@track_usage
 async def get_account_holdings() -> str:
     """Get investment portfolio data from brokerage accounts."""
     await ensure_authenticated()

@@ -162,15 +162,15 @@ refactor: split server.py into modular components (auth, tools, models)
 - Structured logging with `structlog` for debugging
 - Environment variables: `MONARCH_EMAIL`, `MONARCH_PASSWORD`, `MONARCH_MFA_SECRET`
 
-**Complete Monarch Money API Coverage (21 Tools)**
+**Complete Monarch Money API Coverage (22 Tools)**
 - **Core**: `get_accounts`, `get_transactions`, `get_budgets`, `get_cashflow`
 - **Categories**: `get_transaction_categories`
-- **Transactions**: `create_transaction`, `update_transaction`, `search_transactions`
+- **Transactions**: `create_transaction`, `update_transaction`, `update_transactions_bulk`, `search_transactions`
 - **Investments**: `get_account_holdings`, `get_account_history`
 - **Banking**: `get_institutions`, `refresh_accounts`
 - **Planning**: `get_recurring_transactions`, `set_budget_amount`
 - **Manual**: `create_manual_account`
-- **Batch Operations**: `get_transactions_batch`, `get_spending_summary`
+- **Batch Operations**: `get_transactions_batch`, `get_spending_summary`, `update_transactions_bulk`
 - **Intelligent Analysis**: `get_complete_financial_overview`, `analyze_spending_patterns`
 - **Analytics**: `get_usage_analytics`
 
@@ -239,18 +239,23 @@ Server runs as MCP server configured in `.mcp.json` with:
 - **✅ Structured Logging**: Context-rich logs with `structlog`
 - **✅ Complete API Coverage**: All 14 Monarch Money API methods as tools
 
-#### Quality Metrics (Updated July 2025)
-- **61 passing tests** with comprehensive coverage including analytics and search features
+#### Quality Metrics (Updated October 2025)
+- **70 passing tests** with comprehensive coverage including analytics, search, and bulk operations
 - **MyPy errors reduced**: 111 → 84 (mainly untyped external decorators, ongoing improvement)
 - **Security**: Proper session handling and MFA support
 - **Modern stack**: FastMCP 1.12.2, Pydantic, structlog, pytest
 - **Usage analytics**: Real-time performance tracking and optimization suggestions
-- **Codebase**: 1,379 lines in server.py, 6 test files with comprehensive coverage
+- **Codebase**: 1,447 lines in server.py, 7 test files with comprehensive coverage
 
 ### ✅ ADVANCED FEATURES (Recently Completed)
 
 #### Smart Tool Design & UX
 - **✅ Batch operations**: `get_transactions_batch()` for efficient multi-queries with parallel execution
+- **✅ Bulk updates** (NEW October 2025): `update_transactions_bulk()` for updating multiple transactions in one call
+  - Parallel execution for maximum performance
+  - Individual error handling per transaction
+  - Summary statistics (succeeded/failed counts)
+  - Significantly reduces round-trips for batch updates
 - **✅ Enhanced Date Parsing** (Updated July 2025): Comprehensive natural language support
   - Natural language: "last month", "yesterday", "this year", "last week", "this week"
   - Relative dates: "30 days ago", "6 months ago", "1 year ago"
@@ -386,7 +391,7 @@ Server runs as MCP server configured in `.mcp.json` with:
 5. **Phase 5 (Intelligence)**: ML features, advanced analytics, financial insights
 6. **Phase 6 (Ecosystem)**: MCP extensions, developer tools, architectural improvements
 
-**Current Status** (Updated October 2025): Production-ready with 61 passing tests, 21 intelligent tools, comprehensive analytics, robust error handling, and enhanced reliability. Recent features: search_transactions tool for efficient context-aware search, detailed tool call debugging with result size tracking. Recent critical fixes completed: date serialization, broken pipe handling, dependency updates, and enhanced date parsing. Server is stable and ready for real-world usage with excellent user experience for date filtering and error recovery.
+**Current Status** (Updated October 2025): Production-ready with 70 passing tests, 22 intelligent tools, comprehensive analytics, robust error handling, and enhanced reliability. Recent features: `update_transactions_bulk()` for parallel batch updates, `search_transactions` tool for efficient context-aware search, detailed tool call debugging with result size tracking. Recent critical fixes completed: authentication retry bug (stale client after re-auth), date serialization, broken pipe handling, dependency updates, and enhanced date parsing. Server is stable and ready for real-world usage with excellent user experience for date filtering, bulk operations, and error recovery.
 
 ## Documentation References
 
