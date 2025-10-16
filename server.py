@@ -1049,7 +1049,7 @@ async def get_budgets(
     kwargs = build_date_filter(start_date, end_date)
 
     try:
-        budgets = await mm_client.get_budgets(**kwargs)
+        budgets = await api_call_with_retry("get_budgets", **kwargs)
         budgets = convert_dates_to_strings(budgets)
         return json.dumps(budgets, indent=2)
     except Exception as e:
@@ -1084,7 +1084,7 @@ async def get_cashflow(
     # Use build_date_filter for consistent natural language date support
     kwargs = build_date_filter(start_date, end_date)
 
-    cashflow = await mm_client.get_cashflow(**kwargs)
+    cashflow = await api_call_with_retry("get_cashflow", **kwargs)
     cashflow = convert_dates_to_strings(cashflow)
     return json.dumps(cashflow, indent=2)
 
@@ -1095,7 +1095,7 @@ async def get_transaction_categories() -> str:
     """List all transaction categories."""
     await ensure_authenticated()
 
-    categories = await mm_client.get_transaction_categories()
+    categories = await api_call_with_retry("get_transaction_categories")
     categories = convert_dates_to_strings(categories)
     return json.dumps(categories, indent=2)
 
@@ -1322,7 +1322,7 @@ async def get_account_holdings() -> str:
     await ensure_authenticated()
     
     try:
-        holdings = await mm_client.get_account_holdings()
+        holdings = await api_call_with_retry("get_account_holdings")
         holdings = convert_dates_to_strings(holdings)
         return json.dumps(holdings, indent=2)
     except Exception as e:
@@ -1347,7 +1347,7 @@ async def get_account_history(
         kwargs["end_date"] = datetime.strptime(end_date, "%Y-%m-%d").date()
     
     try:
-        history = await mm_client.get_account_history(**kwargs)
+        history = await api_call_with_retry("get_account_history", **kwargs)
         history = convert_dates_to_strings(history)
         return json.dumps(history, indent=2)
     except Exception as e:
@@ -1362,7 +1362,7 @@ async def get_institutions() -> str:
     await ensure_authenticated()
     
     try:
-        institutions = await mm_client.get_institutions()
+        institutions = await api_call_with_retry("get_institutions")
         institutions = convert_dates_to_strings(institutions)
         return json.dumps(institutions, indent=2)
     except Exception as e:
@@ -1377,7 +1377,7 @@ async def get_recurring_transactions() -> str:
     await ensure_authenticated()
     
     try:
-        recurring = await mm_client.get_recurring_transactions()
+        recurring = await api_call_with_retry("get_recurring_transactions")
         recurring = convert_dates_to_strings(recurring)
         return json.dumps(recurring, indent=2)
     except Exception as e:
@@ -1395,7 +1395,7 @@ async def set_budget_amount(
     await ensure_authenticated()
     
     try:
-        result = await mm_client.set_budget_amount(category_id=category_id, amount=amount)
+        result = await api_call_with_retry("set_budget_amount", category_id=category_id, amount=amount)
         result = convert_dates_to_strings(result)
         log.info("Budget amount updated", category_id=category_id, amount=amount)
         return json.dumps(result, indent=2)
@@ -1415,7 +1415,8 @@ async def create_manual_account(
     await ensure_authenticated()
     
     try:
-        result = await mm_client.create_manual_account(
+        result = await api_call_with_retry(
+            "create_manual_account",
             account_name=account_name,
             account_type=account_type,
             balance=balance
@@ -1449,7 +1450,7 @@ async def get_spending_summary(
         
         # Get transactions for the period
         filters = build_date_filter(start_date, end_date)
-        response = await mm_client.get_transactions(limit=1000, **filters)
+        response = await api_call_with_retry("get_transactions", limit=1000, **filters)
         # Extract transactions list from nested response structure
         transactions = extract_transactions_list(response)
         
@@ -1512,7 +1513,7 @@ async def refresh_accounts() -> str:
     await ensure_authenticated()
     
     try:
-        result = await mm_client.request_accounts_refresh()
+        result = await api_call_with_retry("request_accounts_refresh")
         result = convert_dates_to_strings(result)
         log.info("Account refresh requested")
         return json.dumps(result, indent=2)
@@ -1541,12 +1542,12 @@ async def get_complete_financial_overview(
         filters = build_date_filter(period, None)
         
         # Execute all API calls in parallel for maximum efficiency
-        accounts_task = mm_client.get_accounts()
-        budgets_task = mm_client.get_budgets(**filters)
-        cashflow_task = mm_client.get_cashflow(**filters)
-        transactions_task = mm_client.get_transactions(limit=500, **filters)
-        categories_task = mm_client.get_transaction_categories()
-        
+        accounts_task = api_call_with_retry("get_accounts")
+        budgets_task = api_call_with_retry("get_budgets", **filters)
+        cashflow_task = api_call_with_retry("get_cashflow", **filters)
+        transactions_task = api_call_with_retry("get_transactions", limit=500, **filters)
+        categories_task = api_call_with_retry("get_transaction_categories")
+
         # Wait for all results
         accounts, budgets, cashflow, transactions, categories = await asyncio.gather(
             accounts_task, budgets_task, cashflow_task, transactions_task, categories_task,
@@ -1640,15 +1641,16 @@ async def analyze_spending_patterns(
         start_date = end_date - relativedelta(months=lookback_months)
         
         # Batch API calls for comprehensive data
-        transactions_task = mm_client.get_transactions(
-            limit=2000, 
-            start_date=start_date, 
+        transactions_task = api_call_with_retry(
+            "get_transactions",
+            limit=2000,
+            start_date=start_date,
             end_date=end_date
         )
-        budgets_task = mm_client.get_budgets(start_date=start_date, end_date=end_date)
-        accounts_task = mm_client.get_accounts()
-        categories_task = mm_client.get_transaction_categories()
-        
+        budgets_task = api_call_with_retry("get_budgets", start_date=start_date, end_date=end_date)
+        accounts_task = api_call_with_retry("get_accounts")
+        categories_task = api_call_with_retry("get_transaction_categories")
+
         transactions, budgets, accounts, categories = await asyncio.gather(
             transactions_task, budgets_task, accounts_task, categories_task,
             return_exceptions=True
