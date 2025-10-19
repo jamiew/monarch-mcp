@@ -945,10 +945,24 @@ async def get_transactions(
     await ensure_authenticated()
 
     try:
-        logger.info(f"Fetching transactions: limit={limit}, offset={offset}, start_date={start_date}, end_date={end_date}, verbose={verbose}")
+        # Log original parameters BEFORE any processing
+        logger.info(f"[TOOL_CALL] get_transactions called with: limit={limit}, offset={offset}, start_date={repr(start_date)}, end_date={repr(end_date)}, account_id={repr(account_id)}, category_id={repr(category_id)}, verbose={verbose}")
+
+        # Track original values for auto-fill detection
+        original_start = start_date
+        original_end = end_date
 
         # Build filter parameters with flexible date parsing
         filters: Dict[str, Any] = build_date_filter(start_date, end_date)
+
+        # Log if dates were auto-filled
+        if original_start and not original_end and "end_date" in filters:
+            logger.warning(f"[AUTO-FILL] end_date was not provided, defaulted to 'today' ({filters['end_date']})")
+        elif original_end and not original_start and "start_date" in filters:
+            logger.warning(f"[AUTO-FILL] start_date was not provided, defaulted to '{filters['start_date']}' (first of end_date's month)")
+
+        # Log final filters being sent to API
+        logger.info(f"[API_CALL] Calling Monarch API with filters: {filters}")
 
         # monarchmoney expects account_ids and category_ids as LISTS
         if account_id:
@@ -1019,10 +1033,25 @@ async def search_transactions(
 
     try:
         query_str = query.strip()
-        logger.info(f"Searching transactions for '{query_str}': limit={limit}, start_date={start_date}, end_date={end_date}")
+
+        # Log original parameters BEFORE any processing
+        logger.info(f"[TOOL_CALL] search_transactions called with: query={repr(query_str)}, limit={limit}, offset={offset}, start_date={repr(start_date)}, end_date={repr(end_date)}, account_id={repr(account_id)}, category_id={repr(category_id)}, verbose={verbose}")
+
+        # Track original values for auto-fill detection
+        original_start = start_date
+        original_end = end_date
 
         # Build filter parameters
         filters: Dict[str, Any] = build_date_filter(start_date, end_date)
+
+        # Log if dates were auto-filled
+        if original_start and not original_end and "end_date" in filters:
+            logger.warning(f"[AUTO-FILL] end_date was not provided, defaulted to 'today' ({filters['end_date']})")
+        elif original_end and not original_start and "start_date" in filters:
+            logger.warning(f"[AUTO-FILL] start_date was not provided, defaulted to '{filters['start_date']}' (first of end_date's month)")
+
+        # Log final filters being sent to API
+        logger.info(f"[API_CALL] Calling Monarch API with filters: {filters}")
 
         # monarchmoney expects account_ids and category_ids as LISTS
         if account_id:
