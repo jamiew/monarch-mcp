@@ -164,19 +164,52 @@ def parse_flexible_date(date_input: str) -> date:
 def build_date_filter(start_date: Optional[str], end_date: Optional[str]) -> Dict[str, str]:
     """
     Build date filter dictionary with flexible parsing and comprehensive error recovery.
-    
+
     Args:
         start_date: Start date string (flexible format supported)
         end_date: End date string (flexible format supported)
-        
+
     Returns:
         Dictionary with ISO format date strings
-        
+
     Raises:
         ValueError: If date parsing fails completely after all fallback attempts
+
+    Note:
+        Monarch Money API requires BOTH start_date AND end_date when filtering by date.
+        If only one is provided, the other will be auto-filled with a sensible default:
+        - Missing end_date: defaults to today
+        - Missing start_date: defaults to start of current month
     """
     filters: Dict[str, str] = {}
-    
+
+    # Auto-fill missing dates for better UX (Monarch API requires both or neither)
+    if start_date and not end_date:
+        # User provided start but not end - default end to today
+        end_date = "today"
+        log.info("Auto-filling missing end_date with 'today'", start_date=start_date)
+    elif end_date and not start_date:
+        # User provided end but not start - need to parse end_date first to choose smart default
+        # If end_date is in the past, use beginning of that month; otherwise use this month
+        try:
+            parsed_end = parse_flexible_date(end_date)
+            today = date.today()
+
+            # If end date is in the past or in a different month, use first of that month
+            if parsed_end < today or parsed_end.month != today.month or parsed_end.year != today.year:
+                # Use first day of the end_date's month
+                start_date = date(parsed_end.year, parsed_end.month, 1).isoformat()
+                log.info("Auto-filling missing start_date with first of end_date's month",
+                        end_date=end_date, calculated_start=start_date)
+            else:
+                # End date is this month, use "this month"
+                start_date = "this month"
+                log.info("Auto-filling missing start_date with 'this month'", end_date=end_date)
+        except ValueError:
+            # If we can't parse end_date yet, just use "this month" and let validation catch issues later
+            start_date = "this month"
+            log.info("Auto-filling missing start_date with 'this month' (end_date parse pending)", end_date=end_date)
+
     if start_date:
         try:
             parsed_date = parse_flexible_date(start_date)
@@ -895,7 +928,9 @@ async def get_transactions(
         limit: Maximum number of transactions to return (default: 100, max: 1000)
         offset: Number of transactions to skip for pagination (default: 0)
         start_date: Filter transactions from this date onwards. Supports natural language like 'last month', 'yesterday', '30 days ago'
+                    NOTE: If you provide start_date without end_date, end_date will auto-default to 'today'
         end_date: Filter transactions up to this date. Supports natural language
+                  NOTE: If you provide end_date without start_date, start_date will auto-default to 'this month'
         account_id: Filter by specific account ID
         category_id: Filter by specific category ID
         verbose: Output format control (default: False)
@@ -965,7 +1000,9 @@ async def search_transactions(
         limit: Maximum transactions to return (default: 500, max: 1000)
         offset: Number of transactions to skip for pagination (default: 0)
         start_date: Filter transactions from this date onwards (supports natural language)
+                    NOTE: If you provide start_date without end_date, end_date will auto-default to 'today'
         end_date: Filter transactions up to this date (supports natural language)
+                  NOTE: If you provide end_date without start_date, start_date will auto-default to 'this month'
         account_id: Filter by specific account ID
         category_id: Filter by specific category ID
         verbose: Output format control (default: False)
