@@ -707,15 +707,9 @@ async def api_call_with_retry(method_name: str, *args: Any, max_retries: int = 3
                     # Calculate exponential backoff delay (1s, 2s, 4s, ...)
                     backoff_delay = 2 ** attempt
                     logger.warning(
-<<<<<<< HEAD
-                        f"API call failed with auth error: {e}"
-                    )
-                    logger.info(f"Will retry after clearing session (try {attempt + 2} of {max_retries + 1} in {backoff_delay}s)")
-=======
                         f"API call failed with auth error (attempt {attempt + 1}/{max_retries + 1}): {e}"
                     )
                     logger.info(f"Clearing session and re-authenticating (retry in {backoff_delay}s)")
->>>>>>> main
 
                     # clear_session() will reset auth state and error automatically
                     clear_session(reason=f"authentication failure during API call (attempt {attempt + 1})")
