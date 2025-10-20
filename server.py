@@ -621,14 +621,22 @@ def is_auth_error(error: Exception) -> bool:
 
 
 def clear_session(reason: str = "unknown") -> None:
-    """Clear existing session files - only call when genuinely needed.
+    """Clear session files and reset authentication state to allow fresh re-authentication.
+
+    This function performs a complete authentication reset:
+    - Clears session files from disk (.mm/session.pickle, .mm/mm_session.pickle)
+    - Resets the client instance (mm_client = None)
+    - Resets auth state to NOT_INITIALIZED
+    - Clears auth errors and failure timestamps
+
+    Only call when genuinely needed (e.g., after auth errors, on forced re-login).
 
     Args:
         reason: Why the session is being cleared (for logging/debugging)
     """
     global mm_client, auth_state, auth_error, auth_failed_at
 
-    logger.info(f"Clearing session files (reason: {reason})")
+    logger.info(f"[AUTH] Resetting authentication state (reason: {reason})")
 
     # Clear the client instance to ensure fresh initialization
     if mm_client is not None:
@@ -699,9 +707,15 @@ async def api_call_with_retry(method_name: str, *args: Any, max_retries: int = 3
                     # Calculate exponential backoff delay (1s, 2s, 4s, ...)
                     backoff_delay = 2 ** attempt
                     logger.warning(
+<<<<<<< HEAD
+                        f"API call failed with auth error: {e}"
+                    )
+                    logger.info(f"Will retry after clearing session (try {attempt + 2} of {max_retries + 1} in {backoff_delay}s)")
+=======
                         f"API call failed with auth error (attempt {attempt + 1}/{max_retries + 1}): {e}"
                     )
                     logger.info(f"Clearing session and re-authenticating (retry in {backoff_delay}s)")
+>>>>>>> main
 
                     # clear_session() will reset auth state and error automatically
                     clear_session(reason=f"authentication failure during API call (attempt {attempt + 1})")
