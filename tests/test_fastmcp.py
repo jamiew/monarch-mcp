@@ -156,37 +156,38 @@ class TestFastMCPServer:
         mock_client = AsyncMock()
         mock_result = {"id": "new123", "status": "created"}
         mock_client.create_transaction.return_value = mock_result
-        
+
         # Set global client
         original_client = server.mm_client
         server.mm_client = mock_client
-        
-        try:
+
+        with patch('server.ensure_authenticated', new_callable=AsyncMock):
             result = await server.create_transaction(
                 amount=-45.67,
-                description="Test transaction",
+                merchant_name="Test transaction",
                 account_id="acc123",
                 date="2024-07-29",
+                category_id="cat123",
                 notes="Test notes"
             )
-            
+
             # Verify result is JSON string
             assert isinstance(result, str)
             parsed_result = json.loads(result)
             assert parsed_result == mock_result
-            
+
             # Verify mock was called with correct parameters
             mock_client.create_transaction.assert_called_once()
             call_args = mock_client.create_transaction.call_args
             assert call_args.kwargs["amount"] == -45.67
-            assert call_args.kwargs["description"] == "Test transaction"
+            assert call_args.kwargs["merchant_name"] == "Test transaction"
             assert call_args.kwargs["account_id"] == "acc123"
             assert call_args.kwargs["notes"] == "Test notes"
-            # Verify date was converted properly
-            assert hasattr(call_args.kwargs["date"], "year")  # Should be a date object
-        finally:
-            # Restore original client
-            server.mm_client = original_client
+            # Verify date was converted to string (API expects ISO string)
+            assert call_args.kwargs["date"] == "2024-07-29"
+
+        # Restore original client
+        server.mm_client = original_client
 
 
 class TestFastMCPComparisionWithOld:
@@ -219,6 +220,7 @@ class TestFastMCPComparisionWithOld:
         sig = inspect.signature(server.create_transaction)
         params = list(sig.parameters.keys())
         assert "amount" in params
-        assert "description" in params
+        assert "merchant_name" in params
         assert "account_id" in params
         assert "date" in params
+        assert "category_id" in params

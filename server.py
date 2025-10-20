@@ -44,20 +44,24 @@ class GetCashflowArgs(BaseModel):  # type: ignore[misc]
 class CreateTransactionArgs(BaseModel):  # type: ignore[misc]
     """Arguments for create_transaction tool."""
     amount: float
-    description: str = Field(min_length=1)
-    category_id: Optional[str] = None
+    merchant_name: str = Field(min_length=1)
+    category_id: str = Field(min_length=1)
     account_id: str
     date: str = Field(pattern=r'^\d{4}-\d{2}-\d{2}$')
     notes: Optional[str] = None
+    update_balance: bool = Field(default=False)
 
 class UpdateTransactionArgs(BaseModel):  # type: ignore[misc]
     """Arguments for update_transaction tool."""
     transaction_id: str
     amount: Optional[float] = None
-    description: Optional[str] = Field(default=None, min_length=1)
+    merchant_name: Optional[str] = Field(default=None, min_length=1)
     category_id: Optional[str] = None
     date: Optional[str] = Field(default=None, pattern=r'^\d{4}-\d{2}-\d{2}$')
     notes: Optional[str] = None
+    goal_id: Optional[str] = None
+    hide_from_reports: Optional[bool] = None
+    needs_review: Optional[bool] = None
 
 
 def parse_flexible_date(date_input: str) -> date:
@@ -565,6 +569,8 @@ mm_client: Optional[MonarchMoney] = None
 auth_state: AuthState = AuthState.NOT_INITIALIZED
 auth_lock: Optional[asyncio.Lock] = None  # Created in async context
 auth_error: Optional[str] = None  # Store last auth error for debugging
+auth_failed_at: Optional[float] = None  # Timestamp of last auth failure for cooldown
+AUTH_RETRY_COOLDOWN_SECONDS = 60  # Wait 60 seconds before retrying after FAILED state
 
 # Secure session directory with proper permissions
 session_dir = Path(".mm")
@@ -620,7 +626,7 @@ def clear_session(reason: str = "unknown") -> None:
     Args:
         reason: Why the session is being cleared (for logging/debugging)
     """
-    global mm_client
+    global mm_client, auth_state, auth_error, auth_failed_at
 
     logger.info(f"Clearing session files (reason: {reason})")
 
@@ -628,6 +634,12 @@ def clear_session(reason: str = "unknown") -> None:
     if mm_client is not None:
         logger.info("[AUTH] Clearing mm_client instance")
         mm_client = None
+
+    # Reset auth state and error to allow re-authentication
+    logger.info(f"[AUTH] Resetting auth state from {auth_state.value} to not_initialized")
+    auth_state = AuthState.NOT_INITIALIZED
+    auth_error = None
+    auth_failed_at = None  # Reset failure timestamp
 
     # Clear our custom session file
     if session_file.exists():
@@ -646,7 +658,7 @@ def clear_session(reason: str = "unknown") -> None:
         except Exception as e:
             logger.warning(f"Failed to clear mm session file: {e}")
 
-async def api_call_with_retry(method_name: str, *args: Any, **kwargs: Any) -> Any:
+async def api_call_with_retry(method_name: str, *args: Any, max_retries: int = 3, **kwargs: Any) -> Any:
     """Wrapper for API calls that handles session expiration and retries.
 
     Only clears sessions and re-authenticates for genuine auth errors.
@@ -655,42 +667,69 @@ async def api_call_with_retry(method_name: str, *args: Any, **kwargs: Any) -> An
     Args:
         method_name: Name of the method to call on mm_client (e.g., "get_accounts")
         *args: Positional arguments to pass to the method
+        max_retries: Maximum number of retry attempts for auth failures (default: 3)
         **kwargs: Keyword arguments to pass to the method
+
+    Returns:
+        Result from the API method call
+
+    Raises:
+        ValueError: If mm_client is not initialized
+        Exception: Re-raises any non-auth errors or auth errors after max_retries
     """
     global auth_state, mm_client
 
-    # Get the method from the current mm_client instance
-    if mm_client is None:
-        raise ValueError("mm_client is not initialized")
+    last_error: Optional[Exception] = None
 
-    method = getattr(mm_client, method_name)
-
-    try:
-        return await method(*args, **kwargs)
-    except Exception as e:
-        # Use the new helper to determine if this is a real auth error
-        if is_auth_error(e):
-            logger.warning(f"API call failed with authentication error: {e}")
-            logger.info("Clearing session and re-authenticating")
-
-            # Reset auth state BEFORE clearing session so ensure_authenticated knows to re-init
-            logger.info(f"[AUTH] Resetting auth state from {auth_state.value} to not_initialized")
-            auth_state = AuthState.NOT_INITIALIZED
-
-            clear_session(reason="authentication failure during API call")
-
-            # Re-authenticate and retry once
-            await ensure_authenticated()
-            logger.info("Retrying API call after re-authentication")
-
-            # CRITICAL: Get the method from the NEW mm_client instance after re-auth
+    for attempt in range(max_retries + 1):  # +1 for initial attempt
+        try:
+            # Get the method from the current mm_client instance
             if mm_client is None:
-                raise ValueError("mm_client is still None after re-authentication")
+                raise ValueError("mm_client is not initialized")
+
             method = getattr(mm_client, method_name)
             return await method(*args, **kwargs)
-        else:
-            # Not an auth error - raise immediately without clearing session
-            raise
+
+        except Exception as e:
+            last_error = e
+
+            # Check if this is an auth error that should trigger retry
+            if is_auth_error(e):
+                if attempt < max_retries:
+                    # Calculate exponential backoff delay (1s, 2s, 4s, ...)
+                    backoff_delay = 2 ** attempt
+                    logger.warning(
+                        f"API call failed with auth error (attempt {attempt + 1}/{max_retries + 1}): {e}"
+                    )
+                    logger.info(f"Clearing session and re-authenticating (retry in {backoff_delay}s)")
+
+                    # clear_session() will reset auth state and error automatically
+                    clear_session(reason=f"authentication failure during API call (attempt {attempt + 1})")
+
+                    # Wait before retry (exponential backoff)
+                    if backoff_delay > 0:
+                        await asyncio.sleep(backoff_delay)
+
+                    # Re-authenticate
+                    await ensure_authenticated()
+                    logger.info(f"Retrying API call after re-authentication (attempt {attempt + 2}/{max_retries + 1})")
+
+                    # Continue to next iteration to retry with NEW mm_client
+                    continue
+                else:
+                    # Max retries exhausted for auth error
+                    logger.error(
+                        f"API call failed after {max_retries} auth retries: {e}"
+                    )
+                    raise
+            else:
+                # Not an auth error - raise immediately without retry
+                raise
+
+    # Should never reach here, but handle it defensively
+    if last_error:
+        raise last_error
+    raise RuntimeError("api_call_with_retry completed without result or error")
 
 
 async def initialize_client() -> None:
@@ -700,7 +739,7 @@ async def initialize_client() -> None:
     performs fresh authentication when necessary. It does NOT validate
     sessions immediately - validation happens on first API call.
     """
-    global mm_client, auth_state, auth_error
+    global mm_client, auth_state, auth_error, auth_failed_at
 
     email = os.getenv("MONARCH_EMAIL")
     password = os.getenv("MONARCH_PASSWORD")
@@ -828,6 +867,8 @@ async def initialize_client() -> None:
                 logger.error(f"[AUTH] ✗ {error_msg}")
                 auth_state = AuthState.FAILED
                 auth_error = str(e)
+                auth_failed_at = time.time()  # Record failure timestamp for cooldown
+                logger.info(f"[AUTH] Cooldown period activated: retry available in {AUTH_RETRY_COOLDOWN_SECONDS}s")
                 raise
 
 
@@ -837,9 +878,12 @@ async def ensure_authenticated() -> None:
     This function uses a lock to prevent concurrent initialization attempts
     and returns immediately if already authenticated.
 
+    Implements cooldown-based recovery from FAILED state: After a failure,
+    waits AUTH_RETRY_COOLDOWN_SECONDS before allowing retry attempts.
+
     Call this at the start of every tool that needs the mm_client.
     """
-    global mm_client, auth_state, auth_lock, auth_error
+    global mm_client, auth_state, auth_lock, auth_error, auth_failed_at
 
     # Initialize lock on first call (must be done in async context)
     if auth_lock is None:
@@ -860,11 +904,35 @@ async def ensure_authenticated() -> None:
             logger.info("[AUTH] Lock acquired: another task completed authentication")
             return
 
-        # Check if in failed state
+        # Check if in failed state with cooldown recovery
         if auth_state == AuthState.FAILED:
-            error_msg = f"Authentication previously failed: {auth_error or 'unknown error'}"
-            logger.error(f"[AUTH] Cannot authenticate: {error_msg}")
-            raise ValueError(error_msg)
+            # Check if cooldown period has elapsed
+            if auth_failed_at is not None:
+                elapsed = time.time() - auth_failed_at
+                if elapsed < AUTH_RETRY_COOLDOWN_SECONDS:
+                    remaining = AUTH_RETRY_COOLDOWN_SECONDS - elapsed
+                    error_msg = (
+                        f"Authentication previously failed: {auth_error or 'unknown error'}. "
+                        f"Cooldown active: retry available in {remaining:.0f} seconds. "
+                        f"To retry immediately, restart the server or set MONARCH_FORCE_LOGIN=true."
+                    )
+                    logger.error(f"[AUTH] Cannot authenticate: {error_msg}")
+                    raise ValueError(error_msg)
+                else:
+                    # Cooldown period elapsed, allow retry
+                    logger.info(
+                        f"[AUTH] Cooldown period ({AUTH_RETRY_COOLDOWN_SECONDS}s) elapsed since last failure, "
+                        f"allowing retry attempt"
+                    )
+                    auth_state = AuthState.NOT_INITIALIZED
+                    auth_error = None
+                    auth_failed_at = None
+                    # Fall through to initialization
+            else:
+                # FAILED state but no timestamp (shouldn't happen, but handle gracefully)
+                error_msg = f"Authentication previously failed: {auth_error or 'unknown error'}"
+                logger.error(f"[AUTH] Cannot authenticate: {error_msg}")
+                raise ValueError(error_msg)
 
         # Check if already initializing (shouldn't happen with lock, but defensive)
         if auth_state == AuthState.INITIALIZING:
@@ -920,6 +988,12 @@ async def get_transactions(
     end_date: Optional[str] = None,
     account_id: Optional[str] = None,
     category_id: Optional[str] = None,
+    tag_ids: Optional[str] = None,
+    has_attachments: Optional[bool] = None,
+    has_notes: Optional[bool] = None,
+    hidden_from_reports: Optional[bool] = None,
+    is_split: Optional[bool] = None,
+    is_recurring: Optional[bool] = None,
     verbose: bool = False
 ) -> str:
     """Fetch transactions with flexible date filtering and smart output formatting.
@@ -931,16 +1005,91 @@ async def get_transactions(
                     NOTE: If you provide start_date without end_date, end_date will auto-default to 'today'
         end_date: Filter transactions up to this date. Supports natural language
                   NOTE: If you provide end_date without start_date, start_date will auto-default to 'this month'
-        account_id: Filter by specific account ID
-        category_id: Filter by specific category ID
+        account_id: Filter by specific account ID (converted to list internally)
+        category_id: Filter by specific category ID (converted to list internally)
+        tag_ids: Comma-separated tag IDs to filter by (e.g., "tag1,tag2")
+        has_attachments: Filter to transactions with (True) or without (False) attachments
+        has_notes: Filter to transactions with (True) or without (False) notes
+        hidden_from_reports: Include hidden transactions (True), exclude them (False), or show all (None)
+        is_split: Filter to split transactions only (True) or non-split (False)
+        is_recurring: Filter to recurring transactions only (True) or non-recurring (False)
         verbose: Output format control (default: False)
-            - False: Returns compact format with essential fields only (id, date, amount, merchant, plaidName, category, account, pending, needsReview, notes)
-                     Reduces context usage by ~80% - ideal for most queries
-            - True: Returns complete transaction details with all metadata, nested objects, and timestamps
-                    Use when you need full data for analysis or updates
+            - False (compact mode): Returns essential fields only (~80% smaller)
+                Fields included: id, date, amount, merchant, plaidName, category,
+                                account, pending, needsReview, notes
+
+            - True (verbose mode): Returns ALL fields including:
+                Essential fields (same as compact) PLUS:
+                • hideFromReports (bool)
+                • reviewStatus (str: "needs_review" | "reviewed" | null)
+                • isSplitTransaction (bool)
+                • isRecurring (bool)
+                • attachments (list of attachment objects)
+                • tags (list of tag objects)
+                • createdAt (ISO timestamp)
+                • updatedAt (ISO timestamp)
+                • __typename (GraphQL metadata)
+                • Full nested objects with all their fields
+
+            Use verbose=False for most queries to reduce token usage.
+            Use verbose=True when you need: timestamps, split info, attachment details,
+            or are updating transactions (need full context).
+
+    Key Transaction Fields:
+        Core Identifiers:
+            - id: Unique transaction ID (required for updates)
+            - date: Transaction date (YYYY-MM-DD format)
+            - amount: Transaction amount (negative = expense, positive = income)
+
+        Merchant Information:
+            IMPORTANT: Monarch normalizes merchant names for cleaner UI
+            - merchant.name: User-facing display name shown in Monarch UI (normalized/cleaned)
+                Example: "Chipotle" for all Chipotle locations
+            - plaidName: Original bank statement text from Plaid/institution (raw data)
+                Example: "CHIPOTLE 4963", "CHIPOTLE MEX GR ONLINE", "CHIPOTLE 1879"
+                Use this to see location numbers or original descriptors
+            - Multiple transactions from different locations share the same merchant.name
+            - Use plaidName to distinguish between specific locations/variants
+
+        Categorization:
+            - category.id: Category ID (for filtering/updates)
+            - category.name: Category display name (e.g., "Restaurants & Bars")
+            - tags: List of tag objects applied to transaction
+
+        Account Info:
+            - account.id: Account ID where transaction occurred
+            - account.displayName: Account name (e.g., "Rewards Card")
+
+        Status Flags:
+            - pending: True if transaction hasn't cleared yet
+            - needsReview: True if flagged for user review
+            - reviewStatus: "needs_review", "reviewed", or null
+            - hideFromReports: True if hidden from budget/reports
+
+        Transaction Types:
+            - isSplitTransaction: True if split into multiple categories
+            - isRecurring: True if part of a recurring series
+
+        User Annotations:
+            NOTE: These are different fields with different purposes
+            - notes: Free-form user memo/annotation (e.g., "Business lunch with client")
+            - merchant_name: The merchant's display name (e.g., "Olive Garden")
+            - Both are editable, but serve different purposes in the UI
+            - attachments: List of receipt/document attachments
+
+        Metadata (verbose mode only):
+            - createdAt: When transaction was first imported
+            - updatedAt: Last modification timestamp
+            - __typename: GraphQL type information
 
     Returns:
         JSON string containing transaction list
+
+    Common Filter Examples:
+        - Unreviewed transactions: has_notes=False, needs_review=True
+        - Split transactions: is_split=True
+        - Transactions with receipts: has_attachments=True
+        - Manual transactions: synced_from_institution=False
     """
     await ensure_authenticated()
 
@@ -961,14 +1110,30 @@ async def get_transactions(
         elif original_end and not original_start and "start_date" in filters:
             logger.warning(f"[AUTO-FILL] start_date was not provided, defaulted to '{filters['start_date']}' (first of end_date's month)")
 
-        # Log final filters being sent to API
-        logger.info(f"[API_CALL] Calling Monarch API with filters: {filters}")
-
         # monarchmoney expects account_ids and category_ids as LISTS
         if account_id:
             filters["account_ids"] = [account_id]
         if category_id:
             filters["category_ids"] = [category_id]
+
+        # Handle tag_ids (convert comma-separated string to list)
+        if tag_ids:
+            filters["tag_ids"] = [t.strip() for t in tag_ids.split(",")]
+
+        # Add boolean filters (only include if explicitly set)
+        if has_attachments is not None:
+            filters["has_attachments"] = has_attachments
+        if has_notes is not None:
+            filters["has_notes"] = has_notes
+        if hidden_from_reports is not None:
+            filters["hidden_from_reports"] = hidden_from_reports
+        if is_split is not None:
+            filters["is_split"] = is_split
+        if is_recurring is not None:
+            filters["is_recurring"] = is_recurring
+
+        # Log final filters being sent to API
+        logger.info(f"[API_CALL] Calling Monarch API with filters: {filters}")
 
         response = await api_call_with_retry(
             "get_transactions",
@@ -1001,6 +1166,12 @@ async def search_transactions(
     end_date: Optional[str] = None,
     account_id: Optional[str] = None,
     category_id: Optional[str] = None,
+    tag_ids: Optional[str] = None,
+    has_attachments: Optional[bool] = None,
+    has_notes: Optional[bool] = None,
+    hidden_from_reports: Optional[bool] = None,
+    is_split: Optional[bool] = None,
+    is_recurring: Optional[bool] = None,
     verbose: bool = False
 ) -> str:
     """Search transactions by text using Monarch Money's built-in search.
@@ -1019,9 +1190,80 @@ async def search_transactions(
                   NOTE: If you provide end_date without start_date, start_date will auto-default to 'this month'
         account_id: Filter by specific account ID
         category_id: Filter by specific category ID
+        tag_ids: Comma-separated tag IDs to filter by
+        has_attachments: Filter to transactions with (True) or without (False) attachments
+        has_notes: Filter to transactions with (True) or without (False) notes
+        hidden_from_reports: Include hidden transactions (True), exclude them (False), or show all (None)
+        is_split: Filter to split transactions only (True) or non-split (False)
+        is_recurring: Filter to recurring transactions only (True) or non-recurring (False)
         verbose: Output format control (default: False)
-            - False: Returns compact format (~80% reduction)
-            - True: Returns complete transaction details
+            - False (compact mode): Returns essential fields only (~80% smaller)
+                Fields included: id, date, amount, merchant, plaidName, category,
+                                account, pending, needsReview, notes
+
+            - True (verbose mode): Returns ALL fields including:
+                Essential fields (same as compact) PLUS:
+                • hideFromReports (bool)
+                • reviewStatus (str: "needs_review" | "reviewed" | null)
+                • isSplitTransaction (bool)
+                • isRecurring (bool)
+                • attachments (list of attachment objects)
+                • tags (list of tag objects)
+                • createdAt (ISO timestamp)
+                • updatedAt (ISO timestamp)
+                • __typename (GraphQL metadata)
+                • Full nested objects with all their fields
+
+            Use verbose=False for most queries to reduce token usage.
+            Use verbose=True when you need: timestamps, split info, attachment details,
+            or are updating transactions (need full context).
+
+    Key Transaction Fields:
+        Core Identifiers:
+            - id: Unique transaction ID (required for updates)
+            - date: Transaction date (YYYY-MM-DD format)
+            - amount: Transaction amount (negative = expense, positive = income)
+
+        Merchant Information:
+            IMPORTANT: Monarch normalizes merchant names for cleaner UI
+            - merchant.name: User-facing display name shown in Monarch UI (normalized/cleaned)
+                Example: "Chipotle" for all Chipotle locations
+            - plaidName: Original bank statement text from Plaid/institution (raw data)
+                Example: "CHIPOTLE 4963", "CHIPOTLE MEX GR ONLINE", "CHIPOTLE 1879"
+                Use this to see location numbers or original descriptors
+            - Multiple transactions from different locations share the same merchant.name
+            - Use plaidName to distinguish between specific locations/variants
+
+        Categorization:
+            - category.id: Category ID (for filtering/updates)
+            - category.name: Category display name (e.g., "Restaurants & Bars")
+            - tags: List of tag objects applied to transaction
+
+        Account Info:
+            - account.id: Account ID where transaction occurred
+            - account.displayName: Account name (e.g., "Rewards Card")
+
+        Status Flags:
+            - pending: True if transaction hasn't cleared yet
+            - needsReview: True if flagged for user review
+            - reviewStatus: "needs_review", "reviewed", or null
+            - hideFromReports: True if hidden from budget/reports
+
+        Transaction Types:
+            - isSplitTransaction: True if split into multiple categories
+            - isRecurring: True if part of a recurring series
+
+        User Annotations:
+            NOTE: These are different fields with different purposes
+            - notes: Free-form user memo/annotation (e.g., "Business lunch with client")
+            - merchant_name: The merchant's display name (e.g., "Olive Garden")
+            - Both are editable, but serve different purposes in the UI
+            - attachments: List of receipt/document attachments
+
+        Metadata (verbose mode only):
+            - createdAt: When transaction was first imported
+            - updatedAt: Last modification timestamp
+            - __typename: GraphQL type information
 
     Returns:
         JSON string with search results (list of transactions matching the query)
@@ -1050,17 +1292,33 @@ async def search_transactions(
         elif original_end and not original_start and "start_date" in filters:
             logger.warning(f"[AUTO-FILL] start_date was not provided, defaulted to '{filters['start_date']}' (first of end_date's month)")
 
-        # Log final filters being sent to API
-        logger.info(f"[API_CALL] Calling Monarch API with filters: {filters}")
-
         # monarchmoney expects account_ids and category_ids as LISTS
         if account_id:
             filters["account_ids"] = [account_id]
         if category_id:
             filters["category_ids"] = [category_id]
 
+        # Handle tag_ids (convert comma-separated string to list)
+        if tag_ids:
+            filters["tag_ids"] = [t.strip() for t in tag_ids.split(",")]
+
+        # Add boolean filters (only include if explicitly set)
+        if has_attachments is not None:
+            filters["has_attachments"] = has_attachments
+        if has_notes is not None:
+            filters["has_notes"] = has_notes
+        if hidden_from_reports is not None:
+            filters["hidden_from_reports"] = hidden_from_reports
+        if is_split is not None:
+            filters["is_split"] = is_split
+        if is_recurring is not None:
+            filters["is_recurring"] = is_recurring
+
         # Use the library's built-in search parameter
         filters["search"] = query_str
+
+        # Log final filters being sent to API
+        logger.info(f"[API_CALL] Calling Monarch API with filters: {filters}")
 
         # Fetch transactions from API with search filter
         response = await api_call_with_retry(
@@ -1170,29 +1428,58 @@ async def get_transaction_categories() -> str:
 @track_usage
 async def create_transaction(
     amount: float,
-    description: str,
+    merchant_name: str,
     account_id: str,
     date: str,
-    category_id: Optional[str] = None,
-    notes: Optional[str] = None
+    category_id: str,
+    notes: Optional[str] = None,
+    update_balance: bool = False
 ) -> str:
-    """Create a new transaction."""
+    """Create a new manual transaction.
+
+    Args:
+        amount: Transaction amount (positive for income, negative for expense)
+        merchant_name: Name of the merchant/payee (e.g., "Starbucks", "Monthly Rent")
+        account_id: ID of the account for this transaction
+        date: Transaction date in YYYY-MM-DD format
+        category_id: ID of the category to assign (required for new transactions)
+        notes: Optional notes/memo for this transaction
+        update_balance: Whether to update account balance when creating this transaction (default: False)
+            - False: Transaction is recorded but doesn't affect account balance (typical for synced accounts)
+            - True: Adjusts account balance by transaction amount (useful for manual accounts)
+
+    Returns:
+        JSON string with created transaction details
+    """
     await ensure_authenticated()
 
     try:
-        # Convert date string to date object
-        transaction_date = datetime.strptime(date, "%Y-%m-%d").date()
+        # Validate required fields
+        if not merchant_name or merchant_name.strip() == "":
+            raise ValueError("merchant_name cannot be empty")
+        if not category_id:
+            raise ValueError("category_id is required when creating transactions")
+
+        # Convert date string to ISO format string (API expects YYYY-MM-DD)
+        try:
+            transaction_date = datetime.strptime(date, "%Y-%m-%d").date()
+            date_str = transaction_date.isoformat()
+        except ValueError as e:
+            raise ValueError(f"Invalid date format. Use YYYY-MM-DD (e.g., 2024-01-15). Error: {e}")
+
+        logger.info(f"Creating transaction: merchant={merchant_name}, amount={amount}, date={date_str}")
 
         # Use api_call_with_retry for session expiration handling and add timeout
         result = await asyncio.wait_for(
             api_call_with_retry(
                 "create_transaction",
                 amount=amount,
-                description=description,
+                merchant_name=merchant_name,
                 category_id=category_id,
                 account_id=account_id,
-                date=transaction_date,
-                notes=notes
+                date=date_str,
+                notes=notes or "",
+                update_balance=update_balance
             ),
             timeout=30.0  # 30 second timeout
         )
@@ -1201,6 +1488,8 @@ async def create_transaction(
     except asyncio.TimeoutError:
         logger.error(f"Timeout creating transaction after 30 seconds")
         raise ValueError(f"Transaction creation timed out after 30 seconds. Please try again.")
+    except ValueError:
+        raise
     except Exception as e:
         logger.error(f"Failed to create transaction: {e}")
         raise
@@ -1211,27 +1500,96 @@ async def create_transaction(
 async def update_transaction(
     transaction_id: str,
     amount: Optional[float] = None,
-    description: Optional[str] = None,
+    merchant_name: Optional[str] = None,
     category_id: Optional[str] = None,
     date: Optional[str] = None,
-    notes: Optional[str] = None
+    notes: Optional[str] = None,
+    goal_id: Optional[str] = None,
+    hide_from_reports: Optional[bool] = None,
+    needs_review: Optional[bool] = None
 ) -> str:
-    """Update an existing transaction."""
+    """Update an existing transaction.
+
+    Args:
+        transaction_id: ID of the transaction to update (required)
+        amount: New transaction amount
+        merchant_name: New merchant display name shown in Monarch UI
+            - This updates the user-facing name (merchant.name field)
+            - Does NOT change plaidName (original bank statement text, read-only)
+            - Empty strings are ignored by the API
+            - Example: Change "AMZN Mktp US" to "Amazon"
+        category_id: ID of the new category to assign
+        date: New transaction date in YYYY-MM-DD format
+        notes: User notes/memo for this transaction (separate from merchant name)
+            NOTE: This is different from merchant_name
+            - notes: Free-form user memo/annotation (e.g., "Business lunch with client")
+            - merchant_name: The merchant's display name (e.g., "Olive Garden")
+            - Both are editable, but serve different purposes in the UI
+            - Use empty string "" to clear existing notes
+        goal_id: ID of savings goal to associate with this transaction
+            - Use empty string "" to clear goal association
+        hide_from_reports: Whether to hide this transaction from reports/analytics
+        needs_review: Flag transaction as needing review
+
+    Field Editability:
+        Editable Fields (can be updated):
+            - amount: Transaction amount
+            - merchant_name: User-facing merchant display name
+            - category_id: Category assignment
+            - date: Transaction date
+            - notes: User memo/notes
+            - goal_id: Goal association
+            - hide_from_reports: Visibility in reports
+            - needs_review: Review flag
+
+        Read-Only Fields (cannot be updated):
+            - id: Transaction ID (immutable)
+            - plaidName: Original bank statement text (from institution)
+            - account: Account where transaction occurred
+            - pending: Pending status (controlled by institution)
+            - createdAt: Creation timestamp
+            - isSplitTransaction: Split status (use separate split API)
+            - attachments: Use separate attachment API
+
+    Returns:
+        JSON string with updated transaction details
+
+    Common Use Cases:
+        - Change merchant: merchant_name="Starbucks"
+        - Add note: notes="Business expense"
+        - Recategorize: category_id="cat_groceries_123"
+        - Mark for review: needs_review=True
+        - Clear notes: notes=""
+    """
     await ensure_authenticated()
 
     try:
+        # Validate parameters before API call
+        if merchant_name is not None and merchant_name.strip() == "":
+            logger.warning("Empty merchant_name will be ignored by API")
+
         # Build update parameters
         updates: Dict[str, Any] = {"transaction_id": transaction_id}
         if amount is not None:
             updates["amount"] = amount
-        if description is not None:
-            updates["description"] = description
+        if merchant_name is not None:
+            updates["merchant_name"] = merchant_name
         if category_id is not None:
             updates["category_id"] = category_id
         if date is not None:
             updates["date"] = datetime.strptime(date, "%Y-%m-%d").date()
         if notes is not None:
             updates["notes"] = notes
+        if goal_id is not None:
+            updates["goal_id"] = goal_id
+        if hide_from_reports is not None:
+            updates["hide_from_reports"] = hide_from_reports
+        if needs_review is not None:
+            updates["needs_review"] = needs_review
+
+        # Log what we're updating (for debugging)
+        update_fields = [k for k in updates.keys() if k != "transaction_id"]
+        logger.info(f"Updating transaction {transaction_id} with fields: {update_fields}")
 
         # Use api_call_with_retry for session expiration handling and add timeout
         result = await asyncio.wait_for(
@@ -1243,8 +1601,14 @@ async def update_transaction(
     except asyncio.TimeoutError:
         logger.error(f"Timeout updating transaction {transaction_id} after 30 seconds")
         raise ValueError(f"Transaction update timed out after 30 seconds. Please try again.")
+    except ValueError as e:
+        # Enhanced error messages for validation failures
+        error_msg = str(e)
+        if "date" in error_msg.lower():
+            raise ValueError(f"Invalid date format. Use YYYY-MM-DD (e.g., 2024-01-15). Error: {e}")
+        raise
     except Exception as e:
-        logger.error(f"Failed to update transaction {transaction_id}: {e}")
+        logger.error(f"Failed to update transaction {transaction_id}: {e}", extra={"updates": update_fields if 'update_fields' in locals() else []})
         raise
 
 
@@ -1262,15 +1626,18 @@ async def update_transactions_bulk(
         updates: JSON string containing list of transaction updates. Each update should have:
             - transaction_id (required): ID of transaction to update
             - amount (optional): New amount
-            - description (optional): New description
+            - merchant_name (optional): New merchant display name
             - category_id (optional): New category ID
             - date (optional): New date in YYYY-MM-DD format
             - notes (optional): New notes
+            - goal_id (optional): Goal ID or empty string to clear
+            - hide_from_reports (optional): Boolean visibility flag
+            - needs_review (optional): Boolean review flag
 
     Example:
         [
             {"transaction_id": "123", "category_id": "cat_456", "notes": "Updated"},
-            {"transaction_id": "789", "amount": 50.00, "description": "Grocery store"}
+            {"transaction_id": "789", "merchant_name": "Starbucks", "needs_review": false}
         ]
 
     Returns:
@@ -1318,8 +1685,8 @@ async def update_transactions_bulk(
 
                 if "amount" in update_data:
                     update_params["amount"] = float(update_data["amount"])
-                if "description" in update_data:
-                    update_params["description"] = str(update_data["description"])
+                if "merchant_name" in update_data:
+                    update_params["merchant_name"] = str(update_data["merchant_name"])
                 if "category_id" in update_data:
                     update_params["category_id"] = str(update_data["category_id"])
                 if "date" in update_data:
@@ -1327,6 +1694,12 @@ async def update_transactions_bulk(
                     update_params["date"] = datetime.strptime(date_str, "%Y-%m-%d").date()
                 if "notes" in update_data:
                     update_params["notes"] = str(update_data["notes"])
+                if "goal_id" in update_data:
+                    update_params["goal_id"] = str(update_data["goal_id"])
+                if "hide_from_reports" in update_data:
+                    update_params["hide_from_reports"] = bool(update_data["hide_from_reports"])
+                if "needs_review" in update_data:
+                    update_params["needs_review"] = bool(update_data["needs_review"])
 
                 # Execute update with timeout
                 result = await asyncio.wait_for(

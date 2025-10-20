@@ -175,7 +175,7 @@ class TestBulkTransactionUpdates:
             {
                 "transaction_id": "txn_123",
                 "amount": 75.50,
-                "description": "Updated description",
+                "merchant_name": "Updated merchant",
                 "category_id": "cat_456",
                 "date": "2024-02-20",
                 "notes": "Updated notes"
@@ -194,7 +194,7 @@ class TestBulkTransactionUpdates:
             call_kwargs = mock_client.update_transaction.call_args[1]
             assert call_kwargs["transaction_id"] == "txn_123"
             assert call_kwargs["amount"] == 75.50
-            assert call_kwargs["description"] == "Updated description"
+            assert call_kwargs["merchant_name"] == "Updated merchant"
             assert call_kwargs["category_id"] == "cat_456"
             assert call_kwargs["notes"] == "Updated notes"
             assert isinstance(call_kwargs["date"], date)

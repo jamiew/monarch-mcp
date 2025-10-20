@@ -1,7 +1,7 @@
 """Tests for FastMCP validation and parameter handling."""
 
 import pytest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 import json
 
 import server
@@ -84,30 +84,30 @@ class TestFastMCPParameterValidation:
         
         original_client = server.mm_client
         server.mm_client = mock_client
-        
-        try:
+
+        with patch('server.ensure_authenticated', new_callable=AsyncMock):
             result = await server.create_transaction(
                 amount=-45.67,
-                description="Test transaction",
+                merchant_name="Test transaction",
                 account_id="acc123",
-                date="2024-07-29"
+                date="2024-07-29",
+                category_id="cat123"
             )
-            
+
             assert isinstance(result, str)
             parsed_result = json.loads(result)
             assert parsed_result == mock_result
-            
+
             # Verify parameters were passed correctly
             mock_client.create_transaction.assert_called_once()
             call_args = mock_client.create_transaction.call_args
             assert call_args.kwargs["amount"] == -45.67
-            assert call_args.kwargs["description"] == "Test transaction"
+            assert call_args.kwargs["merchant_name"] == "Test transaction"
             assert call_args.kwargs["account_id"] == "acc123"
-            # Date should be converted to date object
-            assert hasattr(call_args.kwargs["date"], "year")
-            
-        finally:
-            server.mm_client = original_client
+            # Date should be converted to ISO string (API expects string)
+            assert call_args.kwargs["date"] == "2024-07-29"
+
+        server.mm_client = original_client
 
     @pytest.mark.asyncio
     async def test_create_transaction_with_optional_parameters(self) -> None:
@@ -123,8 +123,8 @@ class TestFastMCPParameterValidation:
         try:
             result = await server.create_transaction(
                 amount=-45.67,
-                description="Test transaction",
-                account_id="acc123", 
+                merchant_name="Test transaction",
+                account_id="acc123",
                 date="2024-07-29",
                 category_id="cat456",
                 notes="Test notes"
@@ -158,7 +158,7 @@ class TestFastMCPParameterValidation:
             result = await server.update_transaction(
                 transaction_id="txn123",
                 amount=-100.0,
-                description="Updated description"
+                merchant_name="Updated merchant"
                 # Other fields left as None (default)
             )
             
@@ -171,10 +171,10 @@ class TestFastMCPParameterValidation:
             call_args = mock_client.update_transaction.call_args
             assert call_args.kwargs["transaction_id"] == "txn123"
             assert call_args.kwargs["amount"] == -100.0
-            assert call_args.kwargs["description"] == "Updated description"
+            assert call_args.kwargs["merchant_name"] == "Updated merchant"
             # category_id, date, notes should not be in kwargs since they're None
             assert "category_id" not in call_args.kwargs
-            assert "date" not in call_args.kwargs  
+            assert "date" not in call_args.kwargs
             assert "notes" not in call_args.kwargs
             
         finally:
