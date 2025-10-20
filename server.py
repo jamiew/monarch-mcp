@@ -327,7 +327,7 @@ def convert_dates_to_strings(obj: DateConvertible) -> JsonSerializable:
     elif isinstance(obj, list):
         return [convert_dates_to_strings(item) for item in obj]
     elif isinstance(obj, tuple):
-        return tuple(convert_dates_to_strings(item) for item in obj)  # type: ignore[unreachable]
+        return tuple(convert_dates_to_strings(item) for item in obj)
     else:
         return obj
 
@@ -1151,7 +1151,7 @@ async def get_transactions(
         )
         # Extract transactions list from nested response structure
         transactions = extract_transactions_list(response)
-        transactions = convert_dates_to_strings(transactions)
+        transactions = convert_dates_to_strings(transactions)  # type: ignore[arg-type, assignment]
 
         # Format output based on verbose flag
         if not verbose and isinstance(transactions, list):
@@ -1337,16 +1337,16 @@ async def search_transactions(
         )
         # Extract transactions list from nested response structure
         transactions = extract_transactions_list(response)
-        transactions = convert_dates_to_strings(transactions)
+        transactions = convert_dates_to_strings(transactions)  # type: ignore[arg-type, assignment]
 
         # Format output based on verbose flag
         if not verbose:
-            transactions = format_transactions_compact(transactions)
+            transactions = format_transactions_compact(transactions)  # type: ignore[arg-type, assignment]
 
         result = {
             "search_metadata": {
                 "query": query_str,
-                "result_count": len(transactions),
+                "result_count": len(transactions),  # type: ignore[arg-type]
                 "filters_applied": {k: v for k, v in filters.items() if k != "search"}
             },
             "transactions": transactions
@@ -1381,7 +1381,7 @@ async def get_budgets(
     kwargs = build_date_filter(start_date, end_date)
 
     try:
-        budgets = await api_call_with_retry("get_budgets", **kwargs)
+        budgets = await api_call_with_retry("get_budgets", **kwargs)  # type: ignore[arg-type]
         budgets = convert_dates_to_strings(budgets)
         return json.dumps(budgets, indent=2)
     except Exception as e:
@@ -1416,7 +1416,7 @@ async def get_cashflow(
     # Use build_date_filter for consistent natural language date support
     kwargs = build_date_filter(start_date, end_date)
 
-    cashflow = await api_call_with_retry("get_cashflow", **kwargs)
+    cashflow = await api_call_with_retry("get_cashflow", **kwargs)  # type: ignore[arg-type]
     cashflow = convert_dates_to_strings(cashflow)
     return json.dumps(cashflow, indent=2)
 
@@ -1897,22 +1897,23 @@ async def get_spending_summary(
         
         # Get transactions for the period
         filters = build_date_filter(start_date, end_date)
-        response = await api_call_with_retry("get_transactions", limit=1000, **filters)
+        response = await api_call_with_retry("get_transactions", limit=1000, **filters)  # type: ignore[arg-type]
         # Extract transactions list from nested response structure
         transactions = extract_transactions_list(response)
         
         # Aggregate spending data
-        summary = {"period": {"start": start_date, "end": end_date}, "groups": {}, "totals": {"income": 0, "expenses": 0, "net": 0}}
-        
+        summary: Dict[str, Any] = {"period": {"start": start_date, "end": end_date}, "groups": {}, "totals": {"income": 0, "expenses": 0, "net": 0}}
+
         for txn in transactions:
             amount = float(txn.get("amount", 0))
-            
+
             # Track totals
+            totals: Dict[str, float] = summary["totals"]  # type: ignore[assignment]
             if amount > 0:
-                summary["totals"]["income"] += amount
+                totals["income"] += amount
             else:
-                summary["totals"]["expenses"] += abs(amount)
-            
+                totals["expenses"] += abs(amount)
+
             # Group by specified field
             if group_by == "category":
                 key = txn.get("category", {}).get("name", "Uncategorized") if isinstance(txn.get("category"), dict) else "Uncategorized"
@@ -1923,22 +1924,24 @@ async def get_spending_summary(
                 key = txn_date[:7] if len(txn_date) >= 7 else "Unknown"  # YYYY-MM format
             else:
                 key = "All"
-            
-            if key not in summary["groups"]:
-                summary["groups"][key] = {"income": 0, "expenses": 0, "net": 0, "count": 0}
-            
+
+            groups: Dict[str, Dict[str, float]] = summary["groups"]  # type: ignore[assignment]
+            if key not in groups:
+                groups[key] = {"income": 0, "expenses": 0, "net": 0, "count": 0}
+
+            group = groups[key]
             if amount > 0:
-                summary["groups"][key]["income"] += amount
+                group["income"] += amount
             else:
-                summary["groups"][key]["expenses"] += abs(amount)
-            
-            summary["groups"][key]["net"] += amount
-            summary["groups"][key]["count"] += 1
-        
-        summary["totals"]["net"] = summary["totals"]["income"] - summary["totals"]["expenses"]
-        
+                group["expenses"] += abs(amount)
+
+            group["net"] += amount
+            group["count"] += 1
+
+        summary["totals"]["net"] = summary["totals"]["income"] - summary["totals"]["expenses"]  # type: ignore[index, operator]
+
         # Sort groups by total spending (expenses)
-        sorted_groups = dict(sorted(summary["groups"].items(), key=lambda x: x[1]["expenses"], reverse=True))
+        sorted_groups = dict(sorted(summary["groups"].items(), key=lambda x: x[1]["expenses"], reverse=True))  # type: ignore[attr-defined, index]
         summary["groups"] = sorted_groups
         
         log.info("Spending summary generated", 
@@ -1990,39 +1993,40 @@ async def get_complete_financial_overview(
         
         # Execute all API calls in parallel for maximum efficiency
         accounts_task = api_call_with_retry("get_accounts")
-        budgets_task = api_call_with_retry("get_budgets", **filters)
-        cashflow_task = api_call_with_retry("get_cashflow", **filters)
-        transactions_task = api_call_with_retry("get_transactions", limit=500, **filters)
+        budgets_task = api_call_with_retry("get_budgets", **filters)  # type: ignore[arg-type]
+        cashflow_task = api_call_with_retry("get_cashflow", **filters)  # type: ignore[arg-type]
+        transactions_task = api_call_with_retry("get_transactions", limit=500, **filters)  # type: ignore[arg-type]
         categories_task = api_call_with_retry("get_transaction_categories")
 
         # Wait for all results
-        accounts, budgets, cashflow, transactions, categories = await asyncio.gather(
+        api_results = await asyncio.gather(
             accounts_task, budgets_task, cashflow_task, transactions_task, categories_task,
             return_exceptions=True
         )
-        
+        accounts, budgets, cashflow, transactions, categories = api_results
+
         # Handle any exceptions gracefully
-        results = {}
-        
+        results: Dict[str, Any] = {}
+
         if not isinstance(accounts, Exception):
-            results["accounts"] = convert_dates_to_strings(accounts)
+            results["accounts"] = convert_dates_to_strings(accounts)  # type: ignore[arg-type]
         else:
             results["accounts"] = {"error": str(accounts)}
-            
+
         if not isinstance(budgets, Exception):
-            results["budgets"] = convert_dates_to_strings(budgets)
+            results["budgets"] = convert_dates_to_strings(budgets)  # type: ignore[arg-type]
         else:
             results["budgets"] = {"error": str(budgets)}
-            
+
         if not isinstance(cashflow, Exception):
-            results["cashflow"] = convert_dates_to_strings(cashflow)
+            results["cashflow"] = convert_dates_to_strings(cashflow)  # type: ignore[arg-type]
         else:
             results["cashflow"] = {"error": str(cashflow)}
-        
+
         if not isinstance(transactions, Exception):
             # Extract transactions list from nested response structure
-            transactions_list = extract_transactions_list(transactions)
-            results["transactions"] = convert_dates_to_strings(transactions_list)
+            transactions_list = extract_transactions_list(transactions)  # type: ignore[arg-type]
+            results["transactions"] = convert_dates_to_strings(transactions_list)  # type: ignore[arg-type]
             # Add intelligent transaction analysis
             if isinstance(transactions_list, list):
                 results["transaction_summary"] = {
@@ -2034,24 +2038,25 @@ async def get_complete_financial_overview(
                 }
         else:
             results["transactions"] = {"error": str(transactions)}
-            
+
         if not isinstance(categories, Exception):
-            results["categories"] = convert_dates_to_strings(categories)
+            results["categories"] = convert_dates_to_strings(categories)  # type: ignore[arg-type]
         else:
             results["categories"] = {"error": str(categories)}
-        
+
         # Add metadata about the batch operation
         results["_batch_metadata"] = {
             "period": period,
-            "filters_applied": convert_dates_to_strings(filters),
+            "filters_applied": convert_dates_to_strings(filters),  # type: ignore[arg-type]
             "api_calls_made": 5,
             "timestamp": datetime.now().isoformat()
         }
-        
-        log.info("Complete financial overview generated", 
-                period=period, 
-                accounts_count=len(results.get("accounts", [])) if isinstance(results.get("accounts"), list) else 0,
-                transactions_count=results.get("transaction_summary", {}).get("total_count", 0))
+
+        accounts_val = results.get("accounts", [])
+        log.info("Complete financial overview generated",
+                period=period,
+                accounts_count=len(accounts_val) if isinstance(accounts_val, list) else 0,  # type: ignore[arg-type]
+                transactions_count=results.get("transaction_summary", {}).get("total_count", 0))  # type: ignore[union-attr]
         
         return json.dumps(results, indent=2)
         
@@ -2098,15 +2103,16 @@ async def analyze_spending_patterns(
         accounts_task = api_call_with_retry("get_accounts")
         categories_task = api_call_with_retry("get_transaction_categories")
 
-        transactions, budgets, accounts, categories = await asyncio.gather(
+        api_results = await asyncio.gather(
             transactions_task, budgets_task, accounts_task, categories_task,
             return_exceptions=True
         )
-        
+        transactions, budgets, accounts, categories = api_results
+
         analysis = {
             "analysis_period": {
                 "start_date": start_date.isoformat(),
-                "end_date": end_date.isoformat(), 
+                "end_date": end_date.isoformat(),
                 "months_analyzed": lookback_months
             },
             "monthly_trends": {},
@@ -2114,54 +2120,54 @@ async def analyze_spending_patterns(
             "account_usage": {},
             "budget_performance": {},
         }
-        
+
         if not isinstance(transactions, Exception):
             # Extract transactions list from nested response structure
-            transactions_list = extract_transactions_list(transactions)
+            transactions_list = extract_transactions_list(transactions)  # type: ignore[arg-type]
 
             # Monthly spending trends
-            monthly_data = {}
-            category_totals = {}
-            account_usage = {}
+            monthly_data: Dict[str, Dict[str, float]] = {}
+            category_totals: Dict[str, Dict[str, float]] = {}
+            account_usage: Dict[str, Dict[str, float]] = {}
 
             for txn in transactions_list:
                 txn_date = txn.get("date", "")
                 amount = float(txn.get("amount", 0))
                 category_name = txn.get("category", {}).get("name", "Uncategorized") if isinstance(txn.get("category"), dict) else "Uncategorized"
                 account_name = txn.get("account", {}).get("name", "Unknown") if isinstance(txn.get("account"), dict) else "Unknown"
-                
+
                 # Monthly trends (YYYY-MM)
                 month_key = txn_date[:7] if len(txn_date) >= 7 else "Unknown"
                 if month_key not in monthly_data:
-                    monthly_data[month_key] = {"income": 0, "expenses": 0, "net": 0, "transaction_count": 0}
-                
+                    monthly_data[month_key] = {"income": 0.0, "expenses": 0.0, "net": 0.0, "transaction_count": 0.0}
+
                 if amount > 0:
                     monthly_data[month_key]["income"] += amount
                 else:
                     monthly_data[month_key]["expenses"] += abs(amount)
                 monthly_data[month_key]["net"] += amount
                 monthly_data[month_key]["transaction_count"] += 1
-                
+
                 # Category analysis
                 if category_name not in category_totals:
-                    category_totals[category_name] = {"total": 0, "transactions": 0, "avg_amount": 0}
-                category_totals[category_name]["total"] += abs(amount) if amount < 0 else 0  # Only expenses
+                    category_totals[category_name] = {"total": 0.0, "transactions": 0.0, "avg_amount": 0.0}
+                category_totals[category_name]["total"] += abs(amount) if amount < 0 else 0.0  # Only expenses
                 category_totals[category_name]["transactions"] += 1
-                
+
                 # Account usage
                 if account_name not in account_usage:
-                    account_usage[account_name] = {"total_volume": 0, "transactions": 0}
+                    account_usage[account_name] = {"total_volume": 0.0, "transactions": 0.0}
                 account_usage[account_name]["total_volume"] += abs(amount)
                 account_usage[account_name]["transactions"] += 1
-            
+
             # Calculate averages and sort data
             for category in category_totals:
                 if category_totals[category]["transactions"] > 0:
                     category_totals[category]["avg_amount"] = category_totals[category]["total"] / category_totals[category]["transactions"]
             
             analysis["monthly_trends"] = dict(sorted(monthly_data.items()))
-            analysis["category_analysis"] = dict(sorted(category_totals.items(), key=lambda x: x[1]["total"], reverse=True))
-            analysis["account_usage"] = dict(sorted(account_usage.items(), key=lambda x: x[1]["total_volume"], reverse=True))
+            analysis["category_analysis"] = dict(sorted(category_totals.items(), key=lambda x: x[1]["total"], reverse=True))  # type: ignore[index]
+            analysis["account_usage"] = dict(sorted(account_usage.items(), key=lambda x: x[1]["total_volume"], reverse=True))  # type: ignore[index]
             
             # Simple forecasting if requested
             if include_forecasting and monthly_data:
@@ -2181,7 +2187,7 @@ async def analyze_spending_patterns(
                     }
         
         if not isinstance(budgets, Exception):
-            analysis["budget_performance"] = convert_dates_to_strings(budgets)
+            analysis["budget_performance"] = convert_dates_to_strings(budgets)  # type: ignore[arg-type, assignment]
 
         # Add metadata
         txn_count = len(transactions_list) if not isinstance(transactions, Exception) else 0
@@ -2236,8 +2242,9 @@ async def main() -> None:
 if __name__ == "__main__":
     # Add signal handling for graceful shutdown
     import signal
+    from typing import Any as SignalAny
 
-    def signal_handler(signum, frame):
+    def signal_handler(signum: int, frame: SignalAny) -> None:
         logger.info(f"Received signal {signum}, shutting down gracefully")
         # Let asyncio handle the shutdown
 
@@ -2246,27 +2253,31 @@ if __name__ == "__main__":
 
     try:
         asyncio.run(main())
-    except ExceptionGroup as eg:  # type: ignore[misc]
+    except Exception as eg:  # Handle exception groups from anyio (Python 3.11+ BaseExceptionGroup)
         # Handle exception groups (from anyio TaskGroups) - filter out expected shutdown errors
-        remaining_exceptions = []
-        for exc in eg.exceptions:
-            # Check for shutdown-related exceptions including nested ones
-            is_shutdown_error = (
-                isinstance(exc, (BrokenPipeError, ConnectionResetError, OSError, EOFError)) or
-                (isinstance(exc, Exception) and any(
-                    err_str in str(exc).lower()
-                    for err_str in ["broken pipe", "connection reset", "[errno 32]", "eof"]
-                ))
-            )
-            if not is_shutdown_error:
-                remaining_exceptions.append(exc)
+        if hasattr(eg, 'exceptions'):  # It's an ExceptionGroup
+            remaining_exceptions = []
+            for exc in eg.exceptions:  # type: ignore[attr-defined]
+                # Check for shutdown-related exceptions including nested ones
+                is_shutdown_error = (
+                    isinstance(exc, (BrokenPipeError, ConnectionResetError, OSError, EOFError)) or
+                    (isinstance(exc, Exception) and any(
+                        err_str in str(exc).lower()
+                        for err_str in ["broken pipe", "connection reset", "[errno 32]", "eof"]
+                    ))
+                )
+                if not is_shutdown_error:
+                    remaining_exceptions.append(exc)
 
-        if remaining_exceptions:
-            logger.error(f"Fatal error: {eg}")
-            raise
+            if remaining_exceptions:
+                logger.error(f"Fatal error: {eg}")
+                raise
+            else:
+                # All exceptions were shutdown-related - exit quietly
+                logger.info("Shutdown complete (broken pipe expected during client disconnect)")
         else:
-            # All exceptions were shutdown-related - exit quietly
-            logger.info("Shutdown complete (broken pipe expected during client disconnect)")
+            # Regular exception
+            raise
     except BrokenPipeError:
         # Handle broken pipe at the top level (direct exception, not in ExceptionGroup)
         logger.info("Broken pipe during shutdown - exiting quietly")
