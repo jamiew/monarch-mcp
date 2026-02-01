@@ -258,7 +258,17 @@ This MCP server uses the monarchmoneycommunity fork which tracks the latest Mona
 
 ## Security Notes
 
-- Keep your credentials secure in your `.mcp.json` file
-- The MFA secret provides full access to your account - treat it like a password
+> **⚠️ Important**: Monarch Money does not provide an OAuth API or official API access. This MCP server uses unofficial API access that requires your actual account credentials (email, password, and MFA secret). Use with appropriate caution.
+
+### Credential Security
+- **Your credentials have full account access** - they can view all financial data and make changes
+- Keep credentials secure in your `.mcp.json` file (restrict file permissions)
+- The MFA secret (TOTP key) provides ongoing access - treat it like a password
 - Session files in `.mm` directory contain authentication tokens - keep them secure
-- Consider restricting access to your `.mcp.json` file since it contains sensitive credentials
+- Never commit `.env` or `.mcp.json` files to version control
+
+### Risk Considerations
+- This is an **unofficial API** - Monarch Money could change or restrict access at any time
+- Credentials are stored in plain text in configuration files
+- Consider using a dedicated Monarch Money account with limited permissions if available
+- Review the source code if you have security concerns - it's fully open source
