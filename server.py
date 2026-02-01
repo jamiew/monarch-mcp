@@ -1341,12 +1341,12 @@ async def search_transactions(
 
         # Format output based on verbose flag
         if not verbose:
-            transactions = format_transactions_compact(transactions)  # type: ignore[arg-type, assignment]
+            transactions = format_transactions_compact(transactions)
 
         result = {
             "search_metadata": {
                 "query": query_str,
-                "result_count": len(transactions),  # type: ignore[arg-type]
+                "result_count": len(transactions),
                 "filters_applied": {k: v for k, v in filters.items() if k != "search"}
             },
             "transactions": transactions
@@ -1908,7 +1908,7 @@ async def get_spending_summary(
             amount = float(txn.get("amount", 0))
 
             # Track totals
-            totals: Dict[str, float] = summary["totals"]  # type: ignore[assignment]
+            totals: Dict[str, float] = summary["totals"]
             if amount > 0:
                 totals["income"] += amount
             else:
@@ -1925,7 +1925,7 @@ async def get_spending_summary(
             else:
                 key = "All"
 
-            groups: Dict[str, Dict[str, float]] = summary["groups"]  # type: ignore[assignment]
+            groups: Dict[str, Dict[str, float]] = summary["groups"]
             if key not in groups:
                 groups[key] = {"income": 0, "expenses": 0, "net": 0, "count": 0}
 
@@ -1938,10 +1938,10 @@ async def get_spending_summary(
             group["net"] += amount
             group["count"] += 1
 
-        summary["totals"]["net"] = summary["totals"]["income"] - summary["totals"]["expenses"]  # type: ignore[index, operator]
+        summary["totals"]["net"] = summary["totals"]["income"] - summary["totals"]["expenses"]
 
         # Sort groups by total spending (expenses)
-        sorted_groups = dict(sorted(summary["groups"].items(), key=lambda x: x[1]["expenses"], reverse=True))  # type: ignore[attr-defined, index]
+        sorted_groups = dict(sorted(summary["groups"].items(), key=lambda x: x[1]["expenses"], reverse=True))
         summary["groups"] = sorted_groups
         
         log.info("Spending summary generated", 
@@ -2025,8 +2025,8 @@ async def get_complete_financial_overview(
 
         if not isinstance(transactions, Exception):
             # Extract transactions list from nested response structure
-            transactions_list = extract_transactions_list(transactions)  # type: ignore[arg-type]
-            results["transactions"] = convert_dates_to_strings(transactions_list)  # type: ignore[arg-type]
+            transactions_list = extract_transactions_list(transactions)
+            results["transactions"] = convert_dates_to_strings(transactions_list)
             # Add intelligent transaction analysis
             if isinstance(transactions_list, list):
                 results["transaction_summary"] = {
@@ -2055,8 +2055,8 @@ async def get_complete_financial_overview(
         accounts_val = results.get("accounts", [])
         log.info("Complete financial overview generated",
                 period=period,
-                accounts_count=len(accounts_val) if isinstance(accounts_val, list) else 0,  # type: ignore[arg-type]
-                transactions_count=results.get("transaction_summary", {}).get("total_count", 0))  # type: ignore[union-attr]
+                accounts_count=len(accounts_val) if isinstance(accounts_val, list) else 0,
+                transactions_count=results.get("transaction_summary", {}).get("total_count", 0))
         
         return json.dumps(results, indent=2)
         
@@ -2123,7 +2123,7 @@ async def analyze_spending_patterns(
 
         if not isinstance(transactions, Exception):
             # Extract transactions list from nested response structure
-            transactions_list = extract_transactions_list(transactions)  # type: ignore[arg-type]
+            transactions_list = extract_transactions_list(transactions)
 
             # Monthly spending trends
             monthly_data: Dict[str, Dict[str, float]] = {}
@@ -2257,7 +2257,7 @@ if __name__ == "__main__":
         # Handle exception groups (from anyio TaskGroups) - filter out expected shutdown errors
         if hasattr(eg, 'exceptions'):  # It's an ExceptionGroup
             remaining_exceptions = []
-            for exc in eg.exceptions:  # type: ignore[attr-defined]
+            for exc in eg.exceptions:
                 # Check for shutdown-related exceptions including nested ones
                 is_shutdown_error = (
                     isinstance(exc, (BrokenPipeError, ConnectionResetError, OSError, EOFError)) or
