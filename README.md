@@ -22,6 +22,19 @@ An MCP (Model Context Protocol) server that provides access to Monarch Money fin
 
 ## Configuration
 
+### Environment Variables
+
+The server requires the following environment variables for authentication:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `MONARCH_EMAIL` | Yes | Your Monarch Money account email |
+| `MONARCH_PASSWORD` | Yes | Your Monarch Money account password |
+| `MONARCH_MFA_SECRET` | Yes* | Your TOTP secret for 2FA (*required if 2FA is enabled) |
+| `MONARCH_FORCE_LOGIN` | No | Set to `true` to bypass session cache |
+
+### MCP Client Configuration
+
 Add the server to your `.mcp.json` configuration file:
 
 ```json
@@ -158,6 +171,46 @@ The server automatically manages authentication sessions:
 - Delete the `.mm` directory to clear cached sessions
 - Set `MONARCH_FORCE_LOGIN=true` in your `.mcp.json` env section temporarily
 
+## Development
+
+### Local Development Setup
+
+For local development and testing, create a `.env` file in the project root:
+
+```bash
+# .env (git-ignored, never commit this file)
+MONARCH_EMAIL="your-email@example.com"
+MONARCH_PASSWORD="your-password"
+MONARCH_MFA_SECRET="YOUR_TOTP_SECRET_KEY"
+```
+
+### Running Tests
+
+```bash
+# Run unit tests (no credentials needed)
+uv run pytest tests/ -v
+
+# Run integration tests (requires .env with valid credentials)
+uv run pytest tests/test_integration.py -v
+
+# Quick health check script
+uv run scripts/health_check.py
+```
+
+### Health Check
+
+The health check verifies API connectivity by testing authentication, accounts, transactions, and budgets:
+
+```bash
+# As a standalone script (reads .env automatically)
+uv run scripts/health_check.py
+
+# As a pytest test
+uv run pytest tests/test_integration.py::TestHealthCheck -v
+```
+
+If the health check fails with a 525 SSL error, it typically means the upstream Monarch Money API has changed and dependencies need updating.
+
 ## Notable Differences from Forked Repository
 
 This implementation has evolved significantly from the original forked repository with substantial architectural improvements and enhanced capabilities:
@@ -195,12 +248,13 @@ This implementation represents a complete rewrite focused on production readines
 - **Description**: MCP (Model Context Protocol) server wrapper for Monarch Money
 
 ### MonarchMoney Python Library
-- **Author**: hammem ([@hammem](https://github.com/hammem))
-- **Repository**: [https://github.com/hammem/monarchmoney](https://github.com/hammem/monarchmoney)
+- **Original Author**: hammem ([@hammem](https://github.com/hammem))
+- **Original Repository**: [https://github.com/hammem/monarchmoney](https://github.com/hammem/monarchmoney)
+- **Community Fork**: [https://github.com/bradleyseanf/monarchmoneycommunity](https://github.com/bradleyseanf/monarchmoneycommunity) (currently used due to API endpoint updates)
 - **License**: MIT License
 - **Description**: The underlying Python library that provides API access to Monarch Money
 
-This MCP server wraps the monarchmoney Python library to provide seamless integration with AI assistants through the Model Context Protocol.
+This MCP server uses the monarchmoneycommunity fork which tracks the latest Monarch Money API changes.
 
 ## Security Notes
 
