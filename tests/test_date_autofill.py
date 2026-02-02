@@ -1,6 +1,7 @@
 """Tests for automatic date filling behavior in build_date_filter."""
-import pytest
+
 from datetime import date
+
 from server import build_date_filter
 
 

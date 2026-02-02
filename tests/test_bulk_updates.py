@@ -1,9 +1,11 @@
 """Tests for bulk transaction update functionality."""
 
-import pytest
+import asyncio
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import date
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 
 class TestBulkTransactionUpdates:
@@ -17,20 +19,20 @@ class TestBulkTransactionUpdates:
         # Mock successful updates
         mock_update_results = [
             {"id": "txn_123", "amount": 50.0, "updated": True},
-            {"id": "txn_456", "category_id": "cat_789", "updated": True}
+            {"id": "txn_456", "category_id": "cat_789", "updated": True},
         ]
 
         mock_client = MagicMock()
         mock_client.update_transaction = AsyncMock(side_effect=mock_update_results)
 
-        updates_json = json.dumps([
-            {"transaction_id": "txn_123", "amount": 50.0, "notes": "Updated amount"},
-            {"transaction_id": "txn_456", "category_id": "cat_789"}
-        ])
+        updates_json = json.dumps(
+            [
+                {"transaction_id": "txn_123", "amount": 50.0, "notes": "Updated amount"},
+                {"transaction_id": "txn_456", "category_id": "cat_789"},
+            ]
+        )
 
-        with patch('server.mm_client', mock_client), \
-             patch('server.ensure_authenticated', new_callable=AsyncMock):
-
+        with patch("server.mm_client", mock_client), patch("server.ensure_authenticated", new_callable=AsyncMock):
             result_str = await update_transactions_bulk(updates_json)
             result = json.loads(result_str)
 
@@ -61,14 +63,11 @@ class TestBulkTransactionUpdates:
 
         mock_client.update_transaction = AsyncMock(side_effect=mock_update)
 
-        updates_json = json.dumps([
-            {"transaction_id": "txn_123", "amount": 50.0},
-            {"transaction_id": "txn_999", "amount": 100.0}
-        ])
+        updates_json = json.dumps(
+            [{"transaction_id": "txn_123", "amount": 50.0}, {"transaction_id": "txn_999", "amount": 100.0}]
+        )
 
-        with patch('server.mm_client', mock_client), \
-             patch('server.ensure_authenticated', new_callable=AsyncMock):
-
+        with patch("server.mm_client", mock_client), patch("server.ensure_authenticated", new_callable=AsyncMock):
             result_str = await update_transactions_bulk(updates_json)
             result = json.loads(result_str)
 
@@ -87,7 +86,7 @@ class TestBulkTransactionUpdates:
         """Test error handling for invalid JSON."""
         from server import update_transactions_bulk
 
-        with patch('server.ensure_authenticated', new_callable=AsyncMock):
+        with patch("server.ensure_authenticated", new_callable=AsyncMock):
             with pytest.raises(ValueError, match="Invalid JSON"):
                 await update_transactions_bulk("not valid json {")
 
@@ -96,7 +95,7 @@ class TestBulkTransactionUpdates:
         """Test error handling when updates is not an array."""
         from server import update_transactions_bulk
 
-        with patch('server.ensure_authenticated', new_callable=AsyncMock):
+        with patch("server.ensure_authenticated", new_callable=AsyncMock):
             with pytest.raises(ValueError, match="must be a JSON array"):
                 await update_transactions_bulk('{"transaction_id": "123"}')
 
@@ -107,13 +106,9 @@ class TestBulkTransactionUpdates:
 
         mock_client = MagicMock()
 
-        updates_json = json.dumps([
-            {"amount": 50.0, "notes": "Missing ID"}
-        ])
+        updates_json = json.dumps([{"amount": 50.0, "notes": "Missing ID"}])
 
-        with patch('server.mm_client', mock_client), \
-             patch('server.ensure_authenticated', new_callable=AsyncMock):
-
+        with patch("server.mm_client", mock_client), patch("server.ensure_authenticated", new_callable=AsyncMock):
             result_str = await update_transactions_bulk(updates_json)
             result = json.loads(result_str)
 
@@ -127,7 +122,7 @@ class TestBulkTransactionUpdates:
         """Test handling of empty updates array."""
         from server import update_transactions_bulk
 
-        with patch('server.ensure_authenticated', new_callable=AsyncMock):
+        with patch("server.ensure_authenticated", new_callable=AsyncMock):
             result_str = await update_transactions_bulk("[]")
             result = json.loads(result_str)
 
@@ -142,13 +137,9 @@ class TestBulkTransactionUpdates:
         mock_client = MagicMock()
         mock_client.update_transaction = AsyncMock(return_value={"id": "txn_123", "updated": True})
 
-        updates_json = json.dumps([
-            {"transaction_id": "txn_123", "date": "2024-01-15"}
-        ])
+        updates_json = json.dumps([{"transaction_id": "txn_123", "date": "2024-01-15"}])
 
-        with patch('server.mm_client', mock_client), \
-             patch('server.ensure_authenticated', new_callable=AsyncMock):
-
+        with patch("server.mm_client", mock_client), patch("server.ensure_authenticated", new_callable=AsyncMock):
             result_str = await update_transactions_bulk(updates_json)
             result = json.loads(result_str)
 
@@ -171,20 +162,20 @@ class TestBulkTransactionUpdates:
         mock_client = MagicMock()
         mock_client.update_transaction = AsyncMock(return_value={"id": "txn_123", "updated": True})
 
-        updates_json = json.dumps([
-            {
-                "transaction_id": "txn_123",
-                "amount": 75.50,
-                "merchant_name": "Updated merchant",
-                "category_id": "cat_456",
-                "date": "2024-02-20",
-                "notes": "Updated notes"
-            }
-        ])
+        updates_json = json.dumps(
+            [
+                {
+                    "transaction_id": "txn_123",
+                    "amount": 75.50,
+                    "merchant_name": "Updated merchant",
+                    "category_id": "cat_456",
+                    "date": "2024-02-20",
+                    "notes": "Updated notes",
+                }
+            ]
+        )
 
-        with patch('server.mm_client', mock_client), \
-             patch('server.ensure_authenticated', new_callable=AsyncMock):
-
+        with patch("server.mm_client", mock_client), patch("server.ensure_authenticated", new_callable=AsyncMock):
             result_str = await update_transactions_bulk(updates_json)
             result = json.loads(result_str)
 
@@ -202,8 +193,9 @@ class TestBulkTransactionUpdates:
     @pytest.mark.asyncio
     async def test_update_transactions_bulk_parallel_execution(self):
         """Test that bulk updates execute in parallel."""
-        from server import update_transactions_bulk
         import asyncio
+
+        from server import update_transactions_bulk
 
         mock_client = MagicMock()
 
@@ -219,15 +211,15 @@ class TestBulkTransactionUpdates:
 
         mock_client.update_transaction = AsyncMock(side_effect=mock_update)
 
-        updates_json = json.dumps([
-            {"transaction_id": "txn_1", "amount": 10.0},
-            {"transaction_id": "txn_2", "amount": 20.0},
-            {"transaction_id": "txn_3", "amount": 30.0}
-        ])
+        updates_json = json.dumps(
+            [
+                {"transaction_id": "txn_1", "amount": 10.0},
+                {"transaction_id": "txn_2", "amount": 20.0},
+                {"transaction_id": "txn_3", "amount": 30.0},
+            ]
+        )
 
-        with patch('server.mm_client', mock_client), \
-             patch('server.ensure_authenticated', new_callable=AsyncMock):
-
+        with patch("server.mm_client", mock_client), patch("server.ensure_authenticated", new_callable=AsyncMock):
             await update_transactions_bulk(updates_json)
 
             # If executed in parallel, we should see interleaved starts/ends
@@ -247,8 +239,9 @@ class TestBulkUpdatePerformance:
     @pytest.mark.asyncio
     async def test_bulk_update_faster_than_sequential(self):
         """Verify bulk update is faster than sequential updates."""
-        from server import update_transactions_bulk, update_transaction
         import time
+
+        from server import update_transactions_bulk
 
         mock_client = MagicMock()
 
@@ -259,14 +252,9 @@ class TestBulkUpdatePerformance:
         mock_client.update_transaction = AsyncMock(side_effect=mock_update)
 
         # Test bulk update (parallel)
-        updates_json = json.dumps([
-            {"transaction_id": f"txn_{i}", "amount": float(i * 10)}
-            for i in range(5)
-        ])
+        updates_json = json.dumps([{"transaction_id": f"txn_{i}", "amount": float(i * 10)} for i in range(5)])
 
-        with patch('server.mm_client', mock_client), \
-             patch('server.ensure_authenticated', new_callable=AsyncMock):
-
+        with patch("server.mm_client", mock_client), patch("server.ensure_authenticated", new_callable=AsyncMock):
             bulk_start = time.time()
             await update_transactions_bulk(updates_json)
             bulk_duration = time.time() - bulk_start

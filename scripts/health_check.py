@@ -29,7 +29,7 @@ async def health_check() -> bool:
         print("   Set them in .env file or export them")
         return False
 
-    print(f"Testing Monarch Money API connectivity...")
+    print("Testing Monarch Money API connectivity...")
     print(f"  Email: {email}")
 
     mm = MonarchMoney()
@@ -71,7 +71,7 @@ async def health_check() -> bool:
     print("\n4. Testing get_budgets API...")
     try:
         budgets = await mm.get_budgets()
-        print(f"   ✅ Got budgets response")
+        print("   ✅ Got budgets response")
     except Exception as e:
         print(f"   ❌ Get budgets failed: {type(e).__name__}: {e}")
         return False

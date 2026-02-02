@@ -1,16 +1,17 @@
 """Tests for schema fixes and new parameters."""
-import pytest
+
 import json
-from unittest.mock import AsyncMock, patch, MagicMock
-from datetime import datetime
+from unittest.mock import AsyncMock, patch
+
+import pytest
 
 # Import the tools
 from server import (
-    update_transaction,
     create_transaction,
-    update_transactions_bulk,
     get_transactions,
     search_transactions,
+    update_transaction,
+    update_transactions_bulk,
 )
 
 
@@ -28,10 +29,7 @@ class TestUpdateTransactionSchema:
                     "amount": -50.00,
                 }
 
-                result = await update_transaction(
-                    transaction_id="txn_123",
-                    merchant_name="New Merchant Name"
-                )
+                result = await update_transaction(transaction_id="txn_123", merchant_name="New Merchant Name")
 
                 # Verify API was called with merchant_name (not description)
                 mock_api.assert_called_once()
@@ -47,10 +45,7 @@ class TestUpdateTransactionSchema:
             with patch("server.api_call_with_retry", new_callable=AsyncMock) as mock_api:
                 mock_api.return_value = {"id": "txn_123", "goal": {"id": "goal_456"}}
 
-                result = await update_transaction(
-                    transaction_id="txn_123",
-                    goal_id="goal_456"
-                )
+                result = await update_transaction(transaction_id="txn_123", goal_id="goal_456")
 
                 call_kwargs = mock_api.call_args[1]
                 assert "goal_id" in call_kwargs
@@ -63,10 +58,7 @@ class TestUpdateTransactionSchema:
             with patch("server.api_call_with_retry", new_callable=AsyncMock) as mock_api:
                 mock_api.return_value = {"id": "txn_123", "hideFromReports": True}
 
-                result = await update_transaction(
-                    transaction_id="txn_123",
-                    hide_from_reports=True
-                )
+                result = await update_transaction(transaction_id="txn_123", hide_from_reports=True)
 
                 call_kwargs = mock_api.call_args[1]
                 assert "hide_from_reports" in call_kwargs
@@ -79,10 +71,7 @@ class TestUpdateTransactionSchema:
             with patch("server.api_call_with_retry", new_callable=AsyncMock) as mock_api:
                 mock_api.return_value = {"id": "txn_123", "needsReview": False}
 
-                result = await update_transaction(
-                    transaction_id="txn_123",
-                    needs_review=False
-                )
+                result = await update_transaction(transaction_id="txn_123", needs_review=False)
 
                 call_kwargs = mock_api.call_args[1]
                 assert "needs_review" in call_kwargs
@@ -101,7 +90,7 @@ class TestUpdateTransactionSchema:
                     goal_id="goal_savings",
                     hide_from_reports=True,
                     needs_review=False,
-                    notes="Updated via API"
+                    notes="Updated via API",
                 )
 
                 call_kwargs = mock_api.call_args[1]
@@ -127,7 +116,7 @@ class TestCreateTransactionSchema:
                     merchant_name="Test Merchant",
                     account_id="acc_123",
                     date="2024-01-15",
-                    category_id="cat_456"
+                    category_id="cat_456",
                 )
 
                 # Verify API was called with merchant_name
@@ -149,7 +138,7 @@ class TestCreateTransactionSchema:
                     account_id="acc_manual",
                     date="2024-01-15",
                     category_id="cat_expense",
-                    update_balance=True
+                    update_balance=True,
                 )
 
                 call_kwargs = mock_api.call_args[1]
@@ -162,11 +151,7 @@ class TestCreateTransactionSchema:
         with patch("server.ensure_authenticated", new_callable=AsyncMock):
             with pytest.raises(ValueError, match="merchant_name cannot be empty"):
                 await create_transaction(
-                    amount=-50.00,
-                    merchant_name="",
-                    account_id="acc_123",
-                    date="2024-01-15",
-                    category_id="cat_456"
+                    amount=-50.00, merchant_name="", account_id="acc_123", date="2024-01-15", category_id="cat_456"
                 )
 
 
@@ -178,11 +163,7 @@ class TestGetTransactionsFilters:
         """Test filtering by attachment presence."""
         with patch("server.ensure_authenticated", new_callable=AsyncMock):
             with patch("server.api_call_with_retry", new_callable=AsyncMock) as mock_api:
-                mock_api.return_value = {
-                    "allTransactions": {
-                        "results": [{"id": "txn_1", "hasAttachments": True}]
-                    }
-                }
+                mock_api.return_value = {"allTransactions": {"results": [{"id": "txn_1", "hasAttachments": True}]}}
 
                 result = await get_transactions(has_attachments=True)
 
@@ -195,9 +176,7 @@ class TestGetTransactionsFilters:
         """Test filtering by notes presence."""
         with patch("server.ensure_authenticated", new_callable=AsyncMock):
             with patch("server.api_call_with_retry", new_callable=AsyncMock) as mock_api:
-                mock_api.return_value = {
-                    "allTransactions": {"results": [{"id": "txn_1", "notes": "Has notes"}]}
-                }
+                mock_api.return_value = {"allTransactions": {"results": [{"id": "txn_1", "notes": "Has notes"}]}}
 
                 result = await get_transactions(has_notes=True)
 
@@ -210,9 +189,7 @@ class TestGetTransactionsFilters:
         """Test filtering for split transactions."""
         with patch("server.ensure_authenticated", new_callable=AsyncMock):
             with patch("server.api_call_with_retry", new_callable=AsyncMock) as mock_api:
-                mock_api.return_value = {
-                    "allTransactions": {"results": [{"id": "txn_1", "isSplit": True}]}
-                }
+                mock_api.return_value = {"allTransactions": {"results": [{"id": "txn_1", "isSplit": True}]}}
 
                 result = await get_transactions(is_split=True)
 
@@ -225,9 +202,7 @@ class TestGetTransactionsFilters:
         """Test filtering for recurring transactions."""
         with patch("server.ensure_authenticated", new_callable=AsyncMock):
             with patch("server.api_call_with_retry", new_callable=AsyncMock) as mock_api:
-                mock_api.return_value = {
-                    "allTransactions": {"results": [{"id": "txn_1", "isRecurring": True}]}
-                }
+                mock_api.return_value = {"allTransactions": {"results": [{"id": "txn_1", "isRecurring": True}]}}
 
                 result = await get_transactions(is_recurring=True)
 
@@ -240,9 +215,7 @@ class TestGetTransactionsFilters:
         """Test filtering by tag IDs with comma-separated string."""
         with patch("server.ensure_authenticated", new_callable=AsyncMock):
             with patch("server.api_call_with_retry", new_callable=AsyncMock) as mock_api:
-                mock_api.return_value = {
-                    "allTransactions": {"results": [{"id": "txn_1"}]}
-                }
+                mock_api.return_value = {"allTransactions": {"results": [{"id": "txn_1"}]}}
 
                 result = await get_transactions(tag_ids="tag_1,tag_2,tag_3")
 
@@ -255,15 +228,10 @@ class TestGetTransactionsFilters:
         """Test combining multiple new filters."""
         with patch("server.ensure_authenticated", new_callable=AsyncMock):
             with patch("server.api_call_with_retry", new_callable=AsyncMock) as mock_api:
-                mock_api.return_value = {
-                    "allTransactions": {"results": []}
-                }
+                mock_api.return_value = {"allTransactions": {"results": []}}
 
                 result = await get_transactions(
-                    has_attachments=True,
-                    has_notes=False,
-                    is_split=True,
-                    hidden_from_reports=False
+                    has_attachments=True, has_notes=False, is_split=True, hidden_from_reports=False
                 )
 
                 call_kwargs = mock_api.call_args[1]
@@ -281,14 +249,9 @@ class TestSearchTransactionsFilters:
         """Test search with has_attachments filter."""
         with patch("server.ensure_authenticated", new_callable=AsyncMock):
             with patch("server.api_call_with_retry", new_callable=AsyncMock) as mock_api:
-                mock_api.return_value = {
-                    "allTransactions": {"results": [{"id": "txn_1"}]}
-                }
+                mock_api.return_value = {"allTransactions": {"results": [{"id": "txn_1"}]}}
 
-                result = await search_transactions(
-                    query="Starbucks",
-                    has_attachments=True
-                )
+                result = await search_transactions(query="Starbucks", has_attachments=True)
 
                 call_kwargs = mock_api.call_args[1]
                 assert "search" in call_kwargs
@@ -307,10 +270,12 @@ class TestBulkUpdateTransactions:
             with patch("server.api_call_with_retry", new_callable=AsyncMock) as mock_api:
                 mock_api.return_value = {"id": "txn_123"}
 
-                updates_json = json.dumps([
-                    {"transaction_id": "txn_1", "merchant_name": "Starbucks"},
-                    {"transaction_id": "txn_2", "merchant_name": "Whole Foods"}
-                ])
+                updates_json = json.dumps(
+                    [
+                        {"transaction_id": "txn_1", "merchant_name": "Starbucks"},
+                        {"transaction_id": "txn_2", "merchant_name": "Whole Foods"},
+                    ]
+                )
 
                 result = await update_transactions_bulk(updates=updates_json)
 
@@ -328,15 +293,17 @@ class TestBulkUpdateTransactions:
             with patch("server.api_call_with_retry", new_callable=AsyncMock) as mock_api:
                 mock_api.return_value = {"id": "txn_123"}
 
-                updates_json = json.dumps([
-                    {
-                        "transaction_id": "txn_1",
-                        "merchant_name": "Updated Merchant",
-                        "goal_id": "goal_123",
-                        "hide_from_reports": True,
-                        "needs_review": False
-                    }
-                ])
+                updates_json = json.dumps(
+                    [
+                        {
+                            "transaction_id": "txn_1",
+                            "merchant_name": "Updated Merchant",
+                            "goal_id": "goal_123",
+                            "hide_from_reports": True,
+                            "needs_review": False,
+                        }
+                    ]
+                )
 
                 result = await update_transactions_bulk(updates=updates_json)
 

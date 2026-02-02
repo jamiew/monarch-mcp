@@ -11,9 +11,10 @@ Or set environment variables directly:
 """
 
 import os
+from pathlib import Path
+
 import pytest
 import pytest_asyncio
-from pathlib import Path
 
 # Load .env file if it exists (for local development)
 env_file = Path(__file__).parent.parent / ".env"
@@ -30,14 +31,15 @@ if env_file.exists():
 from monarchmoney import MonarchMoney
 
 # Skip all tests in this module if credentials aren't available
-CREDENTIALS_AVAILABLE = all([
-    os.environ.get("MONARCH_EMAIL"),
-    os.environ.get("MONARCH_PASSWORD"),
-])
+CREDENTIALS_AVAILABLE = all(
+    [
+        os.environ.get("MONARCH_EMAIL"),
+        os.environ.get("MONARCH_PASSWORD"),
+    ]
+)
 
 pytestmark = pytest.mark.skipif(
-    not CREDENTIALS_AVAILABLE,
-    reason="Monarch Money credentials not available (set MONARCH_EMAIL and MONARCH_PASSWORD)"
+    not CREDENTIALS_AVAILABLE, reason="Monarch Money credentials not available (set MONARCH_EMAIL and MONARCH_PASSWORD)"
 )
 
 

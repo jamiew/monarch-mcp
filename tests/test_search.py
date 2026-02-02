@@ -1,9 +1,9 @@
 """Tests for search_transactions tool."""
 
 import json
-import pytest
 from unittest.mock import AsyncMock, patch
-from datetime import date
+
+import pytest
 
 import server
 
@@ -25,7 +25,7 @@ class TestSearchTransactions:
                 "category": {"name": "Shopping"},
                 "account": {"displayName": "Chase Checking"},
                 "pending": False,
-                "needsReview": False
+                "needsReview": False,
             },
             {
                 "id": "3",
@@ -37,11 +37,11 @@ class TestSearchTransactions:
                 "category": {"name": "Entertainment"},
                 "account": {"displayName": "Chase Checking"},
                 "pending": False,
-                "needsReview": False
-            }
+                "needsReview": False,
+            },
         ]
 
-        with patch.object(server, 'mm_client') as mock_client:
+        with patch.object(server, "mm_client") as mock_client:
             mock_client.get_transactions = AsyncMock(return_value=mock_transactions)
 
             result = await server.search_transactions(query="Apple")
@@ -70,11 +70,11 @@ class TestSearchTransactions:
                 "category": {"name": "Shopping"},
                 "account": {"displayName": "Chase Checking"},
                 "pending": False,
-                "needsReview": False
+                "needsReview": False,
             }
         ]
 
-        with patch.object(server, 'mm_client') as mock_client:
+        with patch.object(server, "mm_client") as mock_client:
             mock_client.get_transactions = AsyncMock(return_value=mock_transactions)
 
             # Test lowercase query
@@ -100,11 +100,11 @@ class TestSearchTransactions:
                 "category": {"name": "Shopping"},
                 "account": {"displayName": "Chase Checking"},
                 "pending": False,
-                "needsReview": False
+                "needsReview": False,
             }
         ]
 
-        with patch.object(server, 'mm_client') as mock_client:
+        with patch.object(server, "mm_client") as mock_client:
             mock_client.get_transactions = AsyncMock(return_value=mock_transactions)
 
             result = await server.search_transactions(query="laptop")
@@ -124,18 +124,14 @@ class TestSearchTransactions:
                 "category": {"name": "Shopping"},
                 "account": {"displayName": "Chase Checking"},
                 "pending": False,
-                "needsReview": False
+                "needsReview": False,
             }
         ]
 
-        with patch.object(server, 'mm_client') as mock_client:
+        with patch.object(server, "mm_client") as mock_client:
             mock_client.get_transactions = AsyncMock(return_value=mock_transactions)
 
-            result = await server.search_transactions(
-                query="Apple",
-                start_date="2024-01-01",
-                end_date="2024-01-31"
-            )
+            result = await server.search_transactions(query="Apple", start_date="2024-01-01", end_date="2024-01-31")
 
             result_data = json.loads(result)
             assert result_data["search_metadata"]["result_count"] == 1
@@ -150,7 +146,7 @@ class TestSearchTransactions:
         """Test search with no matching results (API returns empty list)."""
         mock_transactions = []
 
-        with patch.object(server, 'mm_client') as mock_client:
+        with patch.object(server, "mm_client") as mock_client:
             mock_client.get_transactions = AsyncMock(return_value=mock_transactions)
 
             result = await server.search_transactions(query="Apple")
@@ -161,7 +157,7 @@ class TestSearchTransactions:
 
     async def test_search_transactions_empty_query(self):
         """Test that empty query raises error."""
-        with patch.object(server, 'mm_client') as mock_client:
+        with patch.object(server, "mm_client") as mock_client:
             with pytest.raises(ValueError, match="Query parameter cannot be empty"):
                 await server.search_transactions(query="")
 
@@ -181,11 +177,11 @@ class TestSearchTransactions:
                 "account": {"displayName": "Chase Checking", "id": "acc123"},
                 "pending": False,
                 "needsReview": False,
-                "extraField": "extra data"
+                "extraField": "extra data",
             }
         ]
 
-        with patch.object(server, 'mm_client') as mock_client:
+        with patch.object(server, "mm_client") as mock_client:
             mock_client.get_transactions = AsyncMock(return_value=mock_transactions)
 
             # Test verbose=True (full details)
@@ -219,11 +215,11 @@ class TestSearchTransactions:
                 "category": {"name": "Food & Dining"},
                 "account": {"displayName": "Chase Checking"},
                 "pending": False,
-                "needsReview": False
+                "needsReview": False,
             }
         ]
 
-        with patch.object(server, 'mm_client') as mock_client:
+        with patch.object(server, "mm_client") as mock_client:
             mock_client.get_transactions = AsyncMock(return_value=mock_transactions)
 
             # API does the matching
@@ -247,17 +243,14 @@ class TestSearchTransactions:
                 "category": {"name": "Shopping"},
                 "account": {"displayName": "Chase Checking"},
                 "pending": False,
-                "needsReview": False
+                "needsReview": False,
             }
         ]
 
-        with patch.object(server, 'mm_client') as mock_client:
+        with patch.object(server, "mm_client") as mock_client:
             mock_client.get_transactions = AsyncMock(return_value=mock_transactions)
 
-            result = await server.search_transactions(
-                query="Apple",
-                account_id="acc123"
-            )
+            result = await server.search_transactions(query="Apple", account_id="acc123")
 
             result_data = json.loads(result)
             assert result_data["search_metadata"]["result_count"] == 1
@@ -285,11 +278,11 @@ class TestSearchTransactionsIntegration:
                 "category": {"name": "Shopping"},
                 "account": {"displayName": "Chase Checking"},
                 "pending": False,
-                "needsReview": False
+                "needsReview": False,
             }
         ]
 
-        with patch.object(server, 'mm_client') as mock_client:
+        with patch.object(server, "mm_client") as mock_client:
             mock_client.get_transactions = AsyncMock(return_value=mock_transactions)
 
             # Get search results
