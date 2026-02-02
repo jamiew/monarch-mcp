@@ -1,78 +1,87 @@
 #!/usr/bin/env python3
 """MonarchMoney MCP Server - Provides access to Monarch Money financial data via MCP protocol."""
 
-import os
 import asyncio
 import json
+import os
 import uuid
-from typing import Optional, List, Union, Dict, Any
-from datetime import datetime, date
+from datetime import date, datetime
 from pathlib import Path
+from typing import Any
 
 import structlog
 from dateutil import parser as date_parser
-from pydantic import BaseModel, Field, ValidationError
 from mcp.server.fastmcp import FastMCP
-from mcp.types import TextContent
 from monarchmoney import MonarchMoney, RequireMFAException
+from pydantic import BaseModel, Field
 
 # Type definitions for Monarch Money API responses
-JsonSerializable = Union[str, int, float, bool, None, List['JsonSerializable'], Dict[str, 'JsonSerializable']]
-DateConvertible = Union[date, datetime, JsonSerializable]
+JsonSerializable = str | int | float | bool | None | list["JsonSerializable"] | dict[str, "JsonSerializable"]
+DateConvertible = date | datetime | JsonSerializable
+
 
 # Pydantic models for tool arguments (replacing Dict[str, Any])
-class GetTransactionsArgs(BaseModel):  # type: ignore[misc]
+class GetTransactionsArgs(BaseModel):
     """Arguments for get_transactions tool."""
+
     limit: int = Field(default=100, ge=1, le=1000)
     offset: int = Field(default=0, ge=0)
-    start_date: Optional[str] = Field(default=None, pattern=r'^\d{4}-\d{2}-\d{2}$')
-    end_date: Optional[str] = Field(default=None, pattern=r'^\d{4}-\d{2}-\d{2}$')
-    account_id: Optional[str] = None
-    category_id: Optional[str] = None
+    start_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    end_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    account_id: str | None = None
+    category_id: str | None = None
     verbose: bool = Field(default=False)
 
-class GetBudgetsArgs(BaseModel):  # type: ignore[misc]
+
+class GetBudgetsArgs(BaseModel):
     """Arguments for get_budgets tool."""
-    start_date: Optional[str] = Field(default=None, pattern=r'^\d{4}-\d{2}-\d{2}$')
-    end_date: Optional[str] = Field(default=None, pattern=r'^\d{4}-\d{2}-\d{2}$')
 
-class GetCashflowArgs(BaseModel):  # type: ignore[misc]
+    start_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    end_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+
+class GetCashflowArgs(BaseModel):
     """Arguments for get_cashflow tool."""
-    start_date: Optional[str] = Field(default=None, pattern=r'^\d{4}-\d{2}-\d{2}$')
-    end_date: Optional[str] = Field(default=None, pattern=r'^\d{4}-\d{2}-\d{2}$')
 
-class CreateTransactionArgs(BaseModel):  # type: ignore[misc]
+    start_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    end_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+
+class CreateTransactionArgs(BaseModel):
     """Arguments for create_transaction tool."""
+
     amount: float
     merchant_name: str = Field(min_length=1)
     category_id: str = Field(min_length=1)
     account_id: str
-    date: str = Field(pattern=r'^\d{4}-\d{2}-\d{2}$')
-    notes: Optional[str] = None
+    date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    notes: str | None = None
     update_balance: bool = Field(default=False)
 
-class UpdateTransactionArgs(BaseModel):  # type: ignore[misc]
+
+class UpdateTransactionArgs(BaseModel):
     """Arguments for update_transaction tool."""
+
     transaction_id: str
-    amount: Optional[float] = None
-    merchant_name: Optional[str] = Field(default=None, min_length=1)
-    category_id: Optional[str] = None
-    date: Optional[str] = Field(default=None, pattern=r'^\d{4}-\d{2}-\d{2}$')
-    notes: Optional[str] = None
-    goal_id: Optional[str] = None
-    hide_from_reports: Optional[bool] = None
-    needs_review: Optional[bool] = None
+    amount: float | None = None
+    merchant_name: str | None = Field(default=None, min_length=1)
+    category_id: str | None = None
+    date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    notes: str | None = None
+    goal_id: str | None = None
+    hide_from_reports: bool | None = None
+    needs_review: bool | None = None
 
 
 def parse_flexible_date(date_input: str) -> date:
     """
     Parse flexible date inputs including natural language with comprehensive error handling.
-    
+
     Supports:
     - "today", "now"
-    - "yesterday" 
+    - "yesterday"
     - "this month", "current month"
-    - "last month", "previous month" 
+    - "last month", "previous month"
     - "this year", "current year"
     - "last year", "previous year"
     - "last week", "this week"
@@ -81,15 +90,16 @@ def parse_flexible_date(date_input: str) -> date:
     """
     if not date_input:
         raise ValueError("Date input cannot be empty")
-    
+
     # Handle common natural language patterns
     date_input = date_input.lower().strip()
     today = date.today()
-    
+
     if date_input in ["today", "now"]:
         return today
     elif date_input == "yesterday":
         from datetime import timedelta
+
         return today - timedelta(days=1)
     elif date_input in ["this month", "current month"]:
         return date(today.year, today.month, 1)
@@ -105,67 +115,71 @@ def parse_flexible_date(date_input: str) -> date:
         return date(today.year - 1, 1, 1)
     elif date_input == "last week":
         from datetime import timedelta
+
         return today - timedelta(days=7)
     elif date_input == "this week":
         from datetime import timedelta
+
         # Start of this week (Monday)
         days_since_monday = today.weekday()
         return today - timedelta(days=days_since_monday)
-    
+
     # Handle relative patterns like "30 days ago", "6 months ago"
     import re
-    relative_pattern = re.match(r'(\d+)\s+(days?|weeks?|months?|years?)\s+ago', date_input)
+
+    relative_pattern = re.match(r"(\d+)\s+(days?|weeks?|months?|years?)\s+ago", date_input)
     if relative_pattern:
         from datetime import timedelta
+
         from dateutil.relativedelta import relativedelta
-        
+
         amount = int(relative_pattern.group(1))
-        unit = relative_pattern.group(2).rstrip('s')  # Remove plural 's'
-        
+        unit = relative_pattern.group(2).rstrip("s")  # Remove plural 's'
+
         try:
-            if unit == 'day':
+            if unit == "day":
                 return today - timedelta(days=amount)
-            elif unit == 'week':
+            elif unit == "week":
                 return today - timedelta(weeks=amount)
-            elif unit == 'month':
+            elif unit == "month":
                 result = today - relativedelta(months=amount)
-                return result.date() if hasattr(result, 'date') else result
-            elif unit == 'year':
+                return result.date() if hasattr(result, "date") else result
+            elif unit == "year":
                 result = today - relativedelta(years=amount)
-                return result.date() if hasattr(result, 'date') else result
+                return result.date() if hasattr(result, "date") else result
         except (ValueError, OverflowError) as e:
             log.warning("Invalid relative date calculation", input=date_input, amount=amount, unit=unit, error=str(e))
-            raise ValueError(f"Invalid relative date: {date_input}")
-    
+            raise ValueError(f"Invalid relative date: {date_input}") from e
+
     # Try parsing with dateutil for standard date formats
     try:
         parsed_datetime = date_parser.parse(date_input)
         parsed_date = parsed_datetime.date()
-        
+
         # Validate reasonable date range (1900 to 50 years in future)
         min_date = date(1900, 1, 1)
         max_date = date(today.year + 50, 12, 31)
-        
+
         if parsed_date < min_date or parsed_date > max_date:
             log.warning("Date outside reasonable range", input=date_input, parsed_date=parsed_date.isoformat())
             raise ValueError(f"Date {parsed_date.isoformat()} is outside reasonable range (1900-{today.year + 50})")
-        
+
         return parsed_date
-        
+
     except (ValueError, TypeError, OverflowError) as e:
         log.warning("Failed to parse date with dateutil", input=date_input, error=str(e))
-        
+
         # Provide helpful error message with suggestions
         suggestions = [
             "Try formats like: 2024-01-15, Jan 15 2024, 15/01/2024",
             "Or natural language: today, yesterday, last month, this year",
-            "Or relative: 30 days ago, 6 months ago, 1 year ago"
+            "Or relative: 30 days ago, 6 months ago, 1 year ago",
         ]
         suggestion_text = ". ".join(suggestions)
-        raise ValueError(f"Could not parse date '{date_input}'. {suggestion_text}")
+        raise ValueError(f"Could not parse date '{date_input}'. {suggestion_text}") from e
 
 
-def build_date_filter(start_date: Optional[str], end_date: Optional[str]) -> Dict[str, str]:
+def build_date_filter(start_date: str | None, end_date: str | None) -> dict[str, str]:
     """
     Build date filter dictionary with flexible parsing and comprehensive error recovery.
 
@@ -185,7 +199,7 @@ def build_date_filter(start_date: Optional[str], end_date: Optional[str]) -> Dic
         - Missing end_date: defaults to today
         - Missing start_date: defaults to start of current month
     """
-    filters: Dict[str, str] = {}
+    filters: dict[str, str] = {}
 
     # Auto-fill missing dates for better UX (Monarch API requires both or neither)
     if start_date and not end_date:
@@ -203,8 +217,11 @@ def build_date_filter(start_date: Optional[str], end_date: Optional[str]) -> Dic
             if parsed_end < today or parsed_end.month != today.month or parsed_end.year != today.year:
                 # Use first day of the end_date's month
                 start_date = date(parsed_end.year, parsed_end.month, 1).isoformat()
-                log.info("Auto-filling missing start_date with first of end_date's month",
-                        end_date=end_date, calculated_start=start_date)
+                log.info(
+                    "Auto-filling missing start_date with first of end_date's month",
+                    end_date=end_date,
+                    calculated_start=start_date,
+                )
             else:
                 # End date is this month, use "this month"
                 start_date = "this month"
@@ -221,42 +238,48 @@ def build_date_filter(start_date: Optional[str], end_date: Optional[str]) -> Dic
             log.info("Successfully parsed start_date", input=start_date, parsed=parsed_date.isoformat())
         except ValueError as e:
             log.warning("Flexible date parsing failed for start_date", input=start_date, error=str(e))
-            
+
             # Fallback 1: Try strict ISO format parsing
             try:
                 parsed_date = datetime.strptime(start_date, "%Y-%m-%d").date()
                 filters["start_date"] = parsed_date.isoformat()
-                log.info("Successfully parsed start_date with ISO fallback", input=start_date, parsed=parsed_date.isoformat())
+                log.info(
+                    "Successfully parsed start_date with ISO fallback", input=start_date, parsed=parsed_date.isoformat()
+                )
             except ValueError:
                 # Fallback 2: Try common date formats
                 common_formats = [
-                    "%m/%d/%Y",     # MM/DD/YYYY
-                    "%d/%m/%Y",     # DD/MM/YYYY
-                    "%Y/%m/%d",     # YYYY/MM/DD
-                    "%m-%d-%Y",     # MM-DD-YYYY
-                    "%d-%m-%Y",     # DD-MM-YYYY
-                    "%B %d, %Y",    # January 1, 2024
-                    "%b %d, %Y",    # Jan 1, 2024
-                    "%d %B %Y",     # 1 January 2024
-                    "%d %b %Y",     # 1 Jan 2024
+                    "%m/%d/%Y",  # MM/DD/YYYY
+                    "%d/%m/%Y",  # DD/MM/YYYY
+                    "%Y/%m/%d",  # YYYY/MM/DD
+                    "%m-%d-%Y",  # MM-DD-YYYY
+                    "%d-%m-%Y",  # DD-MM-YYYY
+                    "%B %d, %Y",  # January 1, 2024
+                    "%b %d, %Y",  # Jan 1, 2024
+                    "%d %B %Y",  # 1 January 2024
+                    "%d %b %Y",  # 1 Jan 2024
                 ]
-                
+
                 parsed = False
                 for fmt in common_formats:
                     try:
                         parsed_date = datetime.strptime(start_date, fmt).date()
                         filters["start_date"] = parsed_date.isoformat()
-                        log.info("Successfully parsed start_date with format fallback", 
-                                input=start_date, format=fmt, parsed=parsed_date.isoformat())
+                        log.info(
+                            "Successfully parsed start_date with format fallback",
+                            input=start_date,
+                            format=fmt,
+                            parsed=parsed_date.isoformat(),
+                        )
                         parsed = True
                         break
                     except ValueError:
                         continue
-                
+
                 if not parsed:
                     log.error("All date parsing attempts failed for start_date", input=start_date)
-                    raise ValueError(f"Could not parse start_date '{start_date}'. {str(e)}")
-    
+                    raise ValueError(f"Could not parse start_date '{start_date}'. {e!s}") from e
+
     if end_date:
         try:
             parsed_date = parse_flexible_date(end_date)
@@ -264,55 +287,61 @@ def build_date_filter(start_date: Optional[str], end_date: Optional[str]) -> Dic
             log.info("Successfully parsed end_date", input=end_date, parsed=parsed_date.isoformat())
         except ValueError as e:
             log.warning("Flexible date parsing failed for end_date", input=end_date, error=str(e))
-            
+
             # Fallback 1: Try strict ISO format parsing
             try:
                 parsed_date = datetime.strptime(end_date, "%Y-%m-%d").date()
                 filters["end_date"] = parsed_date.isoformat()
-                log.info("Successfully parsed end_date with ISO fallback", input=end_date, parsed=parsed_date.isoformat())
+                log.info(
+                    "Successfully parsed end_date with ISO fallback", input=end_date, parsed=parsed_date.isoformat()
+                )
             except ValueError:
                 # Fallback 2: Try common date formats
                 common_formats = [
-                    "%m/%d/%Y",     # MM/DD/YYYY
-                    "%d/%m/%Y",     # DD/MM/YYYY
-                    "%Y/%m/%d",     # YYYY/MM/DD
-                    "%m-%d-%Y",     # MM-DD-YYYY
-                    "%d-%m-%Y",     # DD-MM-YYYY
-                    "%B %d, %Y",    # January 1, 2024
-                    "%b %d, %Y",    # Jan 1, 2024
-                    "%d %B %Y",     # 1 January 2024
-                    "%d %b %Y",     # 1 Jan 2024
+                    "%m/%d/%Y",  # MM/DD/YYYY
+                    "%d/%m/%Y",  # DD/MM/YYYY
+                    "%Y/%m/%d",  # YYYY/MM/DD
+                    "%m-%d-%Y",  # MM-DD-YYYY
+                    "%d-%m-%Y",  # DD-MM-YYYY
+                    "%B %d, %Y",  # January 1, 2024
+                    "%b %d, %Y",  # Jan 1, 2024
+                    "%d %B %Y",  # 1 January 2024
+                    "%d %b %Y",  # 1 Jan 2024
                 ]
-                
+
                 parsed = False
                 for fmt in common_formats:
                     try:
                         parsed_date = datetime.strptime(end_date, fmt).date()
                         filters["end_date"] = parsed_date.isoformat()
-                        log.info("Successfully parsed end_date with format fallback", 
-                                input=end_date, format=fmt, parsed=parsed_date.isoformat())
+                        log.info(
+                            "Successfully parsed end_date with format fallback",
+                            input=end_date,
+                            format=fmt,
+                            parsed=parsed_date.isoformat(),
+                        )
                         parsed = True
                         break
                     except ValueError:
                         continue
-                
+
                 if not parsed:
                     log.error("All date parsing attempts failed for end_date", input=end_date)
-                    raise ValueError(f"Could not parse end_date '{end_date}'. {str(e)}")
-    
+                    raise ValueError(f"Could not parse end_date '{end_date}'. {e!s}") from e
+
     # Validate date range logic
     if "start_date" in filters and "end_date" in filters:
         start = date.fromisoformat(filters["start_date"])
         end = date.fromisoformat(filters["end_date"])
-        
+
         if start > end:
             log.warning("Start date is after end date", start_date=filters["start_date"], end_date=filters["end_date"])
             raise ValueError(f"Start date ({filters['start_date']}) cannot be after end date ({filters['end_date']})")
-    
+
     return filters
 
 
-def convert_dates_to_strings(obj: DateConvertible) -> JsonSerializable:
+def convert_dates_to_strings(obj: Any) -> Any:
     """
     Recursively convert all date/datetime objects to ISO format strings.
 
@@ -332,7 +361,7 @@ def convert_dates_to_strings(obj: DateConvertible) -> JsonSerializable:
         return obj
 
 
-def extract_transactions_list(response: Any) -> List[Dict[str, Any]]:
+def extract_transactions_list(response: Any) -> list[dict[str, Any]]:
     """
     Extract the transactions list from monarchmoney API response.
 
@@ -366,7 +395,7 @@ def extract_transactions_list(response: Any) -> List[Dict[str, Any]]:
         return []
 
 
-def format_transactions_compact(transactions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def format_transactions_compact(transactions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
     Format transactions in a compact format with only essential fields.
 
@@ -379,13 +408,13 @@ def format_transactions_compact(transactions: List[Dict[str, Any]]) -> List[Dict
 
     Use verbose=True to get full transaction details when needed.
     """
-    compact: List[Dict[str, Any]] = []
+    compact: list[dict[str, Any]] = []
 
     for txn in transactions:
         if not isinstance(txn, dict):
             continue
 
-        compact_txn: Dict[str, Any] = {
+        compact_txn: dict[str, Any] = {
             "id": txn.get("id"),
             "date": txn.get("date"),
             "amount": txn.get("amount"),
@@ -394,7 +423,7 @@ def format_transactions_compact(transactions: List[Dict[str, Any]]) -> List[Dict
             "category": txn.get("category", {}).get("name") if isinstance(txn.get("category"), dict) else None,
             "account": txn.get("account", {}).get("displayName") if isinstance(txn.get("account"), dict) else None,
             "pending": txn.get("pending", False),
-            "needsReview": txn.get("needsReview", False)
+            "needsReview": txn.get("needsReview", False),
         }
 
         # Include notes if present
@@ -405,15 +434,16 @@ def format_transactions_compact(transactions: List[Dict[str, Any]]) -> List[Dict
 
     return compact
 
+
 # Configure standard logging (stderr only to avoid interfering with MCP stdio)
-import sys
-from pathlib import Path
 import logging
+import sys
+
 
 # Configure logger to output to stderr only with error handling
 class SafeStreamHandler(logging.StreamHandler[Any]):
     """Stream handler that gracefully handles broken pipes."""
-    
+
     def emit(self, record: logging.LogRecord) -> None:
         try:
             super().emit(record)
@@ -424,10 +454,11 @@ class SafeStreamHandler(logging.StreamHandler[Any]):
             # Let other logging errors bubble up
             self.handleError(record)
 
+
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[SafeStreamHandler(sys.stderr)]
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[SafeStreamHandler(sys.stderr)],
 )
 
 # Configure structured logging
@@ -440,7 +471,7 @@ structlog.configure(
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
         structlog.processors.UnicodeDecoder(),
-        structlog.processors.JSONRenderer()
+        structlog.processors.JSONRenderer(),
     ],
     context_class=dict,
     logger_factory=structlog.stdlib.LoggerFactory(),
@@ -453,34 +484,36 @@ log = structlog.get_logger(__name__)
 logger = logging.getLogger(__name__)
 
 # Suppress third-party library logging to reduce noise
-logging.getLogger('aiohttp').setLevel(logging.ERROR)
-logging.getLogger('monarchmoney').setLevel(logging.ERROR)
-logging.getLogger('gql').setLevel(logging.ERROR)
-logging.getLogger('gql.transport').setLevel(logging.ERROR)
+logging.getLogger("aiohttp").setLevel(logging.ERROR)
+logging.getLogger("monarchmoney").setLevel(logging.ERROR)
+logging.getLogger("gql").setLevel(logging.ERROR)
+logging.getLogger("gql.transport").setLevel(logging.ERROR)
 
 # Suppress SSL warnings that might leak to stdout
 import warnings
+
 warnings.filterwarnings("ignore", category=UserWarning, module="gql.transport.aiohttp")
 
 # Usage analytics tracking
 import functools
 import time
-from typing import Dict, List, Any
-import uuid
+from typing import Any
 
 # Session tracking for usage analytics
 current_session_id = str(uuid.uuid4())
-usage_patterns: Dict[str, List[Dict[str, Any]]] = {}
+usage_patterns: dict[str, list[dict[str, Any]]] = {}
+
 
 def track_usage(func: Any) -> Any:
     """Decorator to track tool usage patterns for analytics with detailed debugging."""
+
     @functools.wraps(func)
     async def wrapper(*args: Any, **kwargs: Any) -> Any:
         start_time = time.time()
         tool_name = func.__name__
 
         # Format args for logging (exclude sensitive data)
-        safe_kwargs = {k: v for k, v in kwargs.items() if k not in ['password', 'mfa_secret']}
+        safe_kwargs = {k: v for k, v in kwargs.items() if k not in ["password", "mfa_secret"]}
 
         # Log tool call with arguments BEFORE execution
         logger.info(f"[TOOL_CALL] {tool_name} | args: {safe_kwargs}")
@@ -505,27 +538,24 @@ def track_usage(func: Any) -> Any:
             # Try to extract additional stats from JSON results
             extra_stats = ""
             try:
-                if isinstance(result, str) and result.strip().startswith('{'):
+                if isinstance(result, str) and result.strip().startswith("{"):
                     import json
+
                     parsed = json.loads(result)
                     if isinstance(parsed, dict):
                         # Look for common list fields to count items
-                        for key in ['transactions', 'accounts', 'budgets', 'categories', 'results']:
+                        for key in ["transactions", "accounts", "budgets", "categories", "results"]:
                             if key in parsed and isinstance(parsed[key], list):
                                 extra_stats += f" | {key}: {len(parsed[key])} items"
                         # Check for batch summaries
-                        if 'batch_summary' in parsed:
-                            summary = parsed['batch_summary']
+                        if "batch_summary" in parsed:
+                            summary = parsed["batch_summary"]
                             if isinstance(summary, dict):
                                 extra_stats += f" | batch: {summary}"
             except (json.JSONDecodeError, KeyError, TypeError):
                 pass
 
-            call_info.update({
-                "status": "success",
-                "execution_time": execution_time,
-                "result_size": result_chars
-            })
+            call_info.update({"status": "success", "execution_time": execution_time, "result_size": result_chars})
 
             # Log for analytics with detailed size info
             logger.info(f"[ANALYTICS] tool_called: {tool_name} | time: {execution_time:.3f}s | status: success")
@@ -540,16 +570,13 @@ def track_usage(func: Any) -> Any:
 
         except Exception as e:
             execution_time = time.time() - start_time
-            call_info.update({
-                "status": "error",
-                "execution_time": execution_time,
-                "error": str(e)
-            })
+            call_info.update({"status": "error", "execution_time": execution_time, "error": str(e)})
 
             logger.error(f"[ANALYTICS] tool_error: {tool_name} | time: {execution_time:.3f}s | error: {str(e)}")
             raise
 
     return wrapper
+
 
 # Initialize the FastMCP server
 mcp = FastMCP("monarch-money")
@@ -557,25 +584,29 @@ mcp = FastMCP("monarch-money")
 # Authentication state management
 from enum import Enum
 
+
 class AuthState(Enum):
     """Track authentication state to prevent duplicate initialization attempts."""
+
     NOT_INITIALIZED = "not_initialized"
     INITIALIZING = "initializing"
     AUTHENTICATED = "authenticated"
     FAILED = "failed"
 
+
 # Global variables for authentication
-mm_client: Optional[MonarchMoney] = None
+mm_client: MonarchMoney | None = None
 auth_state: AuthState = AuthState.NOT_INITIALIZED
-auth_lock: Optional[asyncio.Lock] = None  # Created in async context
-auth_error: Optional[str] = None  # Store last auth error for debugging
-auth_failed_at: Optional[float] = None  # Timestamp of last auth failure for cooldown
+auth_lock: asyncio.Lock | None = None  # Created in async context
+auth_error: str | None = None  # Store last auth error for debugging
+auth_failed_at: float | None = None  # Timestamp of last auth failure for cooldown
 AUTH_RETRY_COOLDOWN_SECONDS = 60  # Wait 60 seconds before retrying after FAILED state
 
 # Secure session directory with proper permissions
 session_dir = Path(".mm")
 session_dir.mkdir(mode=0o700, exist_ok=True)
 session_file = session_dir / "session.pickle"
+
 
 def is_auth_error(error: Exception) -> bool:
     """Determine if an error is a genuine authentication/authorization failure.
@@ -588,11 +619,11 @@ def is_auth_error(error: Exception) -> bool:
     # Exclude false positives first - these are NOT auth errors
     false_positives = [
         "connector",  # Library compatibility issue
-        "aiohttp",    # Library issue
+        "aiohttp",  # Library issue
         "transport",  # Library issue
-        "connection refused", # Network issue, not auth
-        "connection reset",   # Network issue, not auth
-        "timeout",    # Network issue, not auth
+        "connection refused",  # Network issue, not auth
+        "connection reset",  # Network issue, not auth
+        "timeout",  # Network issue, not auth
     ]
 
     # Check for false positives first
@@ -613,7 +644,7 @@ def is_auth_error(error: Exception) -> bool:
         "invalid token",
         "token expired",
         "session expired",
-        "session has expired"
+        "session has expired",
     ]
 
     # Check for genuine auth errors
@@ -666,6 +697,7 @@ def clear_session(reason: str = "unknown") -> None:
         except Exception as e:
             logger.warning(f"Failed to clear mm session file: {e}")
 
+
 async def api_call_with_retry(method_name: str, *args: Any, max_retries: int = 3, **kwargs: Any) -> Any:
     """Wrapper for API calls that handles session expiration and retries.
 
@@ -687,7 +719,7 @@ async def api_call_with_retry(method_name: str, *args: Any, max_retries: int = 3
     """
     global auth_state, mm_client
 
-    last_error: Optional[Exception] = None
+    last_error: Exception | None = None
 
     for attempt in range(max_retries + 1):  # +1 for initial attempt
         try:
@@ -705,10 +737,8 @@ async def api_call_with_retry(method_name: str, *args: Any, max_retries: int = 3
             if is_auth_error(e):
                 if attempt < max_retries:
                     # Calculate exponential backoff delay (1s, 2s, 4s, ...)
-                    backoff_delay = 2 ** attempt
-                    logger.warning(
-                        f"API call failed with auth error (attempt {attempt + 1}/{max_retries + 1}): {e}"
-                    )
+                    backoff_delay = 2**attempt
+                    logger.warning(f"API call failed with auth error (attempt {attempt + 1}/{max_retries + 1}): {e}")
                     logger.info(f"Clearing session and re-authenticating (retry in {backoff_delay}s)")
 
                     # clear_session() will reset auth state and error automatically
@@ -726,9 +756,7 @@ async def api_call_with_retry(method_name: str, *args: Any, max_retries: int = 3
                     continue
                 else:
                     # Max retries exhausted for auth error
-                    logger.error(
-                        f"API call failed after {max_retries} auth retries: {e}"
-                    )
+                    logger.error(f"API call failed after {max_retries} auth retries: {e}")
                     raise
             else:
                 # Not an auth error - raise immediately without retry
@@ -768,15 +796,14 @@ async def initialize_client() -> None:
     if session_file.exists() and not force_login:
         try:
             logger.info(f"[AUTH] Found existing session file: {session_file}")
-            logger.info(f"[AUTH] Attempting to load session (no validation at this stage)")
+            logger.info("[AUTH] Attempting to load session (no validation at this stage)")
             # Load session with stdout/stderr suppression
             import contextlib
             import io
 
             stdout_capture = io.StringIO()
             stderr_capture = io.StringIO()
-            with contextlib.redirect_stdout(stdout_capture), \
-                 contextlib.redirect_stderr(stderr_capture):
+            with contextlib.redirect_stdout(stdout_capture), contextlib.redirect_stderr(stderr_capture):
                 mm_client.load_session(str(session_file))
 
             # Log what was captured for debugging
@@ -797,7 +824,9 @@ async def initialize_client() -> None:
                 logger.info("[AUTH] Session file appears invalid (auth error), clearing before fresh login")
                 clear_session(reason="invalid session file")
             else:
-                logger.info(f"[AUTH] Non-auth error loading session (error type: {type(e).__name__}), will try fresh login anyway")
+                logger.info(
+                    f"[AUTH] Non-auth error loading session (error type: {type(e).__name__}), will try fresh login anyway"
+                )
 
     else:
         if not session_file.exists():
@@ -831,8 +860,7 @@ async def initialize_client() -> None:
 
             stdout_capture = io.StringIO()
             stderr_capture = io.StringIO()
-            with contextlib.redirect_stdout(stdout_capture), \
-                 contextlib.redirect_stderr(stderr_capture):
+            with contextlib.redirect_stdout(stdout_capture), contextlib.redirect_stderr(stderr_capture):
                 mm_client.save_session(str(session_file))
 
             # Log what was captured for debugging
@@ -852,19 +880,19 @@ async def initialize_client() -> None:
             logger.info(f"[AUTH] ✓ Authentication complete - state: {auth_state.value}")
             return  # Success!
 
-        except RequireMFAException:
+        except RequireMFAException as e:
             error_msg = "Multi-factor authentication required but MONARCH_MFA_SECRET not set"
             logger.error(f"[AUTH] ✗ {error_msg}")
             auth_state = AuthState.FAILED
             auth_error = error_msg
-            raise ValueError(error_msg)
+            raise ValueError(error_msg) from e
 
         except Exception as e:
             if attempt < max_retries - 1:
                 logger.warning(f"[AUTH] Attempt {attempt + 1} failed: {e}")
                 # Determine if this is an auth error or other error
                 if is_auth_error(e):
-                    logger.info(f"[AUTH] Detected auth error, clearing session before retry")
+                    logger.info("[AUTH] Detected auth error, clearing session before retry")
                     clear_session(reason=f"auth failure on attempt {attempt + 1}")
                 else:
                     logger.info(f"[AUTH] Non-auth error ({type(e).__name__}), keeping session for retry")
@@ -970,6 +998,7 @@ async def ensure_authenticated() -> None:
 
 # FastMCP Tool definitions using decorators
 
+
 @mcp.tool()
 @track_usage
 async def get_accounts() -> str:
@@ -980,7 +1009,9 @@ async def get_accounts() -> str:
         logger.info("Fetching accounts")
         accounts = await api_call_with_retry("get_accounts")
         accounts = convert_dates_to_strings(accounts)
-        logger.info(f"Accounts retrieved successfully, count: {len(accounts) if isinstance(accounts, list) else 'unknown'}")
+        logger.info(
+            f"Accounts retrieved successfully, count: {len(accounts) if isinstance(accounts, list) else 'unknown'}"
+        )
         return json.dumps(accounts, indent=2)
     except Exception as e:
         logger.error(f"Failed to fetch accounts: {e}")
@@ -992,17 +1023,17 @@ async def get_accounts() -> str:
 async def get_transactions(
     limit: int = 100,
     offset: int = 0,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    account_id: Optional[str] = None,
-    category_id: Optional[str] = None,
-    tag_ids: Optional[str] = None,
-    has_attachments: Optional[bool] = None,
-    has_notes: Optional[bool] = None,
-    hidden_from_reports: Optional[bool] = None,
-    is_split: Optional[bool] = None,
-    is_recurring: Optional[bool] = None,
-    verbose: bool = False
+    start_date: str | None = None,
+    end_date: str | None = None,
+    account_id: str | None = None,
+    category_id: str | None = None,
+    tag_ids: str | None = None,
+    has_attachments: bool | None = None,
+    has_notes: bool | None = None,
+    hidden_from_reports: bool | None = None,
+    is_split: bool | None = None,
+    is_recurring: bool | None = None,
+    verbose: bool = False,
 ) -> str:
     """Fetch transactions with flexible date filtering and smart output formatting.
 
@@ -1103,20 +1134,24 @@ async def get_transactions(
 
     try:
         # Log original parameters BEFORE any processing
-        logger.info(f"[TOOL_CALL] get_transactions called with: limit={limit}, offset={offset}, start_date={repr(start_date)}, end_date={repr(end_date)}, account_id={repr(account_id)}, category_id={repr(category_id)}, verbose={verbose}")
+        logger.info(
+            f"[TOOL_CALL] get_transactions called with: limit={limit}, offset={offset}, start_date={repr(start_date)}, end_date={repr(end_date)}, account_id={repr(account_id)}, category_id={repr(category_id)}, verbose={verbose}"
+        )
 
         # Track original values for auto-fill detection
         original_start = start_date
         original_end = end_date
 
         # Build filter parameters with flexible date parsing
-        filters: Dict[str, Any] = build_date_filter(start_date, end_date)
+        filters: dict[str, Any] = build_date_filter(start_date, end_date)
 
         # Log if dates were auto-filled
         if original_start and not original_end and "end_date" in filters:
             logger.warning(f"[AUTO-FILL] end_date was not provided, defaulted to 'today' ({filters['end_date']})")
         elif original_end and not original_start and "start_date" in filters:
-            logger.warning(f"[AUTO-FILL] start_date was not provided, defaulted to '{filters['start_date']}' (first of end_date's month)")
+            logger.warning(
+                f"[AUTO-FILL] start_date was not provided, defaulted to '{filters['start_date']}' (first of end_date's month)"
+            )
 
         # monarchmoney expects account_ids and category_ids as LISTS
         if account_id:
@@ -1143,15 +1178,10 @@ async def get_transactions(
         # Log final filters being sent to API
         logger.info(f"[API_CALL] Calling Monarch API with filters: {filters}")
 
-        response = await api_call_with_retry(
-            "get_transactions",
-            limit=limit,
-            offset=offset,
-            **filters
-        )
+        response = await api_call_with_retry("get_transactions", limit=limit, offset=offset, **filters)
         # Extract transactions list from nested response structure
         transactions = extract_transactions_list(response)
-        transactions = convert_dates_to_strings(transactions)  # type: ignore[arg-type, assignment]
+        transactions = convert_dates_to_strings(transactions)
 
         # Format output based on verbose flag
         if not verbose and isinstance(transactions, list):
@@ -1170,17 +1200,17 @@ async def search_transactions(
     query: str,
     limit: int = 500,
     offset: int = 0,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    account_id: Optional[str] = None,
-    category_id: Optional[str] = None,
-    tag_ids: Optional[str] = None,
-    has_attachments: Optional[bool] = None,
-    has_notes: Optional[bool] = None,
-    hidden_from_reports: Optional[bool] = None,
-    is_split: Optional[bool] = None,
-    is_recurring: Optional[bool] = None,
-    verbose: bool = False
+    start_date: str | None = None,
+    end_date: str | None = None,
+    account_id: str | None = None,
+    category_id: str | None = None,
+    tag_ids: str | None = None,
+    has_attachments: bool | None = None,
+    has_notes: bool | None = None,
+    hidden_from_reports: bool | None = None,
+    is_split: bool | None = None,
+    is_recurring: bool | None = None,
+    verbose: bool = False,
 ) -> str:
     """Search transactions by text using Monarch Money's built-in search.
 
@@ -1285,20 +1315,24 @@ async def search_transactions(
         query_str = query.strip()
 
         # Log original parameters BEFORE any processing
-        logger.info(f"[TOOL_CALL] search_transactions called with: query={repr(query_str)}, limit={limit}, offset={offset}, start_date={repr(start_date)}, end_date={repr(end_date)}, account_id={repr(account_id)}, category_id={repr(category_id)}, verbose={verbose}")
+        logger.info(
+            f"[TOOL_CALL] search_transactions called with: query={repr(query_str)}, limit={limit}, offset={offset}, start_date={repr(start_date)}, end_date={repr(end_date)}, account_id={repr(account_id)}, category_id={repr(category_id)}, verbose={verbose}"
+        )
 
         # Track original values for auto-fill detection
         original_start = start_date
         original_end = end_date
 
         # Build filter parameters
-        filters: Dict[str, Any] = build_date_filter(start_date, end_date)
+        filters: dict[str, Any] = build_date_filter(start_date, end_date)
 
         # Log if dates were auto-filled
         if original_start and not original_end and "end_date" in filters:
             logger.warning(f"[AUTO-FILL] end_date was not provided, defaulted to 'today' ({filters['end_date']})")
         elif original_end and not original_start and "start_date" in filters:
-            logger.warning(f"[AUTO-FILL] start_date was not provided, defaulted to '{filters['start_date']}' (first of end_date's month)")
+            logger.warning(
+                f"[AUTO-FILL] start_date was not provided, defaulted to '{filters['start_date']}' (first of end_date's month)"
+            )
 
         # monarchmoney expects account_ids and category_ids as LISTS
         if account_id:
@@ -1329,15 +1363,10 @@ async def search_transactions(
         logger.info(f"[API_CALL] Calling Monarch API with filters: {filters}")
 
         # Fetch transactions from API with search filter
-        response = await api_call_with_retry(
-            "get_transactions",
-            limit=limit,
-            offset=offset,
-            **filters
-        )
+        response = await api_call_with_retry("get_transactions", limit=limit, offset=offset, **filters)
         # Extract transactions list from nested response structure
         transactions = extract_transactions_list(response)
-        transactions = convert_dates_to_strings(transactions)  # type: ignore[arg-type, assignment]
+        transactions = convert_dates_to_strings(transactions)
 
         # Format output based on verbose flag
         if not verbose:
@@ -1347,9 +1376,9 @@ async def search_transactions(
             "search_metadata": {
                 "query": query_str,
                 "result_count": len(transactions),
-                "filters_applied": {k: v for k, v in filters.items() if k != "search"}
+                "filters_applied": {k: v for k, v in filters.items() if k != "search"},
             },
-            "transactions": transactions
+            "transactions": transactions,
         }
 
         logger.info(f"Search complete: '{query_str}' returned {len(transactions)} results")
@@ -1362,10 +1391,7 @@ async def search_transactions(
 
 @mcp.tool()
 @track_usage
-async def get_budgets(
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None
-) -> str:
+async def get_budgets(start_date: str | None = None, end_date: str | None = None) -> str:
     """Retrieve budget information with flexible date filtering.
 
     Args:
@@ -1387,10 +1413,9 @@ async def get_budgets(
     except Exception as e:
         # Handle the case where no budgets exist
         if "Something went wrong while processing: None" in str(e):
-            return json.dumps({
-                "budgets": [],
-                "message": "No budgets configured in your Monarch Money account"
-            }, indent=2)
+            return json.dumps(
+                {"budgets": [], "message": "No budgets configured in your Monarch Money account"}, indent=2
+            )
         else:
             # Re-raise other errors
             raise
@@ -1398,10 +1423,7 @@ async def get_budgets(
 
 @mcp.tool()
 @track_usage
-async def get_cashflow(
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None
-) -> str:
+async def get_cashflow(start_date: str | None = None, end_date: str | None = None) -> str:
     """Analyze cashflow data with flexible date filtering.
 
     Args:
@@ -1440,8 +1462,8 @@ async def create_transaction(
     account_id: str,
     date: str,
     category_id: str,
-    notes: Optional[str] = None,
-    update_balance: bool = False
+    notes: str | None = None,
+    update_balance: bool = False,
 ) -> str:
     """Create a new manual transaction.
 
@@ -1473,7 +1495,7 @@ async def create_transaction(
             transaction_date = datetime.strptime(date, "%Y-%m-%d").date()
             date_str = transaction_date.isoformat()
         except ValueError as e:
-            raise ValueError(f"Invalid date format. Use YYYY-MM-DD (e.g., 2024-01-15). Error: {e}")
+            raise ValueError(f"Invalid date format. Use YYYY-MM-DD (e.g., 2024-01-15). Error: {e}") from e
 
         logger.info(f"Creating transaction: merchant={merchant_name}, amount={amount}, date={date_str}")
 
@@ -1487,15 +1509,15 @@ async def create_transaction(
                 account_id=account_id,
                 date=date_str,
                 notes=notes or "",
-                update_balance=update_balance
+                update_balance=update_balance,
             ),
-            timeout=30.0  # 30 second timeout
+            timeout=30.0,  # 30 second timeout
         )
         result = convert_dates_to_strings(result)
         return json.dumps(result, indent=2)
-    except asyncio.TimeoutError:
-        logger.error(f"Timeout creating transaction after 30 seconds")
-        raise ValueError(f"Transaction creation timed out after 30 seconds. Please try again.")
+    except asyncio.TimeoutError as e:
+        logger.error("Timeout creating transaction after 30 seconds")
+        raise ValueError("Transaction creation timed out after 30 seconds. Please try again.") from e
     except ValueError:
         raise
     except Exception as e:
@@ -1507,14 +1529,14 @@ async def create_transaction(
 @track_usage
 async def update_transaction(
     transaction_id: str,
-    amount: Optional[float] = None,
-    merchant_name: Optional[str] = None,
-    category_id: Optional[str] = None,
-    date: Optional[str] = None,
-    notes: Optional[str] = None,
-    goal_id: Optional[str] = None,
-    hide_from_reports: Optional[bool] = None,
-    needs_review: Optional[bool] = None
+    amount: float | None = None,
+    merchant_name: str | None = None,
+    category_id: str | None = None,
+    date: str | None = None,
+    notes: str | None = None,
+    goal_id: str | None = None,
+    hide_from_reports: bool | None = None,
+    needs_review: bool | None = None,
 ) -> str:
     """Update an existing transaction.
 
@@ -1577,7 +1599,7 @@ async def update_transaction(
             logger.warning("Empty merchant_name will be ignored by API")
 
         # Build update parameters
-        updates: Dict[str, Any] = {"transaction_id": transaction_id}
+        updates: dict[str, Any] = {"transaction_id": transaction_id}
         if amount is not None:
             updates["amount"] = amount
         if merchant_name is not None:
@@ -1596,35 +1618,36 @@ async def update_transaction(
             updates["needs_review"] = needs_review
 
         # Log what we're updating (for debugging)
-        update_fields = [k for k in updates.keys() if k != "transaction_id"]
+        update_fields = [k for k in updates if k != "transaction_id"]
         logger.info(f"Updating transaction {transaction_id} with fields: {update_fields}")
 
         # Use api_call_with_retry for session expiration handling and add timeout
         result = await asyncio.wait_for(
             api_call_with_retry("update_transaction", **updates),
-            timeout=30.0  # 30 second timeout
+            timeout=30.0,  # 30 second timeout
         )
         result = convert_dates_to_strings(result)
         return json.dumps(result, indent=2)
-    except asyncio.TimeoutError:
+    except asyncio.TimeoutError as e:
         logger.error(f"Timeout updating transaction {transaction_id} after 30 seconds")
-        raise ValueError(f"Transaction update timed out after 30 seconds. Please try again.")
+        raise ValueError("Transaction update timed out after 30 seconds. Please try again.") from e
     except ValueError as e:
         # Enhanced error messages for validation failures
         error_msg = str(e)
         if "date" in error_msg.lower():
-            raise ValueError(f"Invalid date format. Use YYYY-MM-DD (e.g., 2024-01-15). Error: {e}")
+            raise ValueError(f"Invalid date format. Use YYYY-MM-DD (e.g., 2024-01-15). Error: {e}") from e
         raise
     except Exception as e:
-        logger.error(f"Failed to update transaction {transaction_id}: {e}", extra={"updates": update_fields if 'update_fields' in locals() else []})
+        logger.error(
+            f"Failed to update transaction {transaction_id}: {e}",
+            extra={"updates": update_fields if "update_fields" in locals() else []},
+        )
         raise
 
 
 @mcp.tool()
 @track_usage
-async def update_transactions_bulk(
-    updates: str
-) -> str:
+async def update_transactions_bulk(updates: str) -> str:
     """Update multiple transactions in a single call to save round-trips.
 
     This is much more efficient than calling update_transaction multiple times.
@@ -1658,7 +1681,7 @@ async def update_transactions_bulk(
         try:
             updates_list = json.loads(updates)
         except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid JSON in updates parameter: {e}")
+            raise ValueError(f"Invalid JSON in updates parameter: {e}") from e
 
         if not isinstance(updates_list, list):
             raise ValueError("updates parameter must be a JSON array of transaction updates")
@@ -1669,27 +1692,19 @@ async def update_transactions_bulk(
         logger.info(f"Starting bulk transaction update: {len(updates_list)} transactions")
 
         # Build list of update tasks
-        async def update_single(update_data: Dict[str, Any]) -> Dict[str, Any]:
+        async def update_single(update_data: dict[str, Any]) -> dict[str, Any]:
             """Update a single transaction and return result with transaction_id."""
             try:
                 if not isinstance(update_data, dict):
-                    return {
-                        "transaction_id": None,
-                        "status": "error",
-                        "error": "Update must be a dictionary"
-                    }
+                    return {"transaction_id": None, "status": "error", "error": "Update must be a dictionary"}
 
                 if "transaction_id" not in update_data:
-                    return {
-                        "transaction_id": None,
-                        "status": "error",
-                        "error": "transaction_id is required"
-                    }
+                    return {"transaction_id": None, "status": "error", "error": "transaction_id is required"}
 
                 txn_id = update_data["transaction_id"]
 
                 # Build update parameters
-                update_params: Dict[str, Any] = {"transaction_id": txn_id}
+                update_params: dict[str, Any] = {"transaction_id": txn_id}
 
                 if "amount" in update_data:
                     update_params["amount"] = float(update_data["amount"])
@@ -1711,33 +1726,24 @@ async def update_transactions_bulk(
 
                 # Execute update with timeout
                 result = await asyncio.wait_for(
-                    api_call_with_retry("update_transaction", **update_params),
-                    timeout=30.0
+                    api_call_with_retry("update_transaction", **update_params), timeout=30.0
                 )
 
-                return {
-                    "transaction_id": txn_id,
-                    "status": "success",
-                    "result": convert_dates_to_strings(result)
-                }
+                return {"transaction_id": txn_id, "status": "success", "result": convert_dates_to_strings(result)}
 
             except asyncio.TimeoutError:
                 return {
                     "transaction_id": update_data.get("transaction_id"),
                     "status": "error",
-                    "error": "Update timed out after 30 seconds"
+                    "error": "Update timed out after 30 seconds",
                 }
             except Exception as e:
-                return {
-                    "transaction_id": update_data.get("transaction_id"),
-                    "status": "error",
-                    "error": str(e)
-                }
+                return {"transaction_id": update_data.get("transaction_id"), "status": "error", "error": str(e)}
 
         # Execute all updates in parallel
         results = await asyncio.gather(
             *[update_single(update_data) for update_data in updates_list],
-            return_exceptions=False  # We handle exceptions in update_single
+            return_exceptions=False,  # We handle exceptions in update_single
         )
 
         # Count successes and failures
@@ -1747,12 +1753,8 @@ async def update_transactions_bulk(
         logger.info(f"Bulk update complete: {success_count} succeeded, {failure_count} failed")
 
         response = {
-            "summary": {
-                "total": len(results),
-                "succeeded": success_count,
-                "failed": failure_count
-            },
-            "results": results
+            "summary": {"total": len(results), "succeeded": success_count, "failed": failure_count},
+            "results": results,
         }
 
         return json.dumps(response, indent=2)
@@ -1767,7 +1769,7 @@ async def update_transactions_bulk(
 async def get_account_holdings() -> str:
     """Get investment portfolio data from brokerage accounts."""
     await ensure_authenticated()
-    
+
     try:
         holdings = await api_call_with_retry("get_account_holdings")
         holdings = convert_dates_to_strings(holdings)
@@ -1779,20 +1781,16 @@ async def get_account_holdings() -> str:
 
 @mcp.tool()
 @track_usage
-async def get_account_history(
-    account_id: str,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None
-) -> str:
+async def get_account_history(account_id: str, start_date: str | None = None, end_date: str | None = None) -> str:
     """Get historical account balance data."""
     await ensure_authenticated()
-    
-    kwargs: Dict[str, Any] = {"account_id": account_id}
+
+    kwargs: dict[str, Any] = {"account_id": account_id}
     if start_date:
         kwargs["start_date"] = datetime.strptime(start_date, "%Y-%m-%d").date()
     if end_date:
         kwargs["end_date"] = datetime.strptime(end_date, "%Y-%m-%d").date()
-    
+
     try:
         history = await api_call_with_retry("get_account_history", **kwargs)
         history = convert_dates_to_strings(history)
@@ -1807,7 +1805,7 @@ async def get_account_history(
 async def get_institutions() -> str:
     """Get linked financial institutions."""
     await ensure_authenticated()
-    
+
     try:
         institutions = await api_call_with_retry("get_institutions")
         institutions = convert_dates_to_strings(institutions)
@@ -1822,7 +1820,7 @@ async def get_institutions() -> str:
 async def get_recurring_transactions() -> str:
     """Get scheduled recurring transactions."""
     await ensure_authenticated()
-    
+
     try:
         recurring = await api_call_with_retry("get_recurring_transactions")
         recurring = convert_dates_to_strings(recurring)
@@ -1834,13 +1832,10 @@ async def get_recurring_transactions() -> str:
 
 @mcp.tool()
 @track_usage
-async def set_budget_amount(
-    category_id: str,
-    amount: float
-) -> str:
+async def set_budget_amount(category_id: str, amount: float) -> str:
     """Set budget amount for a category."""
     await ensure_authenticated()
-    
+
     try:
         result = await api_call_with_retry("set_budget_amount", category_id=category_id, amount=amount)
         result = convert_dates_to_strings(result)
@@ -1853,20 +1848,13 @@ async def set_budget_amount(
 
 @mcp.tool()
 @track_usage
-async def create_manual_account(
-    account_name: str,
-    account_type: str,
-    balance: float
-) -> str:
+async def create_manual_account(account_name: str, account_type: str, balance: float) -> str:
     """Create a manually tracked account."""
     await ensure_authenticated()
-    
+
     try:
         result = await api_call_with_retry(
-            "create_manual_account",
-            account_name=account_name,
-            account_type=account_type,
-            balance=balance
+            "create_manual_account", account_name=account_name, account_type=account_type, balance=balance
         )
         result = convert_dates_to_strings(result)
         log.info("Manual account created", name=account_name, type=account_type)
@@ -1879,36 +1867,38 @@ async def create_manual_account(
 @mcp.tool()
 @track_usage
 async def get_spending_summary(
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    group_by: str = "category"
+    start_date: str | None = None, end_date: str | None = None, group_by: str = "category"
 ) -> str:
     """Get intelligent spending summary with aggregations.
-    
+
     Args:
         start_date: Start date (supports natural language like 'last month')
         end_date: End date (supports natural language)
         group_by: Group spending by 'category', 'account', or 'month'
     """
     await ensure_authenticated()
-    
+
     try:
         log.info("Generating spending summary", start_date=start_date, end_date=end_date, group_by=group_by)
-        
+
         # Get transactions for the period
         filters = build_date_filter(start_date, end_date)
         response = await api_call_with_retry("get_transactions", limit=1000, **filters)  # type: ignore[arg-type]
         # Extract transactions list from nested response structure
         transactions = extract_transactions_list(response)
-        
+
         # Aggregate spending data
-        summary: Dict[str, Any] = {"period": {"start": start_date, "end": end_date}, "groups": {}, "totals": {"income": 0, "expenses": 0, "net": 0}}
+        summary: dict[str, Any] = {
+            "period": {"start": start_date, "end": end_date},
+            "groups": {},
+            "totals": {"income": 0, "expenses": 0, "net": 0},
+        }
 
         for txn in transactions:
             amount = float(txn.get("amount", 0))
 
             # Track totals
-            totals: Dict[str, float] = summary["totals"]
+            totals: dict[str, float] = summary["totals"]
             if amount > 0:
                 totals["income"] += amount
             else:
@@ -1916,16 +1906,22 @@ async def get_spending_summary(
 
             # Group by specified field
             if group_by == "category":
-                key = txn.get("category", {}).get("name", "Uncategorized") if isinstance(txn.get("category"), dict) else "Uncategorized"
+                key = (
+                    txn.get("category", {}).get("name", "Uncategorized")
+                    if isinstance(txn.get("category"), dict)
+                    else "Uncategorized"
+                )
             elif group_by == "account":
-                key = txn.get("account", {}).get("name", "Unknown") if isinstance(txn.get("account"), dict) else "Unknown"
+                key = (
+                    txn.get("account", {}).get("name", "Unknown") if isinstance(txn.get("account"), dict) else "Unknown"
+                )
             elif group_by == "month":
                 txn_date = txn.get("date", "")
                 key = txn_date[:7] if len(txn_date) >= 7 else "Unknown"  # YYYY-MM format
             else:
                 key = "All"
 
-            groups: Dict[str, Dict[str, float]] = summary["groups"]
+            groups: dict[str, dict[str, float]] = summary["groups"]
             if key not in groups:
                 groups[key] = {"income": 0, "expenses": 0, "net": 0, "count": 0}
 
@@ -1943,14 +1939,16 @@ async def get_spending_summary(
         # Sort groups by total spending (expenses)
         sorted_groups = dict(sorted(summary["groups"].items(), key=lambda x: x[1]["expenses"], reverse=True))
         summary["groups"] = sorted_groups
-        
-        log.info("Spending summary generated", 
-                total_transactions=len(transactions),
-                groups_count=len(summary["groups"]),
-                net_amount=summary["totals"]["net"])
-        
+
+        log.info(
+            "Spending summary generated",
+            total_transactions=len(transactions),
+            groups_count=len(summary["groups"]),
+            net_amount=summary["totals"]["net"],
+        )
+
         return json.dumps(summary, indent=2)
-        
+
     except Exception as e:
         log.error("Failed to generate spending summary", error=str(e))
         raise
@@ -1961,7 +1959,7 @@ async def get_spending_summary(
 async def refresh_accounts() -> str:
     """Request a refresh of all account data from financial institutions."""
     await ensure_authenticated()
-    
+
     try:
         result = await api_call_with_retry("request_accounts_refresh")
         result = convert_dates_to_strings(result)
@@ -1974,23 +1972,21 @@ async def refresh_accounts() -> str:
 
 @mcp.tool()
 @track_usage
-async def get_complete_financial_overview(
-    period: str = "this month"
-) -> str:
+async def get_complete_financial_overview(period: str = "this month") -> str:
     """Get complete financial overview in a single call - accounts, transactions, budgets, cashflow.
-    
+
     This intelligent batch tool combines multiple API calls to provide comprehensive financial analysis,
     reducing round-trips and providing deeper insights.
-    
+
     Args:
         period: Time period for analysis ("this month", "last month", "this year", etc.)
     """
     await ensure_authenticated()
-    
+
     try:
         # Parse the period into date filters
         filters = build_date_filter(period, None)
-        
+
         # Execute all API calls in parallel for maximum efficiency
         accounts_task = api_call_with_retry("get_accounts")
         budgets_task = api_call_with_retry("get_budgets", **filters)  # type: ignore[arg-type]
@@ -2000,26 +1996,25 @@ async def get_complete_financial_overview(
 
         # Wait for all results
         api_results = await asyncio.gather(
-            accounts_task, budgets_task, cashflow_task, transactions_task, categories_task,
-            return_exceptions=True
+            accounts_task, budgets_task, cashflow_task, transactions_task, categories_task, return_exceptions=True
         )
         accounts, budgets, cashflow, transactions, categories = api_results
 
         # Handle any exceptions gracefully
-        results: Dict[str, Any] = {}
+        results: dict[str, Any] = {}
 
         if not isinstance(accounts, Exception):
-            results["accounts"] = convert_dates_to_strings(accounts)  # type: ignore[arg-type]
+            results["accounts"] = convert_dates_to_strings(accounts)
         else:
             results["accounts"] = {"error": str(accounts)}
 
         if not isinstance(budgets, Exception):
-            results["budgets"] = convert_dates_to_strings(budgets)  # type: ignore[arg-type]
+            results["budgets"] = convert_dates_to_strings(budgets)
         else:
             results["budgets"] = {"error": str(budgets)}
 
         if not isinstance(cashflow, Exception):
-            results["cashflow"] = convert_dates_to_strings(cashflow)  # type: ignore[arg-type]
+            results["cashflow"] = convert_dates_to_strings(cashflow)
         else:
             results["cashflow"] = {"error": str(cashflow)}
 
@@ -2031,35 +2026,53 @@ async def get_complete_financial_overview(
             if isinstance(transactions_list, list):
                 results["transaction_summary"] = {
                     "total_count": len(transactions_list),
-                    "total_income": sum(float(t.get("amount", 0)) for t in transactions_list if float(t.get("amount", 0)) > 0),
-                    "total_expenses": sum(abs(float(t.get("amount", 0))) for t in transactions_list if float(t.get("amount", 0)) < 0),
-                    "unique_categories": len(set(t.get("category", {}).get("name", "Unknown") for t in transactions_list if isinstance(t.get("category"), dict))),
-                    "unique_accounts": len(set(t.get("account", {}).get("name", "Unknown") for t in transactions_list if isinstance(t.get("account"), dict)))
+                    "total_income": sum(
+                        float(t.get("amount", 0)) for t in transactions_list if float(t.get("amount", 0)) > 0
+                    ),
+                    "total_expenses": sum(
+                        abs(float(t.get("amount", 0))) for t in transactions_list if float(t.get("amount", 0)) < 0
+                    ),
+                    "unique_categories": len(
+                        {
+                            t.get("category", {}).get("name", "Unknown")
+                            for t in transactions_list
+                            if isinstance(t.get("category"), dict)
+                        }
+                    ),
+                    "unique_accounts": len(
+                        {
+                            t.get("account", {}).get("name", "Unknown")
+                            for t in transactions_list
+                            if isinstance(t.get("account"), dict)
+                        }
+                    ),
                 }
         else:
             results["transactions"] = {"error": str(transactions)}
 
         if not isinstance(categories, Exception):
-            results["categories"] = convert_dates_to_strings(categories)  # type: ignore[arg-type]
+            results["categories"] = convert_dates_to_strings(categories)
         else:
             results["categories"] = {"error": str(categories)}
 
         # Add metadata about the batch operation
         results["_batch_metadata"] = {
             "period": period,
-            "filters_applied": convert_dates_to_strings(filters),  # type: ignore[arg-type]
+            "filters_applied": convert_dates_to_strings(filters),
             "api_calls_made": 5,
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
         }
 
         accounts_val = results.get("accounts", [])
-        log.info("Complete financial overview generated",
-                period=period,
-                accounts_count=len(accounts_val) if isinstance(accounts_val, list) else 0,
-                transactions_count=results.get("transaction_summary", {}).get("total_count", 0))
-        
+        log.info(
+            "Complete financial overview generated",
+            period=period,
+            accounts_count=len(accounts_val) if isinstance(accounts_val, list) else 0,
+            transactions_count=results.get("transaction_summary", {}).get("total_count", 0),
+        )
+
         return json.dumps(results, indent=2)
-        
+
     except Exception as e:
         log.error("Failed to generate financial overview", error=str(e), period=period)
         raise
@@ -2067,45 +2080,38 @@ async def get_complete_financial_overview(
 
 @mcp.tool()
 @track_usage
-async def analyze_spending_patterns(
-    lookback_months: int = 6,
-    include_forecasting: bool = True
-) -> str:
+async def analyze_spending_patterns(lookback_months: int = 6, include_forecasting: bool = True) -> str:
     """Intelligent spending pattern analysis with trend forecasting.
-    
+
     Combines multiple data sources to provide deep spending insights including:
     - Monthly spending trends by category
-    - Account usage patterns  
+    - Account usage patterns
     - Budget performance analysis
     - Predictive spending forecasts
-    
+
     Args:
         lookback_months: Number of months to analyze (default 6)
         include_forecasting: Whether to include spending forecasts
     """
     await ensure_authenticated()
-    
+
     try:
         from dateutil.relativedelta import relativedelta
-        
+
         # Calculate date ranges for analysis
         end_date = datetime.now().date()
         start_date = end_date - relativedelta(months=lookback_months)
-        
+
         # Batch API calls for comprehensive data
         transactions_task = api_call_with_retry(
-            "get_transactions",
-            limit=2000,
-            start_date=start_date,
-            end_date=end_date
+            "get_transactions", limit=2000, start_date=start_date, end_date=end_date
         )
         budgets_task = api_call_with_retry("get_budgets", start_date=start_date, end_date=end_date)
         accounts_task = api_call_with_retry("get_accounts")
         categories_task = api_call_with_retry("get_transaction_categories")
 
         api_results = await asyncio.gather(
-            transactions_task, budgets_task, accounts_task, categories_task,
-            return_exceptions=True
+            transactions_task, budgets_task, accounts_task, categories_task, return_exceptions=True
         )
         transactions, budgets, accounts, categories = api_results
 
@@ -2113,7 +2119,7 @@ async def analyze_spending_patterns(
             "analysis_period": {
                 "start_date": start_date.isoformat(),
                 "end_date": end_date.isoformat(),
-                "months_analyzed": lookback_months
+                "months_analyzed": lookback_months,
             },
             "monthly_trends": {},
             "category_analysis": {},
@@ -2126,15 +2132,21 @@ async def analyze_spending_patterns(
             transactions_list = extract_transactions_list(transactions)
 
             # Monthly spending trends
-            monthly_data: Dict[str, Dict[str, float]] = {}
-            category_totals: Dict[str, Dict[str, float]] = {}
-            account_usage: Dict[str, Dict[str, float]] = {}
+            monthly_data: dict[str, dict[str, float]] = {}
+            category_totals: dict[str, dict[str, float]] = {}
+            account_usage: dict[str, dict[str, float]] = {}
 
             for txn in transactions_list:
                 txn_date = txn.get("date", "")
                 amount = float(txn.get("amount", 0))
-                category_name = txn.get("category", {}).get("name", "Uncategorized") if isinstance(txn.get("category"), dict) else "Uncategorized"
-                account_name = txn.get("account", {}).get("name", "Unknown") if isinstance(txn.get("account"), dict) else "Unknown"
+                category_name = (
+                    txn.get("category", {}).get("name", "Uncategorized")
+                    if isinstance(txn.get("category"), dict)
+                    else "Uncategorized"
+                )
+                account_name = (
+                    txn.get("account", {}).get("name", "Unknown") if isinstance(txn.get("account"), dict) else "Unknown"
+                )
 
                 # Monthly trends (YYYY-MM)
                 month_key = txn_date[:7] if len(txn_date) >= 7 else "Unknown"
@@ -2163,19 +2175,25 @@ async def analyze_spending_patterns(
             # Calculate averages and sort data
             for category in category_totals:
                 if category_totals[category]["transactions"] > 0:
-                    category_totals[category]["avg_amount"] = category_totals[category]["total"] / category_totals[category]["transactions"]
-            
+                    category_totals[category]["avg_amount"] = (
+                        category_totals[category]["total"] / category_totals[category]["transactions"]
+                    )
+
             analysis["monthly_trends"] = dict(sorted(monthly_data.items()))
-            analysis["category_analysis"] = dict(sorted(category_totals.items(), key=lambda x: x[1]["total"], reverse=True))  # type: ignore[index]
-            analysis["account_usage"] = dict(sorted(account_usage.items(), key=lambda x: x[1]["total_volume"], reverse=True))  # type: ignore[index]
-            
+            analysis["category_analysis"] = dict(
+                sorted(category_totals.items(), key=lambda x: x[1]["total"], reverse=True)  # type: ignore[call-overload, index]
+            )
+            analysis["account_usage"] = dict(
+                sorted(account_usage.items(), key=lambda x: x[1]["total_volume"], reverse=True)  # type: ignore[call-overload, index]
+            )
+
             # Simple forecasting if requested
             if include_forecasting and monthly_data:
                 recent_months = list(monthly_data.values())[-3:]  # Last 3 months
                 if recent_months:
                     avg_monthly_expenses = sum(m["expenses"] for m in recent_months) / len(recent_months)
                     avg_monthly_income = sum(m["income"] for m in recent_months) / len(recent_months)
-                    
+
                     next_month = (end_date + relativedelta(months=1)).strftime("%Y-%m")
                     analysis["forecast"] = {
                         "next_month": next_month,
@@ -2183,27 +2201,29 @@ async def analyze_spending_patterns(
                         "predicted_income": round(avg_monthly_income, 2),
                         "predicted_net": round(avg_monthly_income - avg_monthly_expenses, 2),
                         "confidence": "medium",  # Based on 3-month average
-                        "note": "Forecast based on 3-month spending average"
+                        "note": "Forecast based on 3-month spending average",
                     }
-        
+
         if not isinstance(budgets, Exception):
-            analysis["budget_performance"] = convert_dates_to_strings(budgets)  # type: ignore[arg-type, assignment]
+            analysis["budget_performance"] = convert_dates_to_strings(budgets)
 
         # Add metadata
         txn_count = len(transactions_list) if not isinstance(transactions, Exception) else 0
         analysis["_metadata"] = {
             "api_calls_made": 4,
             "total_transactions_analyzed": txn_count,
-            "analysis_timestamp": datetime.now().isoformat()
+            "analysis_timestamp": datetime.now().isoformat(),
         }
 
-        log.info("Spending pattern analysis completed",
-                lookback_months=lookback_months,
-                transactions_analyzed=txn_count,
-                include_forecasting=include_forecasting)
-        
+        log.info(
+            "Spending pattern analysis completed",
+            lookback_months=lookback_months,
+            transactions_analyzed=txn_count,
+            include_forecasting=include_forecasting,
+        )
+
         return json.dumps(analysis, indent=2)
-        
+
     except Exception as e:
         log.error("Failed to analyze spending patterns", error=str(e), lookback_months=lookback_months)
         raise
@@ -2253,18 +2273,26 @@ if __name__ == "__main__":
 
     try:
         asyncio.run(main())
-    except Exception as eg:  # Handle exception groups from anyio (Python 3.11+ BaseExceptionGroup)
+    except BrokenPipeError:
+        # Handle broken pipe at the top level (direct exception, not in ExceptionGroup)
+        logger.info("Broken pipe during shutdown - exiting quietly")
+    except ConnectionResetError:
+        # Handle connection reset at the top level (direct exception)
+        logger.info("Connection reset during shutdown - exiting quietly")
+    except KeyboardInterrupt:
+        logger.info("Interrupted by user - exiting")
+    except Exception as eg:
         # Handle exception groups (from anyio TaskGroups) - filter out expected shutdown errors
-        if hasattr(eg, 'exceptions'):  # It's an ExceptionGroup
+        if hasattr(eg, "exceptions"):  # It's an ExceptionGroup
             remaining_exceptions = []
             for exc in eg.exceptions:
                 # Check for shutdown-related exceptions including nested ones
-                is_shutdown_error = (
-                    isinstance(exc, (BrokenPipeError, ConnectionResetError, OSError, EOFError)) or
-                    (isinstance(exc, Exception) and any(
+                is_shutdown_error = isinstance(exc, (BrokenPipeError, ConnectionResetError, OSError, EOFError)) or (
+                    isinstance(exc, Exception)
+                    and any(
                         err_str in str(exc).lower()
                         for err_str in ["broken pipe", "connection reset", "[errno 32]", "eof"]
-                    ))
+                    )
                 )
                 if not is_shutdown_error:
                     remaining_exceptions.append(exc)
@@ -2276,16 +2304,6 @@ if __name__ == "__main__":
                 # All exceptions were shutdown-related - exit quietly
                 logger.info("Shutdown complete (broken pipe expected during client disconnect)")
         else:
-            # Regular exception
+            # Regular exception - re-raise
+            logger.error(f"Fatal error: {eg}")
             raise
-    except BrokenPipeError:
-        # Handle broken pipe at the top level (direct exception, not in ExceptionGroup)
-        logger.info("Broken pipe during shutdown - exiting quietly")
-    except ConnectionResetError:
-        # Handle connection reset at the top level (direct exception)
-        logger.info("Connection reset during shutdown - exiting quietly")
-    except KeyboardInterrupt:
-        logger.info("Interrupted by user - exiting")
-    except Exception as e:
-        logger.error(f"Fatal error: {e}")
-        raise
