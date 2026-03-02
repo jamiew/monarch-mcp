@@ -210,34 +210,3 @@ class TestFastMCPParameterValidation:
 
         finally:
             server.mm_client = original_client
-
-
-class TestPydanticModelsStillExist:
-    """Test that Pydantic models are still available for reference."""
-
-    def test_pydantic_models_exist(self) -> None:
-        """Test that Pydantic model classes still exist."""
-        # These models provide type information even if not used directly
-        assert hasattr(server, "GetTransactionsArgs")
-        assert hasattr(server, "GetBudgetsArgs")
-        assert hasattr(server, "GetCashflowArgs")
-        assert hasattr(server, "CreateTransactionArgs")
-        assert hasattr(server, "UpdateTransactionArgs")
-
-    def test_pydantic_model_validation_still_works(self) -> None:
-        """Test that Pydantic models can still validate data if needed."""
-        # Valid data should validate
-        valid_data = {"limit": 100, "offset": 0, "start_date": "2024-01-01"}
-
-        args = server.GetTransactionsArgs.model_validate(valid_data)
-        assert args.limit == 100
-        assert args.offset == 0
-        assert args.start_date == "2024-01-01"
-
-        # Invalid data should raise ValidationError
-        from pydantic import ValidationError
-
-        invalid_data = {"limit": -1}  # Invalid: limit must be >= 1
-
-        with pytest.raises(ValidationError):
-            server.GetTransactionsArgs.model_validate(invalid_data)

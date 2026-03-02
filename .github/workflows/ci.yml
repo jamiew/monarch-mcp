@@ -26,7 +26,7 @@ jobs:
         run: uv sync --all-groups
 
       - name: Run type checking
-        run: uv run python -m mypy server.py --config-file pyproject.toml
+        run: uv run mypy server.py
 
       - name: Run tests with coverage
         run: uv run python -m pytest tests/ -v --tb=short --cov=. --cov-report=term-missing --cov-report=xml

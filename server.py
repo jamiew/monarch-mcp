@@ -2,75 +2,40 @@
 """MonarchMoney MCP Server - Provides access to Monarch Money financial data via MCP protocol."""
 
 import asyncio
+import contextlib
+import functools
+import io
 import json
+import logging
 import os
+import re
+import signal
+import sys
+import time
 import uuid
-from datetime import date, datetime
+import warnings
+from datetime import date, datetime, timedelta
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
 import structlog
 from dateutil import parser as date_parser
+from dateutil.relativedelta import relativedelta
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 from monarchmoney import MonarchMoney, RequireMFAException
-from pydantic import BaseModel, Field
 
 # Type definitions for Monarch Money API responses
 JsonSerializable = str | int | float | bool | None | list["JsonSerializable"] | dict[str, "JsonSerializable"]
-DateConvertible = date | datetime | JsonSerializable
 
-
-# Pydantic models for tool arguments (replacing Dict[str, Any])
-class GetTransactionsArgs(BaseModel):
-    """Arguments for get_transactions tool."""
-
-    limit: int = Field(default=100, ge=1, le=1000)
-    offset: int = Field(default=0, ge=0)
-    start_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
-    end_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
-    account_id: str | None = None
-    category_id: str | None = None
-    verbose: bool = Field(default=False)
-
-
-class GetBudgetsArgs(BaseModel):
-    """Arguments for get_budgets tool."""
-
-    start_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
-    end_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
-
-
-class GetCashflowArgs(BaseModel):
-    """Arguments for get_cashflow tool."""
-
-    start_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
-    end_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
-
-
-class CreateTransactionArgs(BaseModel):
-    """Arguments for create_transaction tool."""
-
-    amount: float
-    merchant_name: str = Field(min_length=1)
-    category_id: str = Field(min_length=1)
-    account_id: str
-    date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
-    notes: str | None = None
-    update_balance: bool = Field(default=False)
-
-
-class UpdateTransactionArgs(BaseModel):
-    """Arguments for update_transaction tool."""
-
-    transaction_id: str
-    amount: float | None = None
-    merchant_name: str | None = Field(default=None, min_length=1)
-    category_id: str | None = None
-    date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
-    notes: str | None = None
-    goal_id: str | None = None
-    hide_from_reports: bool | None = None
-    needs_review: bool | None = None
+# Reusable tool annotations — all tools are closed-world (only talk to Monarch Money API)
+READONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
+WRITE_IDEMPOTENT = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
+WRITE_CREATE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False)
+WRITE_SIDE_EFFECT = ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False
+)
 
 
 def parse_flexible_date(date_input: str) -> date:
@@ -98,8 +63,6 @@ def parse_flexible_date(date_input: str) -> date:
     if date_input in ["today", "now"]:
         return today
     elif date_input == "yesterday":
-        from datetime import timedelta
-
         return today - timedelta(days=1)
     elif date_input in ["this month", "current month"]:
         return date(today.year, today.month, 1)
@@ -114,25 +77,15 @@ def parse_flexible_date(date_input: str) -> date:
     elif date_input in ["last year", "previous year"]:
         return date(today.year - 1, 1, 1)
     elif date_input == "last week":
-        from datetime import timedelta
-
         return today - timedelta(days=7)
     elif date_input == "this week":
-        from datetime import timedelta
-
         # Start of this week (Monday)
         days_since_monday = today.weekday()
         return today - timedelta(days=days_since_monday)
 
     # Handle relative patterns like "30 days ago", "6 months ago"
-    import re
-
     relative_pattern = re.match(r"(\d+)\s+(days?|weeks?|months?|years?)\s+ago", date_input)
     if relative_pattern:
-        from datetime import timedelta
-
-        from dateutil.relativedelta import relativedelta
-
         amount = int(relative_pattern.group(1))
         unit = relative_pattern.group(2).rstrip("s")  # Remove plural 's'
 
@@ -231,103 +184,16 @@ def build_date_filter(start_date: str | None, end_date: str | None) -> dict[str,
             start_date = "this month"
             log.info("Auto-filling missing start_date with 'this month' (end_date parse pending)", end_date=end_date)
 
+    # parse_flexible_date already handles all formats (natural language, ISO, dateutil)
     if start_date:
-        try:
-            parsed_date = parse_flexible_date(start_date)
-            filters["start_date"] = parsed_date.isoformat()
-            log.info("Successfully parsed start_date", input=start_date, parsed=parsed_date.isoformat())
-        except ValueError as e:
-            log.warning("Flexible date parsing failed for start_date", input=start_date, error=str(e))
-
-            # Fallback 1: Try strict ISO format parsing
-            try:
-                parsed_date = datetime.strptime(start_date, "%Y-%m-%d").date()
-                filters["start_date"] = parsed_date.isoformat()
-                log.info(
-                    "Successfully parsed start_date with ISO fallback", input=start_date, parsed=parsed_date.isoformat()
-                )
-            except ValueError:
-                # Fallback 2: Try common date formats
-                common_formats = [
-                    "%m/%d/%Y",  # MM/DD/YYYY
-                    "%d/%m/%Y",  # DD/MM/YYYY
-                    "%Y/%m/%d",  # YYYY/MM/DD
-                    "%m-%d-%Y",  # MM-DD-YYYY
-                    "%d-%m-%Y",  # DD-MM-YYYY
-                    "%B %d, %Y",  # January 1, 2024
-                    "%b %d, %Y",  # Jan 1, 2024
-                    "%d %B %Y",  # 1 January 2024
-                    "%d %b %Y",  # 1 Jan 2024
-                ]
-
-                parsed = False
-                for fmt in common_formats:
-                    try:
-                        parsed_date = datetime.strptime(start_date, fmt).date()
-                        filters["start_date"] = parsed_date.isoformat()
-                        log.info(
-                            "Successfully parsed start_date with format fallback",
-                            input=start_date,
-                            format=fmt,
-                            parsed=parsed_date.isoformat(),
-                        )
-                        parsed = True
-                        break
-                    except ValueError:
-                        continue
-
-                if not parsed:
-                    log.error("All date parsing attempts failed for start_date", input=start_date)
-                    raise ValueError(f"Could not parse start_date '{start_date}'. {e!s}") from e
+        parsed_date = parse_flexible_date(start_date)
+        filters["start_date"] = parsed_date.isoformat()
+        log.info("Parsed start_date", input=start_date, parsed=parsed_date.isoformat())
 
     if end_date:
-        try:
-            parsed_date = parse_flexible_date(end_date)
-            filters["end_date"] = parsed_date.isoformat()
-            log.info("Successfully parsed end_date", input=end_date, parsed=parsed_date.isoformat())
-        except ValueError as e:
-            log.warning("Flexible date parsing failed for end_date", input=end_date, error=str(e))
-
-            # Fallback 1: Try strict ISO format parsing
-            try:
-                parsed_date = datetime.strptime(end_date, "%Y-%m-%d").date()
-                filters["end_date"] = parsed_date.isoformat()
-                log.info(
-                    "Successfully parsed end_date with ISO fallback", input=end_date, parsed=parsed_date.isoformat()
-                )
-            except ValueError:
-                # Fallback 2: Try common date formats
-                common_formats = [
-                    "%m/%d/%Y",  # MM/DD/YYYY
-                    "%d/%m/%Y",  # DD/MM/YYYY
-                    "%Y/%m/%d",  # YYYY/MM/DD
-                    "%m-%d-%Y",  # MM-DD-YYYY
-                    "%d-%m-%Y",  # DD-MM-YYYY
-                    "%B %d, %Y",  # January 1, 2024
-                    "%b %d, %Y",  # Jan 1, 2024
-                    "%d %B %Y",  # 1 January 2024
-                    "%d %b %Y",  # 1 Jan 2024
-                ]
-
-                parsed = False
-                for fmt in common_formats:
-                    try:
-                        parsed_date = datetime.strptime(end_date, fmt).date()
-                        filters["end_date"] = parsed_date.isoformat()
-                        log.info(
-                            "Successfully parsed end_date with format fallback",
-                            input=end_date,
-                            format=fmt,
-                            parsed=parsed_date.isoformat(),
-                        )
-                        parsed = True
-                        break
-                    except ValueError:
-                        continue
-
-                if not parsed:
-                    log.error("All date parsing attempts failed for end_date", input=end_date)
-                    raise ValueError(f"Could not parse end_date '{end_date}'. {e!s}") from e
+        parsed_date = parse_flexible_date(end_date)
+        filters["end_date"] = parsed_date.isoformat()
+        log.info("Parsed end_date", input=end_date, parsed=parsed_date.isoformat())
 
     # Validate date range logic
     if "start_date" in filters and "end_date" in filters:
@@ -388,10 +254,10 @@ def extract_transactions_list(response: Any) -> list[dict[str, Any]]:
                 if isinstance(results, list):
                     return results
         # Fallback: maybe it's a different structure
-        logger.warning(f"Unexpected transaction response structure: {list(response.keys())}")
+        log.warning("Unexpected transaction response structure", keys=list(response.keys()))
         return []
     else:
-        logger.error(f"Unexpected transaction response type: {type(response)}")
+        log.error("Unexpected transaction response type", response_type=str(type(response)))
         return []
 
 
@@ -402,9 +268,11 @@ def format_transactions_compact(transactions: list[dict[str, Any]]) -> list[dict
     Returns simplified transaction objects with only:
     - id, date, amount
     - merchant name, plaidName (original statement name)
-    - category name
+    - category id + name (id needed for updates)
     - account display name
-    - Basic flags: pending, needsReview
+    - needsReview flag
+    - pending flag (only if True)
+    - notes (only if present)
 
     Use verbose=True to get full transaction details when needed.
     """
@@ -414,17 +282,22 @@ def format_transactions_compact(transactions: list[dict[str, Any]]) -> list[dict
         if not isinstance(txn, dict):
             continue
 
+        category = txn.get("category")
         compact_txn: dict[str, Any] = {
             "id": txn.get("id"),
             "date": txn.get("date"),
             "amount": txn.get("amount"),
             "merchant": txn.get("merchant", {}).get("name") if isinstance(txn.get("merchant"), dict) else None,
             "plaidName": txn.get("plaidName"),
-            "category": txn.get("category", {}).get("name") if isinstance(txn.get("category"), dict) else None,
+            "category": category.get("name") if isinstance(category, dict) else None,
+            "categoryId": category.get("id") if isinstance(category, dict) else None,
             "account": txn.get("account", {}).get("displayName") if isinstance(txn.get("account"), dict) else None,
-            "pending": txn.get("pending", False),
             "needsReview": txn.get("needsReview", False),
         }
+
+        # Only include pending if actually pending (saves bytes on the common case)
+        if txn.get("pending"):
+            compact_txn["pending"] = True
 
         # Include notes if present
         if txn.get("notes"):
@@ -435,9 +308,45 @@ def format_transactions_compact(transactions: list[dict[str, Any]]) -> list[dict
     return compact
 
 
-# Configure standard logging (stderr only to avoid interfering with MCP stdio)
-import logging
-import sys
+def _build_transaction_filters(
+    start_date: str | None,
+    end_date: str | None,
+    account_id: str | None = None,
+    category_id: str | None = None,
+    tag_ids: str | None = None,
+    has_attachments: bool | None = None,
+    has_notes: bool | None = None,
+    hidden_from_reports: bool | None = None,
+    is_split: bool | None = None,
+    is_recurring: bool | None = None,
+) -> dict[str, Any]:
+    """Build filters dict for get_transactions API calls.
+
+    Shared by get_transactions and search_transactions to avoid duplication.
+    """
+    filters: dict[str, Any] = build_date_filter(start_date, end_date)
+
+    # monarchmoney expects account_ids and category_ids as LISTS
+    if account_id:
+        filters["account_ids"] = [account_id]
+    if category_id:
+        filters["category_ids"] = [category_id]
+    if tag_ids:
+        filters["tag_ids"] = [t.strip() for t in tag_ids.split(",")]
+
+    # Boolean filters (only include if explicitly set)
+    if has_attachments is not None:
+        filters["has_attachments"] = has_attachments
+    if has_notes is not None:
+        filters["has_notes"] = has_notes
+    if hidden_from_reports is not None:
+        filters["hidden_from_reports"] = hidden_from_reports
+    if is_split is not None:
+        filters["is_split"] = is_split
+    if is_recurring is not None:
+        filters["is_recurring"] = is_recurring
+
+    return filters
 
 
 # Configure logger to output to stderr only with error handling
@@ -481,7 +390,6 @@ structlog.configure(
 
 # Get structured logger for this module
 log = structlog.get_logger(__name__)
-logger = logging.getLogger(__name__)
 
 # Suppress third-party library logging to reduce noise
 logging.getLogger("aiohttp").setLevel(logging.ERROR)
@@ -489,15 +397,7 @@ logging.getLogger("monarchmoney").setLevel(logging.ERROR)
 logging.getLogger("gql").setLevel(logging.ERROR)
 logging.getLogger("gql.transport").setLevel(logging.ERROR)
 
-# Suppress SSL warnings that might leak to stdout
-import warnings
-
 warnings.filterwarnings("ignore", category=UserWarning, module="gql.transport.aiohttp")
-
-# Usage analytics tracking
-import functools
-import time
-from typing import Any
 
 # Session tracking for usage analytics
 current_session_id = str(uuid.uuid4())
@@ -515,8 +415,7 @@ def track_usage(func: Any) -> Any:
         # Format args for logging (exclude sensitive data)
         safe_kwargs = {k: v for k, v in kwargs.items() if k not in ["password", "mfa_secret"]}
 
-        # Log tool call with arguments BEFORE execution
-        logger.info(f"[TOOL_CALL] {tool_name} | args: {safe_kwargs}")
+        log.info("tool_call", tool=tool_name, args=safe_kwargs)
 
         # Track this call
         call_info = {
@@ -539,8 +438,6 @@ def track_usage(func: Any) -> Any:
             extra_stats = ""
             try:
                 if isinstance(result, str) and result.strip().startswith("{"):
-                    import json
-
                     parsed = json.loads(result)
                     if isinstance(parsed, dict):
                         # Look for common list fields to count items
@@ -557,9 +454,13 @@ def track_usage(func: Any) -> Any:
 
             call_info.update({"status": "success", "execution_time": execution_time, "result_size": result_chars})
 
-            # Log for analytics with detailed size info
-            logger.info(f"[ANALYTICS] tool_called: {tool_name} | time: {execution_time:.3f}s | status: success")
-            logger.info(f"[RESULT_SIZE] {tool_name} | chars: {result_chars:,} | size: {result_kb:.2f} KB{extra_stats}")
+            log.info(
+                "tool_success",
+                tool=tool_name,
+                time_s=round(execution_time, 3),
+                result_chars=result_chars,
+                result_kb=round(result_kb, 2),
+            )
 
             # Track usage patterns in memory for batching analysis
             if tool_name not in usage_patterns:
@@ -572,7 +473,7 @@ def track_usage(func: Any) -> Any:
             execution_time = time.time() - start_time
             call_info.update({"status": "error", "execution_time": execution_time, "error": str(e)})
 
-            logger.error(f"[ANALYTICS] tool_error: {tool_name} | time: {execution_time:.3f}s | error: {str(e)}")
+            log.error("tool_error", tool=tool_name, time_s=round(execution_time, 3), error=str(e))
             raise
 
     return wrapper
@@ -581,8 +482,159 @@ def track_usage(func: Any) -> Any:
 # Initialize the FastMCP server
 mcp = FastMCP("monarch-money")
 
-# Authentication state management
-from enum import Enum
+
+# =============================================================================
+# MCP Resources - Read-only data endpoints for reference data
+# =============================================================================
+
+
+@mcp.resource("categories://list")
+async def list_categories_resource() -> str:
+    """
+    List all transaction categories available in Monarch Money.
+
+    Returns a JSON array of category objects with id, name, group, and icon.
+    This is read-only reference data useful for understanding available categories
+    before creating or updating transactions.
+    """
+    await ensure_authenticated()
+    categories = await api_call_with_retry("get_transaction_categories")
+    return json.dumps(convert_dates_to_strings(categories), indent=2)
+
+
+@mcp.resource("accounts://list")
+async def list_accounts_resource() -> str:
+    """
+    List all linked financial accounts in Monarch Money.
+
+    Returns a JSON array of account objects including checking, savings,
+    credit cards, investments, and other account types with their balances
+    and institution information.
+    """
+    await ensure_authenticated()
+    accounts = await api_call_with_retry("get_accounts")
+    return json.dumps(convert_dates_to_strings(accounts), indent=2)
+
+
+@mcp.resource("institutions://list")
+async def list_institutions_resource() -> str:
+    """
+    List all connected financial institutions in Monarch Money.
+
+    Returns a JSON array of institution objects showing which banks,
+    brokerages, and other financial institutions are connected to the account.
+    """
+    await ensure_authenticated()
+    institutions = await api_call_with_retry("get_institutions")
+    return json.dumps(convert_dates_to_strings(institutions), indent=2)
+
+
+# =============================================================================
+# MCP Prompts - Reusable prompt templates for common financial analyses
+# =============================================================================
+
+
+@mcp.prompt()
+def analyze_spending(period: str = "this month", category: str | None = None) -> str:
+    """
+    Generate a prompt template for analyzing spending patterns.
+
+    Args:
+        period: Time period to analyze (e.g., "this month", "last 3 months", "2024")
+        category: Optional category to focus on (e.g., "Food & Dining", "Shopping")
+    """
+    category_focus = f" specifically for {category}" if category else ""
+    return f"""Please analyze my spending{category_focus} for {period}.
+
+Use the get_transactions tool to fetch transaction data for the specified period, then provide:
+
+1. **Total Spending**: Sum of all expenses
+2. **Top Categories**: Which categories had the most spending
+3. **Trends**: Any notable patterns or changes
+4. **Insights**: Specific observations about spending habits
+5. **Recommendations**: Actionable suggestions to optimize spending
+
+Focus on practical insights rather than just listing numbers."""
+
+
+@mcp.prompt()
+def budget_review(month: str = "current") -> str:
+    """
+    Generate a prompt template for reviewing budget performance.
+
+    Args:
+        month: Which month to review ("current", "last", or "YYYY-MM" format)
+    """
+    return f"""Please review my budget performance for {month}.
+
+Use get_budgets and get_transactions tools to compare budgeted amounts vs actual spending:
+
+1. **Budget vs Actual**: For each category, show budgeted amount, actual spending, and variance
+2. **Over Budget**: Highlight categories where spending exceeded budget
+3. **Under Budget**: Show categories with unused budget
+4. **Overall Status**: Am I on track for the month?
+5. **Adjustments**: Suggest any budget adjustments based on actual patterns
+
+Present the data in a clear, easy-to-scan format."""
+
+
+@mcp.prompt()
+def financial_health_check() -> str:
+    """
+    Generate a comprehensive financial health assessment prompt.
+
+    This prompt guides a thorough review of accounts, spending, and budgets.
+    """
+    return """Please perform a comprehensive financial health check.
+
+Use the available tools to gather data and provide:
+
+1. **Account Overview**:
+   - Total assets and liabilities
+   - Net worth calculation
+   - Account balances summary
+
+2. **Cash Flow Analysis**:
+   - Monthly income vs expenses
+   - Savings rate
+   - Recurring transactions review
+
+3. **Spending Analysis**:
+   - Top spending categories (last 30 days)
+   - Unusual or large transactions
+   - Comparison to previous month
+
+4. **Budget Status**:
+   - Categories on track vs off track
+   - Projected month-end status
+
+5. **Action Items**:
+   - Specific recommendations
+   - Areas needing attention
+   - Positive trends to maintain
+
+Be concise but thorough. Highlight the most important insights first."""
+
+
+@mcp.prompt()
+def transaction_categorization_help(description: str) -> str:
+    """
+    Generate a prompt to help categorize a transaction.
+
+    Args:
+        description: The transaction description or merchant name
+    """
+    return f"""Help me categorize this transaction: "{description}"
+
+First, use the categories://list resource to see all available categories.
+
+Then suggest:
+1. **Best Category Match**: The most appropriate category for this transaction
+2. **Alternative Options**: Other categories that might fit
+3. **Reasoning**: Why you recommend this categorization
+
+If this is a merchant I transact with frequently, also note if the categorization
+should be applied to future transactions from the same merchant."""
 
 
 class AuthState(Enum):
@@ -667,35 +719,23 @@ def clear_session(reason: str = "unknown") -> None:
     """
     global mm_client, auth_state, auth_error, auth_failed_at
 
-    logger.info(f"[AUTH] Resetting authentication state (reason: {reason})")
+    log.info("auth_reset", reason=reason, previous_state=auth_state.value)
 
-    # Clear the client instance to ensure fresh initialization
     if mm_client is not None:
-        logger.info("[AUTH] Clearing mm_client instance")
         mm_client = None
 
-    # Reset auth state and error to allow re-authentication
-    logger.info(f"[AUTH] Resetting auth state from {auth_state.value} to not_initialized")
     auth_state = AuthState.NOT_INITIALIZED
     auth_error = None
-    auth_failed_at = None  # Reset failure timestamp
+    auth_failed_at = None
 
-    # Clear our custom session file
-    if session_file.exists():
-        try:
-            session_file.unlink()
-            logger.info(f"Cleared custom session file: {session_file}")
-        except Exception as e:
-            logger.warning(f"Failed to clear custom session file: {e}")
-
-    # Clear the monarchmoney library's default session file
-    mm_session_file = session_dir / "mm_session.pickle"
-    if mm_session_file.exists():
-        try:
-            mm_session_file.unlink()
-            logger.info(f"Cleared mm session file: {mm_session_file}")
-        except Exception as e:
-            logger.warning(f"Failed to clear mm session file: {e}")
+    # Clear session files
+    for path in [session_file, session_dir / "mm_session.pickle"]:
+        if path.exists():
+            try:
+                path.unlink()
+                log.info("session_file_cleared", path=str(path))
+            except Exception as e:
+                log.warning("session_file_clear_failed", path=str(path), error=str(e))
 
 
 async def api_call_with_retry(method_name: str, *args: Any, max_retries: int = 3, **kwargs: Any) -> Any:
@@ -738,8 +778,13 @@ async def api_call_with_retry(method_name: str, *args: Any, max_retries: int = 3
                 if attempt < max_retries:
                     # Calculate exponential backoff delay (1s, 2s, 4s, ...)
                     backoff_delay = 2**attempt
-                    logger.warning(f"API call failed with auth error (attempt {attempt + 1}/{max_retries + 1}): {e}")
-                    logger.info(f"Clearing session and re-authenticating (retry in {backoff_delay}s)")
+                    log.warning(
+                        "api_auth_error",
+                        attempt=attempt + 1,
+                        max_attempts=max_retries + 1,
+                        error=str(e),
+                        backoff_s=backoff_delay,
+                    )
 
                     # clear_session() will reset auth state and error automatically
                     clear_session(reason=f"authentication failure during API call (attempt {attempt + 1})")
@@ -750,13 +795,13 @@ async def api_call_with_retry(method_name: str, *args: Any, max_retries: int = 3
 
                     # Re-authenticate
                     await ensure_authenticated()
-                    logger.info(f"Retrying API call after re-authentication (attempt {attempt + 2}/{max_retries + 1})")
+                    log.info("api_retry_after_reauth", attempt=attempt + 2, max_attempts=max_retries + 1)
 
                     # Continue to next iteration to retry with NEW mm_client
                     continue
                 else:
                     # Max retries exhausted for auth error
-                    logger.error(f"API call failed after {max_retries} auth retries: {e}")
+                    log.error("api_auth_retries_exhausted", max_retries=max_retries, error=str(e))
                     raise
             else:
                 # Not an auth error - raise immediately without retry
@@ -783,128 +828,82 @@ async def initialize_client() -> None:
 
     if not email or not password:
         error_msg = "MONARCH_EMAIL and MONARCH_PASSWORD environment variables are required"
-        logger.error(error_msg)
+        log.error("auth_missing_credentials")
         auth_state = AuthState.FAILED
         auth_error = error_msg
         raise ValueError(error_msg)
 
-    logger.info(f"[AUTH] Initializing MonarchMoney client for {email}")
+    log.info("auth_init", email=email)
     mm_client = MonarchMoney()
 
     # Try to load existing session first (unless forced to skip)
     force_login = os.getenv("MONARCH_FORCE_LOGIN") == "true"
     if session_file.exists() and not force_login:
         try:
-            logger.info(f"[AUTH] Found existing session file: {session_file}")
-            logger.info("[AUTH] Attempting to load session (no validation at this stage)")
-            # Load session with stdout/stderr suppression
-            import contextlib
-            import io
-
             stdout_capture = io.StringIO()
             stderr_capture = io.StringIO()
             with contextlib.redirect_stdout(stdout_capture), contextlib.redirect_stderr(stderr_capture):
                 mm_client.load_session(str(session_file))
 
-            # Log what was captured for debugging
-            if stdout_capture.getvalue():
-                logger.debug(f"[AUTH] Captured stdout during load_session: '{stdout_capture.getvalue()}'")
-            if stderr_capture.getvalue():
-                logger.debug(f"[AUTH] Captured stderr during load_session: '{stderr_capture.getvalue()}'")
-
-            logger.info("[AUTH] ✓ Session loaded successfully - no validation performed")
-            logger.info("[AUTH] Session validity will be tested on first API call")
+            log.info("auth_session_loaded", session_file=str(session_file))
             auth_state = AuthState.AUTHENTICATED
             return
 
         except Exception as e:
-            logger.warning(f"[AUTH] Failed to load session: {e}")
-            # Only clear session if it's a genuine auth error
+            log.warning("auth_session_load_failed", error=str(e))
             if is_auth_error(e):
-                logger.info("[AUTH] Session file appears invalid (auth error), clearing before fresh login")
                 clear_session(reason="invalid session file")
-            else:
-                logger.info(
-                    f"[AUTH] Non-auth error loading session (error type: {type(e).__name__}), will try fresh login anyway"
-                )
 
     else:
-        if not session_file.exists():
-            logger.info(f"[AUTH] No existing session file found at {session_file}")
         if force_login:
-            logger.info("[AUTH] MONARCH_FORCE_LOGIN=true, forcing fresh authentication")
+            log.info("auth_force_login")
             clear_session(reason="forced login requested")
 
     # Perform fresh authentication
     max_retries = 2
-    retry_delay = 3  # Increase delay to avoid rate limiting
-
-    logger.info(f"[AUTH] Starting fresh authentication (max {max_retries} attempts)")
+    retry_delay = 3
 
     for attempt in range(max_retries):
         try:
-            logger.info(f"[AUTH] Attempt {attempt + 1}/{max_retries}: Calling Monarch Money login API")
+            log.info("auth_login_attempt", attempt=attempt + 1, max_retries=max_retries, mfa=bool(mfa_secret))
             if mfa_secret:
-                logger.info("[AUTH] Using MFA authentication (TOTP)")
                 await mm_client.login(email, password, mfa_secret_key=mfa_secret, use_saved_session=False)
             else:
-                logger.info("[AUTH] Using password-only authentication")
                 await mm_client.login(email, password, use_saved_session=False)
 
-            logger.info("[AUTH] ✓ Login API call successful")
-            logger.info("[AUTH] Saving session to disk")
-
             # Save session with stdout/stderr suppression
-            import contextlib
-            import io
-
             stdout_capture = io.StringIO()
             stderr_capture = io.StringIO()
             with contextlib.redirect_stdout(stdout_capture), contextlib.redirect_stderr(stderr_capture):
                 mm_client.save_session(str(session_file))
 
-            # Log what was captured for debugging
-            if stdout_capture.getvalue():
-                logger.debug(f"Captured stdout during save_session: '{stdout_capture.getvalue()}'")
-            if stderr_capture.getvalue():
-                logger.debug(f"Captured stderr during save_session: '{stderr_capture.getvalue()}'")
-
             if session_file.exists():
-                session_file.chmod(0o600)  # Secure permissions
-                logger.info(f"[AUTH] ✓ Session saved with secure permissions: {session_file}")
-            else:
-                logger.warning("[AUTH] ⚠ Session file was not created by save_session()")
+                session_file.chmod(0o600)
 
             auth_state = AuthState.AUTHENTICATED
             auth_error = None
-            logger.info(f"[AUTH] ✓ Authentication complete - state: {auth_state.value}")
-            return  # Success!
+            log.info("auth_success")
+            return
 
         except RequireMFAException as e:
             error_msg = "Multi-factor authentication required but MONARCH_MFA_SECRET not set"
-            logger.error(f"[AUTH] ✗ {error_msg}")
+            log.error("auth_mfa_required")
             auth_state = AuthState.FAILED
             auth_error = error_msg
             raise ValueError(error_msg) from e
 
         except Exception as e:
             if attempt < max_retries - 1:
-                logger.warning(f"[AUTH] Attempt {attempt + 1} failed: {e}")
-                # Determine if this is an auth error or other error
+                log.warning("auth_attempt_failed", attempt=attempt + 1, error=str(e), is_auth=is_auth_error(e))
                 if is_auth_error(e):
-                    logger.info("[AUTH] Detected auth error, clearing session before retry")
                     clear_session(reason=f"auth failure on attempt {attempt + 1}")
-                else:
-                    logger.info(f"[AUTH] Non-auth error ({type(e).__name__}), keeping session for retry")
-                logger.info(f"[AUTH] Retrying in {retry_delay}s...")
                 await asyncio.sleep(retry_delay)
             else:
                 error_msg = f"Authentication failed after {max_retries} attempts: {e}"
-                logger.error(f"[AUTH] ✗ {error_msg}")
+                log.error("auth_failed", error=str(e), max_retries=max_retries)
                 auth_state = AuthState.FAILED
                 auth_error = str(e)
-                auth_failed_at = time.time()  # Record failure timestamp for cooldown
-                logger.info(f"[AUTH] Cooldown period activated: retry available in {AUTH_RETRY_COOLDOWN_SECONDS}s")
+                auth_failed_at = time.time()
                 raise
 
 
@@ -924,25 +923,19 @@ async def ensure_authenticated() -> None:
     # Initialize lock on first call (must be done in async context)
     if auth_lock is None:
         auth_lock = asyncio.Lock()
-        logger.info("[AUTH] Async lock created for authentication")
 
-    # Fast path - already authenticated
+    # Fast path
     if auth_state == AuthState.AUTHENTICATED and mm_client is not None:
-        logger.debug("[AUTH] Fast path: already authenticated")
         return
 
-    logger.info(f"[AUTH] Authentication needed, current state: {auth_state.value}")
+    log.info("auth_needed", state=auth_state.value)
 
-    # Use lock to prevent concurrent initialization
     async with auth_lock:
-        # Check again after acquiring lock (another task may have initialized)
         if auth_state == AuthState.AUTHENTICATED and mm_client is not None:
-            logger.info("[AUTH] Lock acquired: another task completed authentication")
             return
 
-        # Check if in failed state with cooldown recovery
+        # Cooldown recovery from FAILED state
         if auth_state == AuthState.FAILED:
-            # Check if cooldown period has elapsed
             if auth_failed_at is not None:
                 elapsed = time.time() - auth_failed_at
                 if elapsed < AUTH_RETRY_COOLDOWN_SECONDS:
@@ -952,73 +945,53 @@ async def ensure_authenticated() -> None:
                         f"Cooldown active: retry available in {remaining:.0f} seconds. "
                         f"To retry immediately, restart the server or set MONARCH_FORCE_LOGIN=true."
                     )
-                    logger.error(f"[AUTH] Cannot authenticate: {error_msg}")
                     raise ValueError(error_msg)
                 else:
-                    # Cooldown period elapsed, allow retry
-                    logger.info(
-                        f"[AUTH] Cooldown period ({AUTH_RETRY_COOLDOWN_SECONDS}s) elapsed since last failure, "
-                        f"allowing retry attempt"
-                    )
+                    log.info("auth_cooldown_elapsed", cooldown_s=AUTH_RETRY_COOLDOWN_SECONDS)
                     auth_state = AuthState.NOT_INITIALIZED
                     auth_error = None
                     auth_failed_at = None
-                    # Fall through to initialization
             else:
-                # FAILED state but no timestamp (shouldn't happen, but handle gracefully)
                 error_msg = f"Authentication previously failed: {auth_error or 'unknown error'}"
-                logger.error(f"[AUTH] Cannot authenticate: {error_msg}")
                 raise ValueError(error_msg)
 
-        # Check if already initializing (shouldn't happen with lock, but defensive)
         if auth_state == AuthState.INITIALIZING:
-            logger.warning("[AUTH] Already initializing (unexpected with lock)")
-            # Wait a bit and check again
+            log.warning("auth_already_initializing")
             await asyncio.sleep(1)
             if auth_state == AuthState.AUTHENTICATED:
-                logger.info("[AUTH] Initialization completed while waiting")
                 return
-            logger.error("[AUTH] Initialization timeout")
             raise ValueError("Authentication is taking too long")
 
-        # Perform initialization
-        logger.info("[AUTH] Starting lazy authentication")
         auth_state = AuthState.INITIALIZING
-
         try:
             await initialize_client()
-            # initialize_client sets auth_state to AUTHENTICATED on success
-            logger.info("[AUTH] Lazy authentication completed successfully")
+            log.info("auth_lazy_init_success")
         except Exception as e:
             auth_state = AuthState.FAILED
             auth_error = str(e)
-            logger.error(f"[AUTH] Failed to initialize client: {e}")
+            log.error("auth_init_failed", error=str(e))
             raise
 
 
 # FastMCP Tool definitions using decorators
 
 
-@mcp.tool()
+@mcp.tool(annotations=READONLY)
 @track_usage
 async def get_accounts() -> str:
     """Retrieve all linked financial accounts."""
     await ensure_authenticated()
 
     try:
-        logger.info("Fetching accounts")
         accounts = await api_call_with_retry("get_accounts")
         accounts = convert_dates_to_strings(accounts)
-        logger.info(
-            f"Accounts retrieved successfully, count: {len(accounts) if isinstance(accounts, list) else 'unknown'}"
-        )
         return json.dumps(accounts, indent=2)
     except Exception as e:
-        logger.error(f"Failed to fetch accounts: {e}")
+        log.error("Failed to fetch accounts", error=str(e))
         raise
 
 
-@mcp.tool()
+@mcp.tool(annotations=READONLY)
 @track_usage
 async def get_transactions(
     limit: int = 100,
@@ -1097,7 +1070,7 @@ async def get_transactions(
 
         Account Info:
             - account.id: Account ID where transaction occurred
-            - account.displayName: Account name (e.g., "Rewards Card")
+            - account.displayName: Account name (e.g., "Main Credit Card")
 
         Status Flags:
             - pending: True if transaction hasn't cleared yet
@@ -1133,68 +1106,34 @@ async def get_transactions(
     await ensure_authenticated()
 
     try:
-        # Log original parameters BEFORE any processing
-        logger.info(
-            f"[TOOL_CALL] get_transactions called with: limit={limit}, offset={offset}, start_date={repr(start_date)}, end_date={repr(end_date)}, account_id={repr(account_id)}, category_id={repr(category_id)}, verbose={verbose}"
+        filters = _build_transaction_filters(
+            start_date,
+            end_date,
+            account_id,
+            category_id,
+            tag_ids,
+            has_attachments,
+            has_notes,
+            hidden_from_reports,
+            is_split,
+            is_recurring,
         )
 
-        # Track original values for auto-fill detection
-        original_start = start_date
-        original_end = end_date
-
-        # Build filter parameters with flexible date parsing
-        filters: dict[str, Any] = build_date_filter(start_date, end_date)
-
-        # Log if dates were auto-filled
-        if original_start and not original_end and "end_date" in filters:
-            logger.warning(f"[AUTO-FILL] end_date was not provided, defaulted to 'today' ({filters['end_date']})")
-        elif original_end and not original_start and "start_date" in filters:
-            logger.warning(
-                f"[AUTO-FILL] start_date was not provided, defaulted to '{filters['start_date']}' (first of end_date's month)"
-            )
-
-        # monarchmoney expects account_ids and category_ids as LISTS
-        if account_id:
-            filters["account_ids"] = [account_id]
-        if category_id:
-            filters["category_ids"] = [category_id]
-
-        # Handle tag_ids (convert comma-separated string to list)
-        if tag_ids:
-            filters["tag_ids"] = [t.strip() for t in tag_ids.split(",")]
-
-        # Add boolean filters (only include if explicitly set)
-        if has_attachments is not None:
-            filters["has_attachments"] = has_attachments
-        if has_notes is not None:
-            filters["has_notes"] = has_notes
-        if hidden_from_reports is not None:
-            filters["hidden_from_reports"] = hidden_from_reports
-        if is_split is not None:
-            filters["is_split"] = is_split
-        if is_recurring is not None:
-            filters["is_recurring"] = is_recurring
-
-        # Log final filters being sent to API
-        logger.info(f"[API_CALL] Calling Monarch API with filters: {filters}")
-
         response = await api_call_with_retry("get_transactions", limit=limit, offset=offset, **filters)
-        # Extract transactions list from nested response structure
         transactions = extract_transactions_list(response)
         transactions = convert_dates_to_strings(transactions)
 
-        # Format output based on verbose flag
         if not verbose and isinstance(transactions, list):
             transactions = format_transactions_compact(transactions)
 
-        logger.info(f"Transactions retrieved successfully, count: {len(transactions)}")
+        log.info("Transactions retrieved", count=len(transactions))
         return json.dumps(transactions, indent=2)
     except Exception as e:
-        logger.error(f"Failed to fetch transactions: {e} (limit={limit}, start_date={start_date})")
+        log.error("Failed to fetch transactions", error=str(e), limit=limit, start_date=start_date)
         raise
 
 
-@mcp.tool()
+@mcp.tool(annotations=READONLY)
 @track_usage
 async def search_transactions(
     query: str,
@@ -1214,97 +1153,28 @@ async def search_transactions(
 ) -> str:
     """Search transactions by text using Monarch Money's built-in search.
 
-    Uses the Monarch Money API's native search functionality to find transactions
-    matching the query across merchant names, descriptions, notes, and other fields.
-    Returns only matching results to reduce context usage.
+    Searches merchant names, descriptions, notes, and other fields.
+    Accepts all the same filters as get_transactions plus a search query.
+    Returns compact results by default (use verbose=True for full details).
 
     Args:
-        query: Search term to find in transactions (searches merchant names, descriptions, notes)
+        query: Search term to find in transactions
         limit: Maximum transactions to return (default: 500, max: 1000)
-        offset: Number of transactions to skip for pagination (default: 0)
-        start_date: Filter transactions from this date onwards (supports natural language)
-                    NOTE: If you provide start_date without end_date, end_date will auto-default to 'today'
-        end_date: Filter transactions up to this date (supports natural language)
-                  NOTE: If you provide end_date without start_date, start_date will auto-default to 'this month'
+        offset: Number of transactions to skip for pagination
+        start_date: Filter from this date (supports natural language like 'last month')
+        end_date: Filter to this date (supports natural language)
         account_id: Filter by specific account ID
         category_id: Filter by specific category ID
         tag_ids: Comma-separated tag IDs to filter by
-        has_attachments: Filter to transactions with (True) or without (False) attachments
-        has_notes: Filter to transactions with (True) or without (False) notes
-        hidden_from_reports: Include hidden transactions (True), exclude them (False), or show all (None)
-        is_split: Filter to split transactions only (True) or non-split (False)
-        is_recurring: Filter to recurring transactions only (True) or non-recurring (False)
-        verbose: Output format control (default: False)
-            - False (compact mode): Returns essential fields only (~80% smaller)
-                Fields included: id, date, amount, merchant, plaidName, category,
-                                account, pending, needsReview, notes
-
-            - True (verbose mode): Returns ALL fields including:
-                Essential fields (same as compact) PLUS:
-                • hideFromReports (bool)
-                • reviewStatus (str: "needs_review" | "reviewed" | null)
-                • isSplitTransaction (bool)
-                • isRecurring (bool)
-                • attachments (list of attachment objects)
-                • tags (list of tag objects)
-                • createdAt (ISO timestamp)
-                • updatedAt (ISO timestamp)
-                • __typename (GraphQL metadata)
-                • Full nested objects with all their fields
-
-            Use verbose=False for most queries to reduce token usage.
-            Use verbose=True when you need: timestamps, split info, attachment details,
-            or are updating transactions (need full context).
-
-    Key Transaction Fields:
-        Core Identifiers:
-            - id: Unique transaction ID (required for updates)
-            - date: Transaction date (YYYY-MM-DD format)
-            - amount: Transaction amount (negative = expense, positive = income)
-
-        Merchant Information:
-            IMPORTANT: Monarch normalizes merchant names for cleaner UI
-            - merchant.name: User-facing display name shown in Monarch UI (normalized/cleaned)
-                Example: "Chipotle" for all Chipotle locations
-            - plaidName: Original bank statement text from Plaid/institution (raw data)
-                Example: "CHIPOTLE 4963", "CHIPOTLE MEX GR ONLINE", "CHIPOTLE 1879"
-                Use this to see location numbers or original descriptors
-            - Multiple transactions from different locations share the same merchant.name
-            - Use plaidName to distinguish between specific locations/variants
-
-        Categorization:
-            - category.id: Category ID (for filtering/updates)
-            - category.name: Category display name (e.g., "Restaurants & Bars")
-            - tags: List of tag objects applied to transaction
-
-        Account Info:
-            - account.id: Account ID where transaction occurred
-            - account.displayName: Account name (e.g., "Rewards Card")
-
-        Status Flags:
-            - pending: True if transaction hasn't cleared yet
-            - needsReview: True if flagged for user review
-            - reviewStatus: "needs_review", "reviewed", or null
-            - hideFromReports: True if hidden from budget/reports
-
-        Transaction Types:
-            - isSplitTransaction: True if split into multiple categories
-            - isRecurring: True if part of a recurring series
-
-        User Annotations:
-            NOTE: These are different fields with different purposes
-            - notes: Free-form user memo/annotation (e.g., "Business lunch with client")
-            - merchant_name: The merchant's display name (e.g., "Olive Garden")
-            - Both are editable, but serve different purposes in the UI
-            - attachments: List of receipt/document attachments
-
-        Metadata (verbose mode only):
-            - createdAt: When transaction was first imported
-            - updatedAt: Last modification timestamp
-            - __typename: GraphQL type information
+        has_attachments: Filter by attachment presence
+        has_notes: Filter by notes presence
+        hidden_from_reports: Filter by report visibility
+        is_split: Filter split transactions
+        is_recurring: Filter recurring transactions
+        verbose: False=compact fields, True=all fields
 
     Returns:
-        JSON string with search results (list of transactions matching the query)
+        JSON with search_metadata and matching transactions
     """
     await ensure_authenticated()
 
@@ -1313,62 +1183,24 @@ async def search_transactions(
 
     try:
         query_str = query.strip()
-
-        # Log original parameters BEFORE any processing
-        logger.info(
-            f"[TOOL_CALL] search_transactions called with: query={repr(query_str)}, limit={limit}, offset={offset}, start_date={repr(start_date)}, end_date={repr(end_date)}, account_id={repr(account_id)}, category_id={repr(category_id)}, verbose={verbose}"
+        filters = _build_transaction_filters(
+            start_date,
+            end_date,
+            account_id,
+            category_id,
+            tag_ids,
+            has_attachments,
+            has_notes,
+            hidden_from_reports,
+            is_split,
+            is_recurring,
         )
-
-        # Track original values for auto-fill detection
-        original_start = start_date
-        original_end = end_date
-
-        # Build filter parameters
-        filters: dict[str, Any] = build_date_filter(start_date, end_date)
-
-        # Log if dates were auto-filled
-        if original_start and not original_end and "end_date" in filters:
-            logger.warning(f"[AUTO-FILL] end_date was not provided, defaulted to 'today' ({filters['end_date']})")
-        elif original_end and not original_start and "start_date" in filters:
-            logger.warning(
-                f"[AUTO-FILL] start_date was not provided, defaulted to '{filters['start_date']}' (first of end_date's month)"
-            )
-
-        # monarchmoney expects account_ids and category_ids as LISTS
-        if account_id:
-            filters["account_ids"] = [account_id]
-        if category_id:
-            filters["category_ids"] = [category_id]
-
-        # Handle tag_ids (convert comma-separated string to list)
-        if tag_ids:
-            filters["tag_ids"] = [t.strip() for t in tag_ids.split(",")]
-
-        # Add boolean filters (only include if explicitly set)
-        if has_attachments is not None:
-            filters["has_attachments"] = has_attachments
-        if has_notes is not None:
-            filters["has_notes"] = has_notes
-        if hidden_from_reports is not None:
-            filters["hidden_from_reports"] = hidden_from_reports
-        if is_split is not None:
-            filters["is_split"] = is_split
-        if is_recurring is not None:
-            filters["is_recurring"] = is_recurring
-
-        # Use the library's built-in search parameter
         filters["search"] = query_str
 
-        # Log final filters being sent to API
-        logger.info(f"[API_CALL] Calling Monarch API with filters: {filters}")
-
-        # Fetch transactions from API with search filter
         response = await api_call_with_retry("get_transactions", limit=limit, offset=offset, **filters)
-        # Extract transactions list from nested response structure
         transactions = extract_transactions_list(response)
         transactions = convert_dates_to_strings(transactions)
 
-        # Format output based on verbose flag
         if not verbose:
             transactions = format_transactions_compact(transactions)
 
@@ -1381,15 +1213,15 @@ async def search_transactions(
             "transactions": transactions,
         }
 
-        logger.info(f"Search complete: '{query_str}' returned {len(transactions)} results")
+        log.info("Search complete", query=query_str, result_count=len(transactions))
         return json.dumps(result, indent=2)
 
     except Exception as e:
-        logger.error(f"Failed to search transactions: {e} (query='{query}')")
+        log.error("Failed to search transactions", error=str(e), query=query)
         raise
 
 
-@mcp.tool()
+@mcp.tool(annotations=READONLY)
 @track_usage
 async def get_budgets(start_date: str | None = None, end_date: str | None = None) -> str:
     """Retrieve budget information with flexible date filtering.
@@ -1421,7 +1253,7 @@ async def get_budgets(start_date: str | None = None, end_date: str | None = None
             raise
 
 
-@mcp.tool()
+@mcp.tool(annotations=READONLY)
 @track_usage
 async def get_cashflow(start_date: str | None = None, end_date: str | None = None) -> str:
     """Analyze cashflow data with flexible date filtering.
@@ -1443,18 +1275,32 @@ async def get_cashflow(start_date: str | None = None, end_date: str | None = Non
     return json.dumps(cashflow, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READONLY)
 @track_usage
-async def get_transaction_categories() -> str:
-    """List all transaction categories."""
+async def get_transaction_categories(verbose: bool = False) -> str:
+    """List all transaction categories.
+
+    Args:
+        verbose: Output format control (default: False)
+            - False: Returns compact format with just {id, name} per category (~80% smaller).
+                     Ideal for category lookups when mapping names to IDs.
+            - True: Returns full category details including group, order, timestamps, system flags.
+
+    Returns:
+        JSON string containing category list
+    """
     await ensure_authenticated()
 
     categories = await api_call_with_retry("get_transaction_categories")
     categories = convert_dates_to_strings(categories)
+
+    if not verbose and isinstance(categories, list):
+        categories = [{"id": cat.get("id"), "name": cat.get("name")} for cat in categories if isinstance(cat, dict)]
+
     return json.dumps(categories, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_CREATE)
 @track_usage
 async def create_transaction(
     amount: float,
@@ -1497,7 +1343,7 @@ async def create_transaction(
         except ValueError as e:
             raise ValueError(f"Invalid date format. Use YYYY-MM-DD (e.g., 2024-01-15). Error: {e}") from e
 
-        logger.info(f"Creating transaction: merchant={merchant_name}, amount={amount}, date={date_str}")
+        log.info("creating_transaction", merchant=merchant_name, amount=amount, date=date_str)
 
         # Use api_call_with_retry for session expiration handling and add timeout
         result = await asyncio.wait_for(
@@ -1516,16 +1362,16 @@ async def create_transaction(
         result = convert_dates_to_strings(result)
         return json.dumps(result, indent=2)
     except asyncio.TimeoutError as e:
-        logger.error("Timeout creating transaction after 30 seconds")
+        log.error("create_transaction_timeout")
         raise ValueError("Transaction creation timed out after 30 seconds. Please try again.") from e
     except ValueError:
         raise
     except Exception as e:
-        logger.error(f"Failed to create transaction: {e}")
+        log.error("create_transaction_failed", error=str(e))
         raise
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_IDEMPOTENT)
 @track_usage
 async def update_transaction(
     transaction_id: str,
@@ -1596,7 +1442,7 @@ async def update_transaction(
     try:
         # Validate parameters before API call
         if merchant_name is not None and merchant_name.strip() == "":
-            logger.warning("Empty merchant_name will be ignored by API")
+            log.warning("empty_merchant_name_ignored")
 
         # Build update parameters
         updates: dict[str, Any] = {"transaction_id": transaction_id}
@@ -1619,7 +1465,7 @@ async def update_transaction(
 
         # Log what we're updating (for debugging)
         update_fields = [k for k in updates if k != "transaction_id"]
-        logger.info(f"Updating transaction {transaction_id} with fields: {update_fields}")
+        log.info("updating_transaction", transaction_id=transaction_id, fields=update_fields)
 
         # Use api_call_with_retry for session expiration handling and add timeout
         result = await asyncio.wait_for(
@@ -1629,7 +1475,7 @@ async def update_transaction(
         result = convert_dates_to_strings(result)
         return json.dumps(result, indent=2)
     except asyncio.TimeoutError as e:
-        logger.error(f"Timeout updating transaction {transaction_id} after 30 seconds")
+        log.error("update_transaction_timeout", transaction_id=transaction_id)
         raise ValueError("Transaction update timed out after 30 seconds. Please try again.") from e
     except ValueError as e:
         # Enhanced error messages for validation failures
@@ -1638,14 +1484,11 @@ async def update_transaction(
             raise ValueError(f"Invalid date format. Use YYYY-MM-DD (e.g., 2024-01-15). Error: {e}") from e
         raise
     except Exception as e:
-        logger.error(
-            f"Failed to update transaction {transaction_id}: {e}",
-            extra={"updates": update_fields if "update_fields" in locals() else []},
-        )
+        log.error("update_transaction_failed", transaction_id=transaction_id, error=str(e))
         raise
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_IDEMPOTENT)
 @track_usage
 async def update_transactions_bulk(updates: str) -> str:
     """Update multiple transactions in a single call to save round-trips.
@@ -1689,7 +1532,7 @@ async def update_transactions_bulk(updates: str) -> str:
         if len(updates_list) == 0:
             return json.dumps({"message": "No updates provided", "results": []}, indent=2)
 
-        logger.info(f"Starting bulk transaction update: {len(updates_list)} transactions")
+        log.info("bulk_update_start", count=len(updates_list))
 
         # Build list of update tasks
         async def update_single(update_data: dict[str, Any]) -> dict[str, Any]:
@@ -1725,11 +1568,10 @@ async def update_transactions_bulk(updates: str) -> str:
                     update_params["needs_review"] = bool(update_data["needs_review"])
 
                 # Execute update with timeout
-                result = await asyncio.wait_for(
-                    api_call_with_retry("update_transaction", **update_params), timeout=30.0
-                )
+                await asyncio.wait_for(api_call_with_retry("update_transaction", **update_params), timeout=30.0)
 
-                return {"transaction_id": txn_id, "status": "success", "result": convert_dates_to_strings(result)}
+                # Compact success response: just confirm the update succeeded
+                return {"transaction_id": txn_id, "status": "success"}
 
             except asyncio.TimeoutError:
                 return {
@@ -1750,7 +1592,7 @@ async def update_transactions_bulk(updates: str) -> str:
         success_count = sum(1 for r in results if r["status"] == "success")
         failure_count = len(results) - success_count
 
-        logger.info(f"Bulk update complete: {success_count} succeeded, {failure_count} failed")
+        log.info("bulk_update_complete", succeeded=success_count, failed=failure_count)
 
         response = {
             "summary": {"total": len(results), "succeeded": success_count, "failed": failure_count},
@@ -1760,11 +1602,11 @@ async def update_transactions_bulk(updates: str) -> str:
         return json.dumps(response, indent=2)
 
     except Exception as e:
-        logger.error(f"Failed to execute bulk transaction update: {e}")
+        log.error("bulk_update_failed", error=str(e))
         raise
 
 
-@mcp.tool()
+@mcp.tool(annotations=READONLY)
 @track_usage
 async def get_account_holdings() -> str:
     """Get investment portfolio data from brokerage accounts."""
@@ -1779,7 +1621,7 @@ async def get_account_holdings() -> str:
         raise
 
 
-@mcp.tool()
+@mcp.tool(annotations=READONLY)
 @track_usage
 async def get_account_history(account_id: str, start_date: str | None = None, end_date: str | None = None) -> str:
     """Get historical account balance data."""
@@ -1800,7 +1642,7 @@ async def get_account_history(account_id: str, start_date: str | None = None, en
         raise
 
 
-@mcp.tool()
+@mcp.tool(annotations=READONLY)
 @track_usage
 async def get_institutions() -> str:
     """Get linked financial institutions."""
@@ -1815,7 +1657,7 @@ async def get_institutions() -> str:
         raise
 
 
-@mcp.tool()
+@mcp.tool(annotations=READONLY)
 @track_usage
 async def get_recurring_transactions() -> str:
     """Get scheduled recurring transactions."""
@@ -1830,7 +1672,7 @@ async def get_recurring_transactions() -> str:
         raise
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_IDEMPOTENT)
 @track_usage
 async def set_budget_amount(category_id: str, amount: float) -> str:
     """Set budget amount for a category."""
@@ -1846,7 +1688,7 @@ async def set_budget_amount(category_id: str, amount: float) -> str:
         raise
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_CREATE)
 @track_usage
 async def create_manual_account(account_name: str, account_type: str, balance: float) -> str:
     """Create a manually tracked account."""
@@ -1864,7 +1706,7 @@ async def create_manual_account(account_name: str, account_type: str, balance: f
         raise
 
 
-@mcp.tool()
+@mcp.tool(annotations=READONLY)
 @track_usage
 async def get_spending_summary(
     start_date: str | None = None, end_date: str | None = None, group_by: str = "category"
@@ -1954,7 +1796,7 @@ async def get_spending_summary(
         raise
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_SIDE_EFFECT)
 @track_usage
 async def refresh_accounts() -> str:
     """Request a refresh of all account data from financial institutions."""
@@ -1970,7 +1812,7 @@ async def refresh_accounts() -> str:
         raise
 
 
-@mcp.tool()
+@mcp.tool(annotations=READONLY)
 @track_usage
 async def get_complete_financial_overview(period: str = "this month") -> str:
     """Get complete financial overview in a single call - accounts, transactions, budgets, cashflow.
@@ -2078,7 +1920,7 @@ async def get_complete_financial_overview(period: str = "this month") -> str:
         raise
 
 
-@mcp.tool()
+@mcp.tool(annotations=READONLY)
 @track_usage
 async def analyze_spending_patterns(lookback_months: int = 6, include_forecasting: bool = True) -> str:
     """Intelligent spending pattern analysis with trend forecasting.
@@ -2096,8 +1938,6 @@ async def analyze_spending_patterns(lookback_months: int = 6, include_forecastin
     await ensure_authenticated()
 
     try:
-        from dateutil.relativedelta import relativedelta
-
         # Calculate date ranges for analysis
         end_date = datetime.now().date()
         start_date = end_date - relativedelta(months=lookback_months)
@@ -2235,37 +2075,23 @@ async def main() -> None:
     The server starts immediately without authentication. Authentication
     happens lazily on the first tool call via ensure_authenticated().
     """
-    logger.info("=" * 70)
-    logger.info("[AUTH] MCP Server starting - LAZY AUTHENTICATION MODE")
-    logger.info("[AUTH] Authentication will be performed on-demand (first tool call)")
-    logger.info(f"[AUTH] Session file location: {session_file}")
-    logger.info(f"[AUTH] Current auth state: {auth_state.value}")
-    logger.info("=" * 70)
+    log.info("server_starting", session_file=str(session_file), auth_state=auth_state.value)
 
-    # Run the FastMCP server with comprehensive error handling
     try:
-        logger.info("Starting MCP server with stdio transport")
         await mcp.run_stdio_async()
-    except BrokenPipeError:
-        # This is expected when the client disconnects - exit gracefully
-        logger.info("Client disconnected (broken pipe) - shutting down gracefully")
-    except ConnectionResetError:
-        # Similar to BrokenPipeError but for connection resets
-        logger.info("Connection reset by client - shutting down gracefully")
+    except (BrokenPipeError, ConnectionResetError):
+        log.info("client_disconnected")
     except KeyboardInterrupt:
-        logger.info("Received interrupt signal - shutting down")
+        log.info("interrupted")
     except Exception as e:
-        logger.error(f"Unexpected error in MCP server: {e}")
+        log.error("server_error", error=str(e))
         raise
 
 
 if __name__ == "__main__":
-    # Add signal handling for graceful shutdown
-    import signal
-    from typing import Any as SignalAny
 
-    def signal_handler(signum: int, frame: SignalAny) -> None:
-        logger.info(f"Received signal {signum}, shutting down gracefully")
+    def signal_handler(signum: int, frame: Any) -> None:
+        log.info("signal_received", signum=signum)
         # Let asyncio handle the shutdown
 
     signal.signal(signal.SIGTERM, signal_handler)
@@ -2273,37 +2099,22 @@ if __name__ == "__main__":
 
     try:
         asyncio.run(main())
-    except BrokenPipeError:
-        # Handle broken pipe at the top level (direct exception, not in ExceptionGroup)
-        logger.info("Broken pipe during shutdown - exiting quietly")
-    except ConnectionResetError:
-        # Handle connection reset at the top level (direct exception)
-        logger.info("Connection reset during shutdown - exiting quietly")
+    except (BrokenPipeError, ConnectionResetError):
+        pass  # Expected during client disconnect
     except KeyboardInterrupt:
-        logger.info("Interrupted by user - exiting")
+        pass
     except Exception as eg:
-        # Handle exception groups (from anyio TaskGroups) - filter out expected shutdown errors
-        if hasattr(eg, "exceptions"):  # It's an ExceptionGroup
-            remaining_exceptions = []
-            for exc in eg.exceptions:
-                # Check for shutdown-related exceptions including nested ones
-                is_shutdown_error = isinstance(exc, (BrokenPipeError, ConnectionResetError, OSError, EOFError)) or (
-                    isinstance(exc, Exception)
-                    and any(
-                        err_str in str(exc).lower()
-                        for err_str in ["broken pipe", "connection reset", "[errno 32]", "eof"]
-                    )
-                )
-                if not is_shutdown_error:
-                    remaining_exceptions.append(exc)
-
-            if remaining_exceptions:
-                logger.error(f"Fatal error: {eg}")
+        # Handle ExceptionGroups from anyio TaskGroups
+        if hasattr(eg, "exceptions"):
+            remaining = [
+                exc
+                for exc in eg.exceptions
+                if not isinstance(exc, (BrokenPipeError, ConnectionResetError, OSError, EOFError))
+                and not any(s in str(exc).lower() for s in ["broken pipe", "connection reset", "[errno 32]", "eof"])
+            ]
+            if remaining:
+                log.error("fatal_error", error=str(eg))
                 raise
-            else:
-                # All exceptions were shutdown-related - exit quietly
-                logger.info("Shutdown complete (broken pipe expected during client disconnect)")
         else:
-            # Regular exception - re-raise
-            logger.error(f"Fatal error: {eg}")
+            log.error("fatal_error", error=str(eg))
             raise

@@ -2,6 +2,17 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## PII & Data Privacy
+
+**CRITICAL**: Never commit or include personally identifiable financial data in code, docs, tests, or commit messages. This includes:
+- Real account names (e.g., specific credit card names like "Main Credit Card")
+- Real merchant names from the user's transaction history
+- Real transaction IDs, category IDs, or account IDs from Monarch Money
+- Real dollar amounts tied to specific transactions
+- Any data that could identify the user's financial institutions or spending habits
+
+Use generic, obviously-fake examples instead: "Main Credit Card", "Corner Deli", "cat_001", "txn_123". Brand names like "Starbucks" are fine as generic illustrative examples in docstrings — the distinction is between "examples of merchants" vs "data from the user's actual account."
+
 ## Development Commands
 
 ### Basic Operations
@@ -11,8 +22,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `uv remove <package>` - Remove dependencies from the project
 
 ### Testing & Validation
-- `uv run pytest tests/ -v` - Run all tests with verbose output
-- `uv run mypy server.py` - Run type checking
+- `uv run pytest tests/ -v --tb=short` - Run all tests
+- `uv run mypy server.py` - Type checking
+- `uv run ruff check .` - Lint
+- `uv run ruff format --check .` - Format check (use `ruff format .` to auto-fix)
 - `uv run python server.py` - Test server directly (all logs to stderr)
 - `MONARCH_FORCE_LOGIN=true uv run python server.py` - Force fresh login (if session expires)
 
@@ -73,22 +86,18 @@ tail -f ~/Library/Logs/Claude/mcp-server-monarch-money.log | grep "\[RESULT_SIZE
 
 ### Git Commit Standards
 
-**Quality Gates (MANDATORY before any commit):**
+**Pre-push check (mirrors CI):**
 ```bash
-# ALWAYS run these before committing - DO NOT commit if either fails
-uv run mypy server.py     # Type checking must pass
-uv run pytest tests/ -v   # All tests must pass
+uv run python scripts/ci.py
 ```
+
+This runs ruff check, ruff format, mypy, and pytest — the same checks as `.github/workflows/ci.yml`. CI runs these on Python 3.10–3.13 against every PR to main.
 
 **Commit Message Format:**
 ```
 <type>: <concise description>
 
 <optional body explaining why/what changed>
-
-🤖 Generated with [Claude Code](https://claude.ai/code)
-
-Co-Authored-By: Claude <noreply@anthropic.com>
 ```
 
 **Commit Types:**

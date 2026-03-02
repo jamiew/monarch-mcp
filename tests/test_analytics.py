@@ -1,7 +1,7 @@
 """Tests for usage analytics and batch tools."""
 
 import json
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -25,18 +25,19 @@ class TestUsageAnalytics:
         server.mm_client = mock_client
 
         try:
-            # Call a tracked function
-            await server.get_accounts()
+            with patch.object(server, "ensure_authenticated", new_callable=AsyncMock):
+                # Call a tracked function
+                await server.get_accounts()
 
-            # Verify tracking occurred
-            assert "get_accounts" in server.usage_patterns
-            assert len(server.usage_patterns["get_accounts"]) == 1
+                # Verify tracking occurred
+                assert "get_accounts" in server.usage_patterns
+                assert len(server.usage_patterns["get_accounts"]) == 1
 
-            call_info = server.usage_patterns["get_accounts"][0]
-            assert call_info["tool_name"] == "get_accounts"
-            assert call_info["status"] == "success"
-            assert "execution_time" in call_info
-            assert "session_id" in call_info
+                call_info = server.usage_patterns["get_accounts"][0]
+                assert call_info["tool_name"] == "get_accounts"
+                assert call_info["status"] == "success"
+                assert "execution_time" in call_info
+                assert "session_id" in call_info
 
         finally:
             server.mm_client = original_client
@@ -62,30 +63,31 @@ class TestBatchTools:
         server.mm_client = mock_client
 
         try:
-            result = await server.get_complete_financial_overview("this month")
+            with patch.object(server, "ensure_authenticated", new_callable=AsyncMock):
+                result = await server.get_complete_financial_overview("this month")
 
-            assert isinstance(result, str)
-            overview = json.loads(result)
+                assert isinstance(result, str)
+                overview = json.loads(result)
 
-            # Verify all data sources are included
-            assert "accounts" in overview
-            assert "budgets" in overview
-            assert "cashflow" in overview
-            assert "transactions" in overview
-            assert "categories" in overview
-            assert "transaction_summary" in overview
-            assert "_batch_metadata" in overview
+                # Verify all data sources are included
+                assert "accounts" in overview
+                assert "budgets" in overview
+                assert "cashflow" in overview
+                assert "transactions" in overview
+                assert "categories" in overview
+                assert "transaction_summary" in overview
+                assert "_batch_metadata" in overview
 
-            # Verify transaction summary
-            summary = overview["transaction_summary"]
-            assert summary["total_count"] == 1
-            assert summary["total_expenses"] == 50
-            assert summary["unique_categories"] == 1
+                # Verify transaction summary
+                summary = overview["transaction_summary"]
+                assert summary["total_count"] == 1
+                assert summary["total_expenses"] == 50
+                assert summary["unique_categories"] == 1
 
-            # Verify metadata
-            metadata = overview["_batch_metadata"]
-            assert metadata["api_calls_made"] == 5
-            assert "timestamp" in metadata
+                # Verify metadata
+                metadata = overview["_batch_metadata"]
+                assert metadata["api_calls_made"] == 5
+                assert "timestamp" in metadata
 
         finally:
             server.mm_client = original_client
@@ -109,37 +111,38 @@ class TestBatchTools:
         server.mm_client = mock_client
 
         try:
-            result = await server.analyze_spending_patterns(lookback_months=3, include_forecasting=True)
+            with patch.object(server, "ensure_authenticated", new_callable=AsyncMock):
+                result = await server.analyze_spending_patterns(lookback_months=3, include_forecasting=True)
 
-            assert isinstance(result, str)
-            analysis = json.loads(result)
+                assert isinstance(result, str)
+                analysis = json.loads(result)
 
-            # Verify analysis structure
-            assert "analysis_period" in analysis
-            assert "monthly_trends" in analysis
-            assert "category_analysis" in analysis
-            assert "account_usage" in analysis
-            assert "forecast" in analysis
-            assert "_metadata" in analysis
+                # Verify analysis structure
+                assert "analysis_period" in analysis
+                assert "monthly_trends" in analysis
+                assert "category_analysis" in analysis
+                assert "account_usage" in analysis
+                assert "forecast" in analysis
+                assert "_metadata" in analysis
 
-            # Verify monthly trends
-            monthly_trends = analysis["monthly_trends"]
-            assert "2024-01" in monthly_trends
-            assert "2024-02" in monthly_trends
-            assert monthly_trends["2024-01"]["expenses"] == 150  # 100 + 50
-            assert monthly_trends["2024-02"]["income"] == 3000
+                # Verify monthly trends
+                monthly_trends = analysis["monthly_trends"]
+                assert "2024-01" in monthly_trends
+                assert "2024-02" in monthly_trends
+                assert monthly_trends["2024-01"]["expenses"] == 150  # 100 + 50
+                assert monthly_trends["2024-02"]["income"] == 3000
 
-            # Verify category analysis
-            category_analysis = analysis["category_analysis"]
-            assert "Food" in category_analysis
-            assert "Gas" in category_analysis
-            assert category_analysis["Food"]["total"] == 100
+                # Verify category analysis
+                category_analysis = analysis["category_analysis"]
+                assert "Food" in category_analysis
+                assert "Gas" in category_analysis
+                assert category_analysis["Food"]["total"] == 100
 
-            # Verify forecasting
-            forecast = analysis["forecast"]
-            assert "predicted_expenses" in forecast
-            assert "predicted_income" in forecast
-            assert "confidence" in forecast
+                # Verify forecasting
+                forecast = analysis["forecast"]
+                assert "predicted_expenses" in forecast
+                assert "predicted_income" in forecast
+                assert "confidence" in forecast
 
         finally:
             server.mm_client = original_client
@@ -159,23 +162,24 @@ class TestBatchTools:
         server.mm_client = mock_client
 
         try:
-            result = await server.get_complete_financial_overview("this month")
+            with patch.object(server, "ensure_authenticated", new_callable=AsyncMock):
+                result = await server.get_complete_financial_overview("this month")
 
-            assert isinstance(result, str)
-            overview = json.loads(result)
+                assert isinstance(result, str)
+                overview = json.loads(result)
 
-            # Verify successful data is included
-            assert "accounts" in overview
-            assert isinstance(overview["accounts"], list)
+                # Verify successful data is included
+                assert "accounts" in overview
+                assert isinstance(overview["accounts"], list)
 
-            # Verify failed API calls are handled gracefully
-            assert "budgets" in overview
-            assert "error" in overview["budgets"]
-            assert "Budget API error" in overview["budgets"]["error"]
+                # Verify failed API calls are handled gracefully
+                assert "budgets" in overview
+                assert "error" in overview["budgets"]
+                assert "Budget API error" in overview["budgets"]["error"]
 
-            # Verify other data sources still work
-            assert "cashflow" in overview
-            assert overview["cashflow"]["income"] == 1000
+                # Verify other data sources still work
+                assert "cashflow" in overview
+                assert overview["cashflow"]["income"] == 1000
 
         finally:
             server.mm_client = original_client
