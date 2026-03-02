@@ -268,9 +268,11 @@ def format_transactions_compact(transactions: list[dict[str, Any]]) -> list[dict
     Returns simplified transaction objects with only:
     - id, date, amount
     - merchant name, plaidName (original statement name)
-    - category name
+    - category id + name (id needed for updates)
     - account display name
-    - Basic flags: pending, needsReview
+    - needsReview flag
+    - pending flag (only if True)
+    - notes (only if present)
 
     Use verbose=True to get full transaction details when needed.
     """
@@ -280,17 +282,22 @@ def format_transactions_compact(transactions: list[dict[str, Any]]) -> list[dict
         if not isinstance(txn, dict):
             continue
 
+        category = txn.get("category")
         compact_txn: dict[str, Any] = {
             "id": txn.get("id"),
             "date": txn.get("date"),
             "amount": txn.get("amount"),
             "merchant": txn.get("merchant", {}).get("name") if isinstance(txn.get("merchant"), dict) else None,
             "plaidName": txn.get("plaidName"),
-            "category": txn.get("category", {}).get("name") if isinstance(txn.get("category"), dict) else None,
+            "category": category.get("name") if isinstance(category, dict) else None,
+            "categoryId": category.get("id") if isinstance(category, dict) else None,
             "account": txn.get("account", {}).get("displayName") if isinstance(txn.get("account"), dict) else None,
-            "pending": txn.get("pending", False),
             "needsReview": txn.get("needsReview", False),
         }
+
+        # Only include pending if actually pending (saves bytes on the common case)
+        if txn.get("pending"):
+            compact_txn["pending"] = True
 
         # Include notes if present
         if txn.get("notes"):
@@ -1270,12 +1277,30 @@ async def get_cashflow(start_date: str | None = None, end_date: str | None = Non
 
 @mcp.tool(annotations=READONLY)
 @track_usage
-async def get_transaction_categories() -> str:
-    """List all transaction categories."""
+async def get_transaction_categories(verbose: bool = False) -> str:
+    """List all transaction categories.
+
+    Args:
+        verbose: Output format control (default: False)
+            - False: Returns compact format with just {id, name} per category (~80% smaller).
+                     Ideal for category lookups when mapping names to IDs.
+            - True: Returns full category details including group, order, timestamps, system flags.
+
+    Returns:
+        JSON string containing category list
+    """
     await ensure_authenticated()
 
     categories = await api_call_with_retry("get_transaction_categories")
     categories = convert_dates_to_strings(categories)
+
+    if not verbose and isinstance(categories, list):
+        categories = [
+            {"id": cat.get("id"), "name": cat.get("name")}
+            for cat in categories
+            if isinstance(cat, dict)
+        ]
+
     return json.dumps(categories, indent=2)
 
 
@@ -1551,7 +1576,8 @@ async def update_transactions_bulk(updates: str) -> str:
                     api_call_with_retry("update_transaction", **update_params), timeout=30.0
                 )
 
-                return {"transaction_id": txn_id, "status": "success", "result": convert_dates_to_strings(result)}
+                # Compact success response: just confirm the update succeeded
+                return {"transaction_id": txn_id, "status": "success"}
 
             except asyncio.TimeoutError:
                 return {
