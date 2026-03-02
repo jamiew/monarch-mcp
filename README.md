@@ -4,6 +4,8 @@ An [MCP](https://modelcontextprotocol.io/) server for [Monarch Money](https://ww
 
 Originally forked from [@colvint/monarch-money-mcp](https://github.com/colvint/monarch-money-mcp) but has diverged significantly with a full rewrite, many new features, and a modern FastMCP architecture.
 
+Built with the [MonarchMoney](https://github.com/hammem/monarchmoney) Python library by [@hammem](https://github.com/hammem) — a fantastic unofficial API for Monarch Money with full MFA support. We currently use the [community fork](https://github.com/bradleyseanf/monarchmoneycommunity) by [@bradleyseanf](https://github.com/bradleyseanf) which tracks the latest Monarch Money API changes.
+
 ## Features
 
 - **19 tools** covering accounts, transactions, budgets, cashflow, investments, categories, goals, net worth, recurring transactions, and more
@@ -165,4 +167,3 @@ uv run scripts/eval_session.py analyze            # analyze new entries
 
 This project started as a fork of [colvint/monarch-money-mcp](https://github.com/colvint/monarch-money-mcp) by [@colvint](https://github.com/colvint). Thanks for the original implementation!
 
-Built with the [MonarchMoney](https://github.com/hammem/monarchmoney) Python library by [@hammem](https://github.com/hammem) — a fantastic unofficial API for Monarch Money with full MFA support. We currently use the [community fork](https://github.com/bradleyseanf/monarchmoneycommunity) by [@bradleyseanf](https://github.com/bradleyseanf) which tracks the latest Monarch Money API changes.
