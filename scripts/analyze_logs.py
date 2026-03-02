@@ -104,9 +104,7 @@ _WRAPPER_RE = re.compile(
 )
 
 # Legacy marker formats
-_TOOL_CALL_RE = re.compile(
-    r"^(\d{4}-\d{2}-\d{2}\s+[\d:,]+)\s+.*\[TOOL_CALL\]\s+(\w+)\s+\|\s+args:\s+(.+)$"
-)
+_TOOL_CALL_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}\s+[\d:,]+)\s+.*\[TOOL_CALL\]\s+(\w+)\s+\|\s+args:\s+(.+)$")
 _ANALYTICS_RE = re.compile(
     r"^(\d{4}-\d{2}-\d{2}\s+[\d:,]+)\s+.*\[ANALYTICS\]\s+tool_(?:called|error):\s+(\w+)\s+\|\s+"
     r"time:\s+([\d.]+)s\s+\|\s+status:\s+(\w+)"
@@ -651,7 +649,9 @@ def format_report(
         avg_kb = mean(s.sizes_kb) if s.sizes_kb else 0
         max_kb = max(s.sizes_kb) if s.sizes_kb else 0
         avg_time = f"{mean(s.times_s):.2f}s" if s.times_s else "n/a"
-        lines.append(f"{s.tool_name:<35} {s.call_count:>6} {s.total_chars / 1024:>10.1f} {avg_kb:>8.1f} {max_kb:>8.1f} {avg_time:>9}")
+        lines.append(
+            f"{s.tool_name:<35} {s.call_count:>6} {s.total_chars / 1024:>10.1f} {avg_kb:>8.1f} {max_kb:>8.1f} {avg_time:>9}"
+        )
 
     # Argument patterns
     lines.append("\n" + "-" * 70)
@@ -698,7 +698,9 @@ def format_report(
             lines.append(f"\n  {icon} [{rec.priority.upper()}] {rec.category}")
             lines.append(f"      {rec.message}")
             if rec.estimated_savings_tokens > 0:
-                lines.append(f"      Estimated savings: {rec.estimated_savings_kb:.0f} KB / ~{rec.estimated_savings_tokens:,} tokens")
+                lines.append(
+                    f"      Estimated savings: {rec.estimated_savings_kb:.0f} KB / ~{rec.estimated_savings_tokens:,} tokens"
+                )
 
     lines.append("\n" + "=" * 70)
     return "\n".join(lines)

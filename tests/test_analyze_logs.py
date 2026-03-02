@@ -39,9 +39,9 @@ class TestParseWrapperLine:
 
     def test_basic_tools_call(self) -> None:
         line = (
-            '2025-10-19T14:13:44.066Z [monarch-money] [info] '
+            "2025-10-19T14:13:44.066Z [monarch-money] [info] "
             'Message from client: {"method":"tools/call","params":{"name":"get_transaction_categories","arguments":{}},"jsonrpc":"2.0","id":4} '
-            '{ metadata: undefined }'
+            "{ metadata: undefined }"
         )
         call = parse_wrapper_line(line)
         assert call is not None
@@ -50,9 +50,9 @@ class TestParseWrapperLine:
 
     def test_tools_call_with_args(self) -> None:
         line = (
-            '2025-10-19T14:15:22.090Z [monarch-money] [info] '
+            "2025-10-19T14:15:22.090Z [monarch-money] [info] "
             'Message from client: {"method":"tools/call","params":{"name":"search_transactions","arguments":{"query":"restaurant","limit":1000,"verbose":false}},"jsonrpc":"2.0","id":5} '
-            '{ metadata: undefined }'
+            "{ metadata: undefined }"
         )
         call = parse_wrapper_line(line)
         assert call is not None
@@ -63,9 +63,9 @@ class TestParseWrapperLine:
 
     def test_non_tools_call_ignored(self) -> None:
         line = (
-            '2025-10-19T14:11:49.479Z [monarch-money] [info] '
+            "2025-10-19T14:11:49.479Z [monarch-money] [info] "
             'Message from client: {"method":"initialize","params":{},"jsonrpc":"2.0","id":0} '
-            '{ metadata: undefined }'
+            "{ metadata: undefined }"
         )
         assert parse_wrapper_line(line) is None
 
@@ -158,23 +158,27 @@ class TestParseStructlogLine:
     """Tests for structlog JSON format parsing."""
 
     def test_tool_called(self) -> None:
-        line = json.dumps({
-            "event": "tool_called",
-            "tool": "get_accounts",
-            "timestamp": "2025-10-19T14:00:00",
-            "time_s": 0.5,
-        })
+        line = json.dumps(
+            {
+                "event": "tool_called",
+                "tool": "get_accounts",
+                "timestamp": "2025-10-19T14:00:00",
+                "time_s": 0.5,
+            }
+        )
         call = parse_structlog_line(line)
         assert call is not None
         assert call.tool_name == "get_accounts"
         assert call.execution_time_s == 0.5
 
     def test_tool_error(self) -> None:
-        line = json.dumps({
-            "event": "tool_error",
-            "tool": "get_budgets",
-            "timestamp": "2025-10-19T14:00:00",
-        })
+        line = json.dumps(
+            {
+                "event": "tool_error",
+                "tool": "get_budgets",
+                "timestamp": "2025-10-19T14:00:00",
+            }
+        )
         call = parse_structlog_line(line)
         assert call is not None
         assert call.status == "error"
@@ -199,9 +203,9 @@ class TestParseLogFile:
         log = tmp_path / "test.log"
         log.write_text(
             # Wrapper format
-            '2025-10-19T14:13:44.066Z [monarch-money] [info] Message from client: '
+            "2025-10-19T14:13:44.066Z [monarch-money] [info] Message from client: "
             '{"method":"tools/call","params":{"name":"get_categories","arguments":{}},"jsonrpc":"2.0","id":4} '
-            '{ metadata: undefined }\n'
+            "{ metadata: undefined }\n"
             # Legacy TOOL_CALL
             "2025-10-19 10:13:44,068 - __main__ - INFO - [TOOL_CALL] get_categories | args: {}\n"
             # Analytics

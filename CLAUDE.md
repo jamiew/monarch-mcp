@@ -22,8 +22,10 @@ Use generic, obviously-fake examples instead: "Main Credit Card", "Corner Deli",
 - `uv remove <package>` - Remove dependencies from the project
 
 ### Testing & Validation
-- `uv run pytest tests/ -v` - Run all tests with verbose output
-- `uv run mypy server.py` - Run type checking
+- `uv run pytest tests/ -v --tb=short` - Run all tests
+- `uv run python -m mypy server.py --config-file pyproject.toml` - Type checking
+- `uv run ruff check .` - Lint
+- `uv run ruff format --check .` - Format check (use `ruff format .` to auto-fix)
 - `uv run python server.py` - Test server directly (all logs to stderr)
 - `MONARCH_FORCE_LOGIN=true uv run python server.py` - Force fresh login (if session expires)
 
@@ -84,22 +86,21 @@ tail -f /Users/jamie/Library/Logs/Claude/mcp-server-monarch-money.log | grep "\[
 
 ### Git Commit Standards
 
-**Quality Gates (MANDATORY before any commit):**
+**Pre-push check (mirrors CI — run before pushing):**
 ```bash
-# ALWAYS run these before committing - DO NOT commit if either fails
-uv run mypy server.py     # Type checking must pass
-uv run pytest tests/ -v   # All tests must pass
+uv run ruff check .                                        # lint
+uv run ruff format --check .                               # format
+uv run python -m mypy server.py --config-file pyproject.toml  # types
+uv run pytest tests/ -v --tb=short                         # tests
 ```
+
+All four must pass. CI runs these on Python 3.10–3.13 against every PR to main.
 
 **Commit Message Format:**
 ```
 <type>: <concise description>
 
 <optional body explaining why/what changed>
-
-🤖 Generated with [Claude Code](https://claude.ai/code)
-
-Co-Authored-By: Claude <noreply@anthropic.com>
 ```
 
 **Commit Types:**

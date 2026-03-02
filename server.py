@@ -1295,11 +1295,7 @@ async def get_transaction_categories(verbose: bool = False) -> str:
     categories = convert_dates_to_strings(categories)
 
     if not verbose and isinstance(categories, list):
-        categories = [
-            {"id": cat.get("id"), "name": cat.get("name")}
-            for cat in categories
-            if isinstance(cat, dict)
-        ]
+        categories = [{"id": cat.get("id"), "name": cat.get("name")} for cat in categories if isinstance(cat, dict)]
 
     return json.dumps(categories, indent=2)
 
@@ -1572,9 +1568,7 @@ async def update_transactions_bulk(updates: str) -> str:
                     update_params["needs_review"] = bool(update_data["needs_review"])
 
                 # Execute update with timeout
-                await asyncio.wait_for(
-                    api_call_with_retry("update_transaction", **update_params), timeout=30.0
-                )
+                await asyncio.wait_for(api_call_with_retry("update_transaction", **update_params), timeout=30.0)
 
                 # Compact success response: just confirm the update succeeded
                 return {"transaction_id": txn_id, "status": "success"}
