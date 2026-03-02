@@ -1,5 +1,5 @@
 [project]
-name = "monarch-money-mcp"
+name = "monarch-mcp-jamiew"
 version = "0.3.0"
 description = "MCP server for Monarch Money personal finance"
 readme = "README.md"
@@ -40,7 +40,7 @@ Repository = "https://github.com/jamiew/monarch-mcp"
 Issues = "https://github.com/jamiew/monarch-mcp/issues"
 
 [project.scripts]
-monarch-money-mcp = "server:main"
+monarch-mcp-jamiew = "server:main"
 
 [build-system]
 requires = ["hatchling"]

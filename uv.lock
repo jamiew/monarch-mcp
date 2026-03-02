@@ -897,7 +897,7 @@ wheels = [
 ]
 
 [[package]]
-name = "monarch-money-mcp"
+name = "monarch-mcp-jamiew"
 version = "0.3.0"
 source = { editable = "." }
 dependencies = [
