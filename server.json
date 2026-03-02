@@ -1,0 +1,69 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.jamiew/monarch-mcp",
+  "title": "Monarch MCP Server",
+  "description": "Access Monarch financial data — accounts, transactions, budgets, and more",
+  "version": "0.3.0",
+  "repository": {
+    "url": "https://github.com/jamiew/monarch-mcp",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "monarch-mcp-jamiew",
+      "version": "0.3.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "MONARCH_EMAIL",
+          "description": "Your Monarch Money account email",
+          "isRequired": true,
+          "isSecret": false
+        },
+        {
+          "name": "MONARCH_PASSWORD",
+          "description": "Your Monarch Money account password",
+          "isRequired": true,
+          "isSecret": true
+        },
+        {
+          "name": "MONARCH_MFA_SECRET",
+          "description": "Your TOTP secret key for 2FA",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "MONARCH_FORCE_LOGIN",
+          "description": "Set to 'true' to bypass session cache",
+          "isRequired": false,
+          "isSecret": false
+        }
+      ]
+    }
+  ],
+  "tools": [
+    { "name": "get_accounts", "description": "List all financial accounts with balances" },
+    { "name": "get_transactions", "description": "Get transactions with date/account/category filtering" },
+    { "name": "search_transactions", "description": "Search transactions by merchant name or keyword" },
+    { "name": "get_budgets", "description": "Get budget data and spending limits" },
+    { "name": "get_cashflow", "description": "Get income and expense cashflow data" },
+    { "name": "get_transaction_categories", "description": "List transaction categories" },
+    { "name": "create_transaction", "description": "Create a manual transaction" },
+    { "name": "update_transaction", "description": "Update an existing transaction" },
+    { "name": "update_transactions_bulk", "description": "Update multiple transactions in parallel" },
+    { "name": "get_account_holdings", "description": "Get investment holdings for an account" },
+    { "name": "get_account_history", "description": "Get historical balance data for an account" },
+    { "name": "get_institutions", "description": "List connected financial institutions" },
+    { "name": "get_recurring_transactions", "description": "Get recurring/subscription transactions" },
+    { "name": "set_budget_amount", "description": "Set budget amount for a category" },
+    { "name": "create_manual_account", "description": "Create a manual tracking account" },
+    { "name": "refresh_accounts", "description": "Trigger refresh of account data" },
+    { "name": "get_spending_summary", "description": "Get spending summary by category/account/month" },
+    { "name": "get_complete_financial_overview", "description": "Get comprehensive financial snapshot in one call" },
+    { "name": "analyze_spending_patterns", "description": "Analyze spending trends with optional forecasting" }
+  ],
+  "securityConsiderations": "Monarch Money does not provide OAuth or official API access. This server requires your actual account credentials (email, password, MFA secret) which have full access to view and modify your financial data. Use with appropriate caution."
+}
