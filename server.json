@@ -3,7 +3,7 @@
   "name": "io.github.jamiew/monarch-mcp",
   "title": "Monarch MCP Server",
   "description": "Access Monarch financial data — accounts, transactions, budgets, and more",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "repository": {
     "url": "https://github.com/jamiew/monarch-mcp",
     "source": "github"
@@ -12,7 +12,7 @@
     {
       "registryType": "pypi",
       "identifier": "monarch-mcp-jamiew",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "transport": {
         "type": "stdio"
       },

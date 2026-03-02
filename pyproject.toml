@@ -1,6 +1,6 @@
 [project]
 name = "monarch-mcp-jamiew"
-version = "0.3.0"
+version = "0.3.1"
 description = "MCP server for Monarch Money personal finance"
 readme = "README.md"
 requires-python = ">=3.10"
