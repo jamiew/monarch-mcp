@@ -1572,7 +1572,7 @@ async def update_transactions_bulk(updates: str) -> str:
                     update_params["needs_review"] = bool(update_data["needs_review"])
 
                 # Execute update with timeout
-                result = await asyncio.wait_for(
+                await asyncio.wait_for(
                     api_call_with_retry("update_transaction", **update_params), timeout=30.0
                 )
 
