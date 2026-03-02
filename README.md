@@ -79,7 +79,7 @@ List all accounts with their balances and details.
 ### `get_transactions`
 Get transactions with smart output formatting and flexible filtering:
 - **Smart Output**: Returns compact format by default (reduces data size by ~80%)
-  - Compact fields: `id`, `date`, `amount`, `merchant`, `plaidName`, `category`, `account`, `pending`, `needsReview`, `notes`
+  - Compact fields: `id`, `date`, `amount`, `merchant`, `plaidName`, `category`, `categoryId`, `account`, `needsReview` (plus `pending` and `notes` when present)
   - Set `verbose=True` for complete transaction details with all metadata
 - **Flexible Date Filtering**: Supports natural language dates
   - Examples: `"last month"`, `"yesterday"`, `"30 days ago"`, `"this year"`
@@ -90,8 +90,8 @@ Get transactions with smart output formatting and flexible filtering:
   - `limit`: Maximum transactions to return (default: 100, max: 1000)
   - `offset`: Pagination offset
 
-### `get_categories`
-List all transaction categories.
+### `get_transaction_categories`
+List all transaction categories. Returns compact `{id, name}` pairs by default. Set `verbose=True` for full details.
 
 ### `get_budgets`
 Get budget information and spending analysis.
@@ -129,8 +129,8 @@ The compact format is perfect for most queries and looks like:
   "merchant": "Corner Deli",
   "plaidName": "CORNER DELI NYC",
   "category": "Restaurants & Bars",
+  "categoryId": "cat_001",
   "account": "Main Credit Card",
-  "pending": false,
   "needsReview": true
 }
 ```
@@ -211,13 +211,63 @@ uv run pytest tests/test_integration.py::TestHealthCheck -v
 
 If the health check fails with a 525 SSL error, it typically means the upstream Monarch Money API has changed and dependencies need updating.
 
+## Log Analysis & Eval
+
+Tools for measuring and optimizing token usage across MCP sessions.
+
+### Log Analyzer
+
+Parses the MCP server log and generates a report with tool usage stats, argument patterns, session flows, and optimization recommendations.
+
+```bash
+# Full report against real logs
+uv run scripts/analyze_logs.py
+
+# JSON output for programmatic use
+uv run scripts/analyze_logs.py --json
+
+# Filter by date
+uv run scripts/analyze_logs.py --since 2026-02-01
+
+# Custom log path
+uv run scripts/analyze_logs.py --log /path/to/mcp-server-monarch-money.log
+```
+
+### Session Evaluator
+
+Measure the efficiency of a specific session (a single conversation or prompt).
+
+**Manual mode** — snapshot before, analyze after:
+```bash
+uv run scripts/eval_session.py snapshot
+# ... use Monarch tools in Claude Desktop ...
+uv run scripts/eval_session.py analyze
+uv run scripts/eval_session.py analyze --json
+```
+
+**Automated mode** — run a prompt via `claude` CLI and analyze in one step:
+```bash
+uv run scripts/eval_session.py run "analyze last month's transactions for miscategorizations"
+uv run scripts/eval_session.py run "what's my spending breakdown this month?" --json
+```
+
+The `run` mode requires the `claude` CLI to be installed (`npm install -g @anthropic-ai/claude-code`) and uses the MCP server config from `.mcp.json` in the project directory.
+
+### What the analyzer finds
+
+Based on real usage (~126 tool calls, ~889K tokens):
+- **Caching candidates**: `get_transaction_categories` called 5x with identical 32KB results
+- **Response bloat**: `update_transactions_bulk` echoing full transaction objects (~68K wasted tokens)
+- **Oversized responses**: single calls returning 300KB+
+- **Repeated sequences**: 18 consecutive `search_transactions` calls (refinement loops)
+
 ## Notable Differences from Forked Repository
 
 This implementation has evolved significantly from the original forked repository with substantial architectural improvements and enhanced capabilities:
 
 ### Advanced Architecture
 - **FastMCP Framework**: Complete migration from basic MCP to modern FastMCP with `@mcp.tool()` decorators for cleaner, more maintainable code
-- **Comprehensive Testing**: 42 passing tests across 6 test files with 100% coverage including analytics, validation, and error handling
+- **Comprehensive Testing**: 151 passing tests across 12 test files covering analytics, validation, error handling, and log analysis
 - **Type Safety**: Strict typing throughout with Pydantic models and minimal MyPy warnings (8 remaining, down from 111+)
 - **Structured Logging**: Professional logging with `structlog` for debugging and analytics tracking
 
