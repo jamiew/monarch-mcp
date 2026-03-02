@@ -64,7 +64,7 @@ jobs:
             - **Logo:** Red-orange square (36px) with crown emoji 👑 + "Monarch Money MCP" text
             - **Navigation:** Tools, Installation, Credits (gray links, black on hover)
             - **Button:** "GitHub →" - black background, white text (red-orange on hover)
-            - Links to: https://github.com/jamiew/monarch-money-mcp
+            - Links to: https://github.com/jamiew/monarch-mcp
 
             ### Hero Section
             - **Title:** "Monarch Money MCP Server" (2.5rem, bold, black)
@@ -193,8 +193,8 @@ jobs:
             - White background, top border
             - Small gray text: "MIT License • GitHub • Issues"
             - Links:
-              - GitHub: https://github.com/jamiew/monarch-money-mcp
-              - Issues: https://github.com/jamiew/monarch-money-mcp/issues
+              - GitHub: https://github.com/jamiew/monarch-mcp
+              - Issues: https://github.com/jamiew/monarch-mcp/issues
 
             ---
 
