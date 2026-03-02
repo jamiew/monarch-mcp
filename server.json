@@ -1,8 +1,8 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.jamiew/monarch-money-mcp",
-  "title": "Monarch Money MCP Server",
-  "description": "Access Monarch Money financial data — accounts, transactions, budgets, and more",
+  "name": "io.github.jamiew/monarch-mcp",
+  "title": "Monarch MCP Server",
+  "description": "Access Monarch financial data — accounts, transactions, budgets, and more",
   "version": "0.3.0",
   "repository": {
     "url": "https://github.com/jamiew/monarch-mcp",
