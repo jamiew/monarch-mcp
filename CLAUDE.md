@@ -2,6 +2,17 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## PII & Data Privacy
+
+**CRITICAL**: Never commit or include personally identifiable financial data in code, docs, tests, or commit messages. This includes:
+- Real account names (e.g., specific credit card names like "Main Credit Card")
+- Real merchant names from the user's transaction history
+- Real transaction IDs, category IDs, or account IDs from Monarch Money
+- Real dollar amounts tied to specific transactions
+- Any data that could identify the user's financial institutions or spending habits
+
+Use generic, obviously-fake examples instead: "Main Credit Card", "Corner Deli", "cat_001", "txn_123". Brand names like "Starbucks" are fine as generic illustrative examples in docstrings — the distinction is between "examples of merchants" vs "data from the user's actual account."
+
 ## Development Commands
 
 ### Basic Operations
