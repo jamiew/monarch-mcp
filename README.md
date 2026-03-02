@@ -1,3 +1,4 @@
+<!-- mcp-name: io.github.jamiew/monarch-money-mcp -->
 # Monarch Money MCP Server
 
 An [MCP](https://modelcontextprotocol.io/) server for [Monarch Money](https://www.monarchmoney.com/) — gives AI assistants like Claude access to your financial accounts, transactions, budgets, and more.
