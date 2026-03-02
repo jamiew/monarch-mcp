@@ -73,3 +73,6 @@ ehthumbs.db
 # Newish
 logs.sh
 .claude/settings.local.json
+
+# MCP Registry
+.mcpregistry_*
