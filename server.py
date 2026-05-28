@@ -14,10 +14,11 @@ import sys
 import time
 import uuid
 import warnings
+from collections.abc import Awaitable, Callable
 from datetime import date, datetime, timedelta
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, ParamSpec, TypeVar
 
 import structlog
 from dateutil import parser as date_parser
@@ -403,12 +404,15 @@ warnings.filterwarnings("ignore", category=UserWarning, module="gql.transport.ai
 current_session_id = str(uuid.uuid4())
 usage_patterns: dict[str, list[dict[str, Any]]] = {}
 
+P = ParamSpec("P")
+R = TypeVar("R")
 
-def track_usage(func: Any) -> Any:
+
+def track_usage(func: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
     """Decorator to track tool usage patterns for analytics with detailed debugging."""
 
     @functools.wraps(func)
-    async def wrapper(*args: Any, **kwargs: Any) -> Any:
+    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
         start_time = time.time()
         tool_name = func.__name__
 
