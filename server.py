@@ -2021,10 +2021,10 @@ async def analyze_spending_patterns(lookback_months: int = 6, include_forecastin
 
             analysis["monthly_trends"] = dict(sorted(monthly_data.items()))
             analysis["category_analysis"] = dict(
-                sorted(category_totals.items(), key=lambda x: x[1]["total"], reverse=True)  # type: ignore[call-overload, index]
+                sorted(category_totals.items(), key=lambda x: x[1]["total"], reverse=True)  # type: ignore[index]
             )
             analysis["account_usage"] = dict(
-                sorted(account_usage.items(), key=lambda x: x[1]["total_volume"], reverse=True)  # type: ignore[call-overload, index]
+                sorted(account_usage.items(), key=lambda x: x[1]["total_volume"], reverse=True)  # type: ignore[index]
             )
 
             # Simple forecasting if requested
