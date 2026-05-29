@@ -10,7 +10,6 @@ All tests use the ``mock_api`` fixture (see conftest.py), which patches
 independent of global auth state.
 """
 
-import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 from unittest.mock import AsyncMock
@@ -52,7 +51,7 @@ TOOL_CALLS: list[Any] = [
         id="create_transaction",
     ),
     pytest.param(lambda: server.update_transaction(transaction_id="txn_1", notes="memo"), id="update_transaction"),
-    pytest.param(lambda: server.get_account_holdings(), id="get_account_holdings"),
+    pytest.param(lambda: server.get_account_holdings(account_id="acc_1"), id="get_account_holdings"),
     pytest.param(lambda: server.get_account_history(account_id="acc_1"), id="get_account_history"),
     pytest.param(lambda: server.get_institutions(), id="get_institutions"),
     pytest.param(lambda: server.get_recurring_transactions(), id="get_recurring_transactions"),
@@ -100,23 +99,23 @@ class TestReadToolSuccess:
     @pytest.mark.asyncio
     async def test_get_budgets_returns_budget_data(self, mock_api: AsyncMock) -> None:
         mock_api.return_value = {"budgets": [{"category_id": "cat_1", "amount": 500}]}
-        data = json.loads(await server.get_budgets())
-        assert data["budgets"][0]["category_id"] == "cat_1"
+        result = await server.get_budgets()
+        assert result.budgets["budgets"][0]["category_id"] == "cat_1"
 
     @pytest.mark.asyncio
     async def test_get_budgets_empty_when_none_configured(self, mock_api: AsyncMock) -> None:
         # The API raises this specific string when no budgets exist; the tool maps
         # it to an empty result rather than an error.
         mock_api.side_effect = Exception("Something went wrong while processing: None")
-        data = json.loads(await server.get_budgets())
-        assert data["budgets"] == []
-        assert "No budgets" in data["message"]
+        result = await server.get_budgets()
+        assert result.budgets == []
+        assert "No budgets" in (result.message or "")
 
     @pytest.mark.asyncio
     async def test_get_cashflow_returns_cashflow_data(self, mock_api: AsyncMock) -> None:
         mock_api.return_value = {"income": 5000, "expenses": 3200}
-        data = json.loads(await server.get_cashflow())
-        assert data["income"] == 5000
+        result = await server.get_cashflow()
+        assert result.cashflow["income"] == 5000
 
     @pytest.mark.asyncio
     async def test_get_transaction_categories_compact_strips_to_id_and_name(self, mock_api: AsyncMock) -> None:
@@ -124,15 +123,17 @@ class TestReadToolSuccess:
             {"id": "cat_1", "name": "Groceries", "group": {"name": "Food"}, "order": 3},
             {"id": "cat_2", "name": "Transit", "group": {"name": "Auto"}, "order": 4},
         ]
-        data = json.loads(await server.get_transaction_categories(verbose=False))
-        assert data == [{"id": "cat_1", "name": "Groceries"}, {"id": "cat_2", "name": "Transit"}]
+        result = await server.get_transaction_categories(verbose=False)
+        assert result.categories == [{"id": "cat_1", "name": "Groceries"}, {"id": "cat_2", "name": "Transit"}]
+        assert result.count == 2
+        assert result.verbose is False
 
     @pytest.mark.asyncio
     async def test_get_transaction_categories_verbose_keeps_all_fields(self, mock_api: AsyncMock) -> None:
         mock_api.return_value = [{"id": "cat_1", "name": "Groceries", "group": {"name": "Food"}, "order": 3}]
-        data = json.loads(await server.get_transaction_categories(verbose=True))
-        assert data[0]["group"] == {"name": "Food"}
-        assert data[0]["order"] == 3
+        result = await server.get_transaction_categories(verbose=True)
+        assert result.categories[0]["group"] == {"name": "Food"}
+        assert result.categories[0]["order"] == 3
 
     @pytest.mark.asyncio
     async def test_get_spending_summary_aggregates_by_category(self, mock_api: AsyncMock) -> None:
@@ -141,18 +142,18 @@ class TestReadToolSuccess:
             {"amount": -10.0, "category": {"name": "Groceries"}, "date": "2024-01-09"},
             {"amount": 2000.0, "category": {"name": "Income"}, "date": "2024-01-01"},
         ]
-        data = json.loads(await server.get_spending_summary(group_by="category"))
-        assert data["groups"]["Groceries"]["expenses"] == 50.0
-        assert data["groups"]["Groceries"]["count"] == 2
-        assert data["totals"]["income"] == 2000.0
-        assert data["totals"]["expenses"] == 50.0
-        assert data["totals"]["net"] == 1950.0
+        result = await server.get_spending_summary(group_by="category")
+        assert result.groups["Groceries"].expenses == 50.0
+        assert result.groups["Groceries"].count == 2
+        assert result.totals.income == 2000.0
+        assert result.totals.expenses == 50.0
+        assert result.totals.net == 1950.0
 
     @pytest.mark.asyncio
     async def test_refresh_accounts_returns_result(self, mock_api: AsyncMock) -> None:
         mock_api.return_value = {"status": "refresh_requested"}
-        data = json.loads(await server.refresh_accounts())
-        assert data["status"] == "refresh_requested"
+        result = await server.refresh_accounts()
+        assert result.result["status"] == "refresh_requested"
 
 
 class TestResourceSuccess:
@@ -179,11 +180,11 @@ class TestBatchToolDegradation:
                 "get_transaction_categories": [],
             }
         )
-        data = json.loads(await server.analyze_spending_patterns(lookback_months=3, include_forecasting=False))
+        result = await server.analyze_spending_patterns(lookback_months=3, include_forecasting=False)
         # Tool returns a valid analysis with empty trends rather than raising.
-        assert data["monthly_trends"] == {}
-        assert data["category_analysis"] == {}
-        assert data["analysis_period"]["months_analyzed"] == 3
+        assert result.monthly_trends == {}
+        assert result.category_analysis == {}
+        assert result.analysis_period["months_analyzed"] == 3
 
     @pytest.mark.asyncio
     async def test_analyze_spending_patterns_builds_trends_on_success(self, mock_api: AsyncMock) -> None:
@@ -199,7 +200,7 @@ class TestBatchToolDegradation:
                 "get_transaction_categories": [],
             }
         )
-        data = json.loads(await server.analyze_spending_patterns(lookback_months=3, include_forecasting=False))
-        assert "2024-01" in data["monthly_trends"]
-        assert "2024-02" in data["monthly_trends"]
-        assert data["category_analysis"]["Food"]["total"] == 125.0
+        result = await server.analyze_spending_patterns(lookback_months=3, include_forecasting=False)
+        assert "2024-01" in result.monthly_trends
+        assert "2024-02" in result.monthly_trends
+        assert result.category_analysis["Food"]["total"] == 125.0

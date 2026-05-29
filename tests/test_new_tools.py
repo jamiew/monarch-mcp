@@ -1,6 +1,5 @@
 """Tests for new Monarch Money API tools."""
 
-import json
 from unittest.mock import AsyncMock
 
 import pytest
@@ -25,12 +24,11 @@ class TestNewMonarchTools:
         server.mm_client = mock_client
 
         try:
-            result = await server.get_account_holdings()
+            result = await server.get_account_holdings(account_id="acc123")
 
-            assert isinstance(result, str)
-            parsed_result = json.loads(result)
-            assert parsed_result == mock_holdings
-            mock_client.get_account_holdings.assert_called_once()
+            assert isinstance(result, server.HoldingsResult)
+            assert result.holdings == mock_holdings
+            mock_client.get_account_holdings.assert_called_once_with(account_id="acc123")
 
         finally:
             server.mm_client = original_client
@@ -50,9 +48,9 @@ class TestNewMonarchTools:
                 account_id="acc123", start_date="2024-01-01", end_date="2024-01-31"
             )
 
-            assert isinstance(result, str)
-            parsed_result = json.loads(result)
-            assert parsed_result == mock_history
+            assert isinstance(result, server.AccountHistoryResult)
+            assert result.history == mock_history
+            assert result.account_id == "acc123"
 
             # Verify call parameters
             mock_client.get_account_history.assert_called_once()
@@ -77,9 +75,9 @@ class TestNewMonarchTools:
         try:
             result = await server.get_institutions()
 
-            assert isinstance(result, str)
-            parsed_result = json.loads(result)
-            assert parsed_result == mock_institutions
+            assert isinstance(result, server.InstitutionsResult)
+            assert result.institutions == mock_institutions
+            assert result.count == len(mock_institutions)
             mock_client.get_institutions.assert_called_once()
 
         finally:
@@ -101,9 +99,8 @@ class TestNewMonarchTools:
         try:
             result = await server.get_recurring_transactions()
 
-            assert isinstance(result, str)
-            parsed_result = json.loads(result)
-            assert parsed_result == mock_recurring
+            assert isinstance(result, server.RecurringResult)
+            assert result.recurring == mock_recurring
             mock_client.get_recurring_transactions.assert_called_once()
 
         finally:
@@ -122,9 +119,10 @@ class TestNewMonarchTools:
         try:
             result = await server.set_budget_amount(category_id="cat123", amount=500.0)
 
-            assert isinstance(result, str)
-            parsed_result = json.loads(result)
-            assert parsed_result == mock_result
+            assert isinstance(result, server.SetBudgetResult)
+            assert result.result == mock_result
+            assert result.category_id == "cat123"
+            assert result.amount == 500.0
 
             # Verify parameters
             mock_client.set_budget_amount.assert_called_once()
@@ -150,9 +148,8 @@ class TestNewMonarchTools:
                 account_name="My Savings", account_type="savings", balance=1000.0
             )
 
-            assert isinstance(result, str)
-            parsed_result = json.loads(result)
-            assert parsed_result == mock_result
+            assert isinstance(result, server.CreateAccountResult)
+            assert result.account == mock_result
 
             # Verify parameters
             mock_client.create_manual_account.assert_called_once()
@@ -175,7 +172,7 @@ class TestNewMonarchTools:
 
         try:
             with pytest.raises(Exception, match="API Error"):
-                await server.get_account_holdings()
+                await server.get_account_holdings(account_id="acc123")
 
             mock_client.get_account_holdings.assert_called_once()
 

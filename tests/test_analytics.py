@@ -66,8 +66,8 @@ class TestBatchTools:
             with patch.object(server, "ensure_authenticated", new_callable=AsyncMock):
                 result = await server.get_complete_financial_overview("this month")
 
-                assert isinstance(result, str)
-                overview = json.loads(result)
+                assert isinstance(result, server.FinancialOverview)
+                overview = json.loads(result.model_dump_json())
 
                 # Verify all data sources are included
                 assert "accounts" in overview
@@ -76,7 +76,7 @@ class TestBatchTools:
                 assert "transactions" in overview
                 assert "categories" in overview
                 assert "transaction_summary" in overview
-                assert "_batch_metadata" in overview
+                assert "batch_metadata" in overview
 
                 # Verify transaction summary
                 summary = overview["transaction_summary"]
@@ -85,7 +85,7 @@ class TestBatchTools:
                 assert summary["unique_categories"] == 1
 
                 # Verify metadata
-                metadata = overview["_batch_metadata"]
+                metadata = overview["batch_metadata"]
                 assert metadata["api_calls_made"] == 5
                 assert "timestamp" in metadata
 
@@ -114,8 +114,8 @@ class TestBatchTools:
             with patch.object(server, "ensure_authenticated", new_callable=AsyncMock):
                 result = await server.analyze_spending_patterns(lookback_months=3, include_forecasting=True)
 
-                assert isinstance(result, str)
-                analysis = json.loads(result)
+                assert isinstance(result, server.SpendingPatterns)
+                analysis = json.loads(result.model_dump_json())
 
                 # Verify analysis structure
                 assert "analysis_period" in analysis
@@ -123,7 +123,7 @@ class TestBatchTools:
                 assert "category_analysis" in analysis
                 assert "account_usage" in analysis
                 assert "forecast" in analysis
-                assert "_metadata" in analysis
+                assert "metadata" in analysis
 
                 # Verify monthly trends
                 monthly_trends = analysis["monthly_trends"]
@@ -165,8 +165,8 @@ class TestBatchTools:
             with patch.object(server, "ensure_authenticated", new_callable=AsyncMock):
                 result = await server.get_complete_financial_overview("this month")
 
-                assert isinstance(result, str)
-                overview = json.loads(result)
+                assert isinstance(result, server.FinancialOverview)
+                overview = json.loads(result.model_dump_json())
 
                 # Verify successful data is included
                 assert "accounts" in overview

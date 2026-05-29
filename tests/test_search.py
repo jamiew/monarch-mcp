@@ -46,7 +46,7 @@ class TestSearchTransactions:
 
             result = await server.search_transactions(query="Apple")
 
-            result_data = json.loads(result)
+            result_data = json.loads(result.model_dump_json())
 
             # Should receive 2 Apple transactions from the API
             assert result_data["search_metadata"]["result_count"] == 2
@@ -108,7 +108,7 @@ class TestSearchTransactions:
             mock_client.get_transactions = AsyncMock(return_value=mock_transactions)
 
             result = await server.search_transactions(query="laptop")
-            result_data = json.loads(result)
+            result_data = json.loads(result.model_dump_json())
             assert result_data["search_metadata"]["result_count"] == 1
             assert len(result_data["transactions"]) == 1
 
@@ -133,7 +133,7 @@ class TestSearchTransactions:
 
             result = await server.search_transactions(query="Apple", start_date="2024-01-01", end_date="2024-01-31")
 
-            result_data = json.loads(result)
+            result_data = json.loads(result.model_dump_json())
             assert result_data["search_metadata"]["result_count"] == 1
 
             # Verify filters were applied to API call
@@ -150,7 +150,7 @@ class TestSearchTransactions:
             mock_client.get_transactions = AsyncMock(return_value=mock_transactions)
 
             result = await server.search_transactions(query="Apple")
-            result_data = json.loads(result)
+            result_data = json.loads(result.model_dump_json())
 
             assert result_data["search_metadata"]["result_count"] == 0
             assert len(result_data["transactions"]) == 0
@@ -186,7 +186,7 @@ class TestSearchTransactions:
 
             # Test verbose=True (full details)
             result = await server.search_transactions(query="Apple", verbose=True)
-            result_data = json.loads(result)
+            result_data = json.loads(result.model_dump_json())
             txn = result_data["transactions"][0]
 
             # Should have all fields including nested objects
@@ -196,7 +196,7 @@ class TestSearchTransactions:
 
             # Test verbose=False (compact)
             result = await server.search_transactions(query="Apple", verbose=False)
-            result_data = json.loads(result)
+            result_data = json.loads(result.model_dump_json())
             txn = result_data["transactions"][0]
 
             # Should be compact format (merchant name as string)
@@ -224,7 +224,7 @@ class TestSearchTransactions:
 
             # API does the matching
             result = await server.search_transactions(query="Apple")
-            result_data = json.loads(result)
+            result_data = json.loads(result.model_dump_json())
             assert result_data["search_metadata"]["result_count"] == 1
 
             # Verify search parameter was passed
@@ -252,7 +252,7 @@ class TestSearchTransactions:
 
             result = await server.search_transactions(query="Apple", account_id="acc123")
 
-            result_data = json.loads(result)
+            result_data = json.loads(result.model_dump_json())
             assert result_data["search_metadata"]["result_count"] == 1
 
             # Verify the API was called with the account filter as a list
@@ -287,12 +287,11 @@ class TestSearchTransactionsIntegration:
 
             # Get search results
             search_result = await server.search_transactions(query="Apple", verbose=False)
-            search_data = json.loads(search_result)
-            search_txns = search_data["transactions"]
+            search_txns = json.loads(search_result.model_dump_json())["transactions"]
 
             # Get regular transactions with compact format
             get_result = await server.get_transactions(limit=100, verbose=False)
-            get_txns = json.loads(get_result)
+            get_txns = json.loads(get_result.model_dump_json())["transactions"]
 
             # Both should have same compact format
             assert search_txns and get_txns, "both queries should return the mocked transaction"

@@ -34,7 +34,7 @@ class TestBulkTransactionUpdates:
 
         with patch("server.mm_client", mock_client), patch("server.ensure_authenticated", new_callable=AsyncMock):
             result_str = await update_transactions_bulk(updates_json)
-            result = json.loads(result_str)
+            result = json.loads(result_str.model_dump_json())
 
             # Verify summary
             assert result["summary"]["total"] == 2
@@ -69,7 +69,7 @@ class TestBulkTransactionUpdates:
 
         with patch("server.mm_client", mock_client), patch("server.ensure_authenticated", new_callable=AsyncMock):
             result_str = await update_transactions_bulk(updates_json)
-            result = json.loads(result_str)
+            result = json.loads(result_str.model_dump_json())
 
             # Verify summary shows mixed results
             assert result["summary"]["total"] == 2
@@ -110,7 +110,7 @@ class TestBulkTransactionUpdates:
 
         with patch("server.mm_client", mock_client), patch("server.ensure_authenticated", new_callable=AsyncMock):
             result_str = await update_transactions_bulk(updates_json)
-            result = json.loads(result_str)
+            result = json.loads(result_str.model_dump_json())
 
             # Should have error result
             assert result["summary"]["failed"] == 1
@@ -124,7 +124,7 @@ class TestBulkTransactionUpdates:
 
         with patch("server.ensure_authenticated", new_callable=AsyncMock):
             result_str = await update_transactions_bulk("[]")
-            result = json.loads(result_str)
+            result = json.loads(result_str.model_dump_json())
 
             assert result["message"] == "No updates provided"
             assert result["results"] == []
@@ -141,7 +141,7 @@ class TestBulkTransactionUpdates:
 
         with patch("server.mm_client", mock_client), patch("server.ensure_authenticated", new_callable=AsyncMock):
             result_str = await update_transactions_bulk(updates_json)
-            result = json.loads(result_str)
+            result = json.loads(result_str.model_dump_json())
 
             # Verify date was passed correctly
             assert result["results"][0]["status"] == "success"
@@ -177,7 +177,7 @@ class TestBulkTransactionUpdates:
 
         with patch("server.mm_client", mock_client), patch("server.ensure_authenticated", new_callable=AsyncMock):
             result_str = await update_transactions_bulk(updates_json)
-            result = json.loads(result_str)
+            result = json.loads(result_str.model_dump_json())
 
             assert result["results"][0]["status"] == "success"
 

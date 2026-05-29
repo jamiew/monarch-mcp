@@ -23,9 +23,17 @@ from typing import Any, ParamSpec, TypeVar
 import structlog
 from dateutil import parser as date_parser
 from dateutil.relativedelta import relativedelta
-from mcp.server.fastmcp import FastMCP
-from mcp.types import ToolAnnotations
+from mcp.server.fastmcp import Context, FastMCP
+from mcp.types import (
+    Completion,
+    CompletionArgument,
+    CompletionContext,
+    PromptReference,
+    ResourceTemplateReference,
+    ToolAnnotations,
+)
 from monarchmoney import MonarchMoney, RequireMFAException
+from pydantic import BaseModel, ConfigDict, JsonValue
 
 # Type definitions for Monarch Money API responses
 JsonSerializable = str | int | float | bool | None | list["JsonSerializable"] | dict[str, "JsonSerializable"]
@@ -434,15 +442,22 @@ def track_usage(func: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
             result = await func(*args, **kwargs)
             execution_time = time.time() - start_time
 
-            # Calculate result size and stats
-            result_chars = len(str(result)) if result else 0
+            # Calculate result size and stats. Tools now return Pydantic models;
+            # serialize to JSON for an accurate wire-size measurement.
+            if isinstance(result, BaseModel):
+                payload = result.model_dump_json()
+            elif isinstance(result, str):
+                payload = result
+            else:
+                payload = str(result) if result else ""
+            result_chars = len(payload)
             result_kb = result_chars / 1024
 
             # Try to extract additional stats from JSON results
             extra_stats = ""
             try:
-                if isinstance(result, str) and result.strip().startswith("{"):
-                    parsed = json.loads(result)
+                if payload.strip().startswith("{"):
+                    parsed = json.loads(payload)
                     if isinstance(parsed, dict):
                         # Look for common list fields to count items
                         for key in ["transactions", "accounts", "budgets", "categories", "results"]:
@@ -488,11 +503,165 @@ mcp = FastMCP("monarch-money")
 
 
 # =============================================================================
+# Structured output models
+#
+# Each tool returns a typed model so FastMCP emits an ``outputSchema`` and
+# machine-readable structured content (plus a text fallback for older clients).
+# Monarch's GraphQL payloads are deep and evolve, so passthrough fields are typed
+# as ``JsonValue`` (recursive JSON, not ``Any``) and ``MMModel`` allows unknown
+# extra keys to flow through. Shapes we construct ourselves are modeled precisely.
+# =============================================================================
+
+
+class MMModel(BaseModel):
+    """Base for response models — tolerates extra upstream fields."""
+
+    model_config = ConfigDict(extra="allow")
+
+
+class AccountsResult(MMModel):
+    accounts: list[JsonValue]
+    count: int
+
+
+class TransactionsResult(MMModel):
+    transactions: list[JsonValue]
+    count: int
+    verbose: bool
+
+
+class SearchMetadata(BaseModel):
+    query: str
+    result_count: int
+    filters_applied: dict[str, JsonValue]
+
+
+class SearchResult(MMModel):
+    search_metadata: SearchMetadata
+    transactions: list[JsonValue]
+
+
+class BudgetsResult(MMModel):
+    budgets: JsonValue
+    message: str | None = None
+
+
+class CashflowResult(MMModel):
+    cashflow: JsonValue
+
+
+class CategoriesResult(MMModel):
+    categories: list[JsonValue]
+    count: int
+    verbose: bool
+
+
+class TransactionResult(MMModel):
+    transaction: JsonValue
+
+
+class BulkSummary(BaseModel):
+    total: int
+    succeeded: int
+    failed: int
+
+
+class BulkItemResult(BaseModel):
+    transaction_id: str | None = None
+    status: str
+    error: str | None = None
+
+
+class BulkUpdateResult(MMModel):
+    summary: BulkSummary
+    results: list[BulkItemResult]
+    message: str | None = None
+
+
+class HoldingsResult(MMModel):
+    holdings: JsonValue
+
+
+class AccountHistoryResult(MMModel):
+    account_id: str
+    history: JsonValue
+
+
+class InstitutionsResult(MMModel):
+    institutions: list[JsonValue]
+    count: int
+
+
+class RecurringResult(MMModel):
+    recurring: JsonValue
+
+
+class SetBudgetResult(MMModel):
+    category_id: str
+    amount: float
+    result: JsonValue
+
+
+class CreateAccountResult(MMModel):
+    account: JsonValue
+
+
+class RefreshResult(MMModel):
+    result: JsonValue
+
+
+class Totals(BaseModel):
+    income: float
+    expenses: float
+    net: float
+
+
+class GroupSummary(BaseModel):
+    income: float
+    expenses: float
+    net: float
+    count: int
+
+
+class Period(BaseModel):
+    start: str | None = None
+    end: str | None = None
+
+
+class SpendingSummaryResult(MMModel):
+    period: Period
+    group_by: str
+    groups: dict[str, GroupSummary]
+    totals: Totals
+
+
+class FinancialOverview(MMModel):
+    period: str
+    accounts: JsonValue = None
+    budgets: JsonValue = None
+    cashflow: JsonValue = None
+    transactions: JsonValue = None
+    categories: JsonValue = None
+    transaction_summary: JsonValue = None
+    batch_metadata: JsonValue = None
+
+
+class SpendingPatterns(MMModel):
+    analysis_period: JsonValue = None
+    monthly_trends: JsonValue = None
+    category_analysis: JsonValue = None
+    account_usage: JsonValue = None
+    budget_performance: JsonValue = None
+    forecast: JsonValue = None
+    metadata: JsonValue = None
+
+
+# =============================================================================
 # MCP Resources - Read-only data endpoints for reference data
 # =============================================================================
 
 
-@mcp.resource("categories://list")
+@mcp.resource("categories://list", title="Transaction Categories")
 async def list_categories_resource() -> str:
     """
     List all transaction categories available in Monarch Money.
@@ -506,7 +675,7 @@ async def list_categories_resource() -> str:
     return json.dumps(convert_dates_to_strings(categories), indent=2)
 
 
-@mcp.resource("accounts://list")
+@mcp.resource("accounts://list", title="Linked Accounts")
 async def list_accounts_resource() -> str:
     """
     List all linked financial accounts in Monarch Money.
@@ -520,7 +689,7 @@ async def list_accounts_resource() -> str:
     return json.dumps(convert_dates_to_strings(accounts), indent=2)
 
 
-@mcp.resource("institutions://list")
+@mcp.resource("institutions://list", title="Linked Institutions")
 async def list_institutions_resource() -> str:
     """
     List all connected financial institutions in Monarch Money.
@@ -533,12 +702,38 @@ async def list_institutions_resource() -> str:
     return json.dumps(convert_dates_to_strings(institutions), indent=2)
 
 
+@mcp.resource("accounts://{account_id}/holdings", title="Account Holdings")
+async def account_holdings_resource(account_id: str) -> str:
+    """
+    Investment holdings for a specific account (resource template).
+
+    The ``account_id`` path segment selects which account's portfolio to return.
+    Mirrors the ``get_account_holdings`` tool but as an addressable resource.
+    """
+    await ensure_authenticated()
+    holdings = await api_call_with_retry("get_account_holdings", account_id=account_id)
+    return json.dumps(convert_dates_to_strings(holdings), indent=2)
+
+
+@mcp.resource("accounts://{account_id}/history", title="Account Balance History")
+async def account_history_resource(account_id: str) -> str:
+    """
+    Historical balance data for a specific account (resource template).
+
+    The ``account_id`` path segment selects which account's balance history to
+    return. Mirrors the ``get_account_history`` tool but as an addressable resource.
+    """
+    await ensure_authenticated()
+    history = await api_call_with_retry("get_account_history", account_id=account_id)
+    return json.dumps(convert_dates_to_strings(history), indent=2)
+
+
 # =============================================================================
 # MCP Prompts - Reusable prompt templates for common financial analyses
 # =============================================================================
 
 
-@mcp.prompt()
+@mcp.prompt(title="Analyze Spending")
 def analyze_spending(period: str = "this month", category: str | None = None) -> str:
     """
     Generate a prompt template for analyzing spending patterns.
@@ -561,7 +756,7 @@ Use the get_transactions tool to fetch transaction data for the specified period
 Focus on practical insights rather than just listing numbers."""
 
 
-@mcp.prompt()
+@mcp.prompt(title="Budget Review")
 def budget_review(month: str = "current") -> str:
     """
     Generate a prompt template for reviewing budget performance.
@@ -582,7 +777,7 @@ Use get_budgets and get_transactions tools to compare budgeted amounts vs actual
 Present the data in a clear, easy-to-scan format."""
 
 
-@mcp.prompt()
+@mcp.prompt(title="Financial Health Check")
 def financial_health_check() -> str:
     """
     Generate a comprehensive financial health assessment prompt.
@@ -620,7 +815,7 @@ Use the available tools to gather data and provide:
 Be concise but thorough. Highlight the most important insights first."""
 
 
-@mcp.prompt()
+@mcp.prompt(title="Categorize a Transaction")
 def transaction_categorization_help(description: str) -> str:
     """
     Generate a prompt to help categorize a transaction.
@@ -639,6 +834,57 @@ Then suggest:
 
 If this is a merchant I transact with frequently, also note if the categorization
 should be applied to future transactions from the same merchant."""
+
+
+# =============================================================================
+# MCP Completions - Argument autocompletion for prompts and resource templates
+# =============================================================================
+
+
+async def _category_name_completions(partial: str) -> list[str]:
+    """Live category names for autocompletion. Best-effort: never raises."""
+    try:
+        await ensure_authenticated()
+        categories = await api_call_with_retry("get_transaction_categories")
+    except Exception as e:
+        log.warning("completion_categories_failed", error=str(e))
+        return []
+    names = [c.get("name", "") for c in categories if isinstance(c, dict) and c.get("name")]
+    needle = partial.lower()
+    return [n for n in names if needle in n.lower()][:100]
+
+
+async def _account_id_completions(partial: str) -> list[str]:
+    """Live account IDs for autocompletion. Best-effort: never raises."""
+    try:
+        await ensure_authenticated()
+        accounts = await api_call_with_retry("get_accounts")
+    except Exception as e:
+        log.warning("completion_accounts_failed", error=str(e))
+        return []
+    ids = [a.get("id", "") for a in accounts if isinstance(a, dict) and a.get("id")]
+    needle = partial.lower()
+    return [i for i in ids if needle in i.lower()][:100]
+
+
+@mcp.completion()
+async def handle_completion(
+    ref: PromptReference | ResourceTemplateReference,
+    argument: CompletionArgument,
+    context: CompletionContext | None,
+) -> Completion | None:
+    """Autocomplete prompt/resource-template arguments from live Monarch data.
+
+    - prompt ``category`` argument -> transaction category names
+    - resource-template ``account_id`` argument -> account IDs
+    """
+    if isinstance(ref, PromptReference) and argument.name == "category":
+        return Completion(values=await _category_name_completions(argument.value), hasMore=False)
+
+    if isinstance(ref, ResourceTemplateReference) and argument.name == "account_id":
+        return Completion(values=await _account_id_completions(argument.value), hasMore=False)
+
+    return None
 
 
 class AuthState(Enum):
@@ -980,22 +1226,23 @@ async def ensure_authenticated() -> None:
 # FastMCP Tool definitions using decorators
 
 
-@mcp.tool(annotations=READONLY)
+@mcp.tool(annotations=READONLY, title="Get Accounts")
 @track_usage
-async def get_accounts() -> str:
+async def get_accounts() -> AccountsResult:
     """Retrieve all linked financial accounts."""
     await ensure_authenticated()
 
     try:
         accounts = await api_call_with_retry("get_accounts")
         accounts = convert_dates_to_strings(accounts)
-        return json.dumps(accounts, indent=2)
+        account_list = accounts if isinstance(accounts, list) else []
+        return AccountsResult(accounts=account_list, count=len(account_list))
     except Exception as e:
         log.error("Failed to fetch accounts", error=str(e))
         raise
 
 
-@mcp.tool(annotations=READONLY)
+@mcp.tool(annotations=READONLY, title="Get Transactions")
 @track_usage
 async def get_transactions(
     limit: int = 100,
@@ -1011,7 +1258,7 @@ async def get_transactions(
     is_split: bool | None = None,
     is_recurring: bool | None = None,
     verbose: bool = False,
-) -> str:
+) -> TransactionsResult:
     """Fetch transactions with flexible date filtering and smart output formatting.
 
     Args:
@@ -1131,13 +1378,15 @@ async def get_transactions(
             transactions = format_transactions_compact(transactions)
 
         log.info("Transactions retrieved", count=len(transactions))
-        return json.dumps(transactions, indent=2)
+        return TransactionsResult.model_validate(
+            {"transactions": transactions, "count": len(transactions), "verbose": verbose}
+        )
     except Exception as e:
         log.error("Failed to fetch transactions", error=str(e), limit=limit, start_date=start_date)
         raise
 
 
-@mcp.tool(annotations=READONLY)
+@mcp.tool(annotations=READONLY, title="Search Transactions")
 @track_usage
 async def search_transactions(
     query: str,
@@ -1154,7 +1403,7 @@ async def search_transactions(
     is_split: bool | None = None,
     is_recurring: bool | None = None,
     verbose: bool = False,
-) -> str:
+) -> SearchResult:
     """Search transactions by text using Monarch Money's built-in search.
 
     Searches merchant names, descriptions, notes, and other fields.
@@ -1208,26 +1457,23 @@ async def search_transactions(
         if not verbose:
             transactions = format_transactions_compact(transactions)
 
-        result = {
-            "search_metadata": {
-                "query": query_str,
-                "result_count": len(transactions),
-                "filters_applied": {k: v for k, v in filters.items() if k != "search"},
-            },
-            "transactions": transactions,
-        }
+        metadata = SearchMetadata(
+            query=query_str,
+            result_count=len(transactions),
+            filters_applied={k: v for k, v in filters.items() if k != "search"},
+        )
 
         log.info("Search complete", query=query_str, result_count=len(transactions))
-        return json.dumps(result, indent=2)
+        return SearchResult.model_validate({"search_metadata": metadata, "transactions": transactions})
 
     except Exception as e:
         log.error("Failed to search transactions", error=str(e), query=query)
         raise
 
 
-@mcp.tool(annotations=READONLY)
+@mcp.tool(annotations=READONLY, title="Get Budgets")
 @track_usage
-async def get_budgets(start_date: str | None = None, end_date: str | None = None) -> str:
+async def get_budgets(start_date: str | None = None, end_date: str | None = None) -> BudgetsResult:
     """Retrieve budget information with flexible date filtering.
 
     Args:
@@ -1245,21 +1491,19 @@ async def get_budgets(start_date: str | None = None, end_date: str | None = None
     try:
         budgets = await api_call_with_retry("get_budgets", **kwargs)  # type: ignore[arg-type]
         budgets = convert_dates_to_strings(budgets)
-        return json.dumps(budgets, indent=2)
+        return BudgetsResult(budgets=budgets)
     except Exception as e:
         # Handle the case where no budgets exist
         if "Something went wrong while processing: None" in str(e):
-            return json.dumps(
-                {"budgets": [], "message": "No budgets configured in your Monarch Money account"}, indent=2
-            )
+            return BudgetsResult(budgets=[], message="No budgets configured in your Monarch Money account")
         else:
             # Re-raise other errors
             raise
 
 
-@mcp.tool(annotations=READONLY)
+@mcp.tool(annotations=READONLY, title="Get Cashflow")
 @track_usage
-async def get_cashflow(start_date: str | None = None, end_date: str | None = None) -> str:
+async def get_cashflow(start_date: str | None = None, end_date: str | None = None) -> CashflowResult:
     """Analyze cashflow data with flexible date filtering.
 
     Args:
@@ -1276,12 +1520,12 @@ async def get_cashflow(start_date: str | None = None, end_date: str | None = Non
 
     cashflow = await api_call_with_retry("get_cashflow", **kwargs)  # type: ignore[arg-type]
     cashflow = convert_dates_to_strings(cashflow)
-    return json.dumps(cashflow, indent=2)
+    return CashflowResult(cashflow=cashflow)
 
 
-@mcp.tool(annotations=READONLY)
+@mcp.tool(annotations=READONLY, title="Get Transaction Categories")
 @track_usage
-async def get_transaction_categories(verbose: bool = False) -> str:
+async def get_transaction_categories(verbose: bool = False) -> CategoriesResult:
     """List all transaction categories.
 
     Args:
@@ -1297,14 +1541,17 @@ async def get_transaction_categories(verbose: bool = False) -> str:
 
     categories = await api_call_with_retry("get_transaction_categories")
     categories = convert_dates_to_strings(categories)
+    category_list = categories if isinstance(categories, list) else []
 
-    if not verbose and isinstance(categories, list):
-        categories = [{"id": cat.get("id"), "name": cat.get("name")} for cat in categories if isinstance(cat, dict)]
+    if not verbose:
+        category_list = [
+            {"id": cat.get("id"), "name": cat.get("name")} for cat in category_list if isinstance(cat, dict)
+        ]
 
-    return json.dumps(categories, indent=2)
+    return CategoriesResult(categories=category_list, count=len(category_list), verbose=verbose)
 
 
-@mcp.tool(annotations=WRITE_CREATE)
+@mcp.tool(annotations=WRITE_CREATE, title="Create Transaction")
 @track_usage
 async def create_transaction(
     amount: float,
@@ -1314,7 +1561,7 @@ async def create_transaction(
     category_id: str,
     notes: str | None = None,
     update_balance: bool = False,
-) -> str:
+) -> TransactionResult:
     """Create a new manual transaction.
 
     Args:
@@ -1364,7 +1611,7 @@ async def create_transaction(
             timeout=30.0,  # 30 second timeout
         )
         result = convert_dates_to_strings(result)
-        return json.dumps(result, indent=2)
+        return TransactionResult(transaction=result)
     except asyncio.TimeoutError as e:
         log.error("create_transaction_timeout")
         raise ValueError("Transaction creation timed out after 30 seconds. Please try again.") from e
@@ -1375,7 +1622,7 @@ async def create_transaction(
         raise
 
 
-@mcp.tool(annotations=WRITE_IDEMPOTENT)
+@mcp.tool(annotations=WRITE_IDEMPOTENT, title="Update Transaction")
 @track_usage
 async def update_transaction(
     transaction_id: str,
@@ -1387,7 +1634,7 @@ async def update_transaction(
     goal_id: str | None = None,
     hide_from_reports: bool | None = None,
     needs_review: bool | None = None,
-) -> str:
+) -> TransactionResult:
     """Update an existing transaction.
 
     Args:
@@ -1477,7 +1724,7 @@ async def update_transaction(
             timeout=30.0,  # 30 second timeout
         )
         result = convert_dates_to_strings(result)
-        return json.dumps(result, indent=2)
+        return TransactionResult(transaction=result)
     except asyncio.TimeoutError as e:
         log.error("update_transaction_timeout", transaction_id=transaction_id)
         raise ValueError("Transaction update timed out after 30 seconds. Please try again.") from e
@@ -1492,9 +1739,9 @@ async def update_transaction(
         raise
 
 
-@mcp.tool(annotations=WRITE_IDEMPOTENT)
+@mcp.tool(annotations=WRITE_IDEMPOTENT, title="Bulk Update Transactions")
 @track_usage
-async def update_transactions_bulk(updates: str) -> str:
+async def update_transactions_bulk(updates: str) -> BulkUpdateResult:
     """Update multiple transactions in a single call to save round-trips.
 
     This is much more efficient than calling update_transaction multiple times.
@@ -1534,19 +1781,21 @@ async def update_transactions_bulk(updates: str) -> str:
             raise ValueError("updates parameter must be a JSON array of transaction updates")
 
         if len(updates_list) == 0:
-            return json.dumps({"message": "No updates provided", "results": []}, indent=2)
+            return BulkUpdateResult(
+                summary=BulkSummary(total=0, succeeded=0, failed=0), results=[], message="No updates provided"
+            )
 
         log.info("bulk_update_start", count=len(updates_list))
 
         # Build list of update tasks
-        async def update_single(update_data: dict[str, Any]) -> dict[str, Any]:
+        async def update_single(update_data: dict[str, Any]) -> BulkItemResult:
             """Update a single transaction and return result with transaction_id."""
             try:
                 if not isinstance(update_data, dict):
-                    return {"transaction_id": None, "status": "error", "error": "Update must be a dictionary"}
+                    return BulkItemResult(transaction_id=None, status="error", error="Update must be a dictionary")
 
                 if "transaction_id" not in update_data:
-                    return {"transaction_id": None, "status": "error", "error": "transaction_id is required"}
+                    return BulkItemResult(transaction_id=None, status="error", error="transaction_id is required")
 
                 txn_id = update_data["transaction_id"]
 
@@ -1575,16 +1824,16 @@ async def update_transactions_bulk(updates: str) -> str:
                 await asyncio.wait_for(api_call_with_retry("update_transaction", **update_params), timeout=30.0)
 
                 # Compact success response: just confirm the update succeeded
-                return {"transaction_id": txn_id, "status": "success"}
+                return BulkItemResult(transaction_id=txn_id, status="success")
 
             except asyncio.TimeoutError:
-                return {
-                    "transaction_id": update_data.get("transaction_id"),
-                    "status": "error",
-                    "error": "Update timed out after 30 seconds",
-                }
+                return BulkItemResult(
+                    transaction_id=update_data.get("transaction_id"),
+                    status="error",
+                    error="Update timed out after 30 seconds",
+                )
             except Exception as e:
-                return {"transaction_id": update_data.get("transaction_id"), "status": "error", "error": str(e)}
+                return BulkItemResult(transaction_id=update_data.get("transaction_id"), status="error", error=str(e))
 
         # Execute all updates in parallel
         results = await asyncio.gather(
@@ -1593,41 +1842,45 @@ async def update_transactions_bulk(updates: str) -> str:
         )
 
         # Count successes and failures
-        success_count = sum(1 for r in results if r["status"] == "success")
+        success_count = sum(1 for r in results if r.status == "success")
         failure_count = len(results) - success_count
 
         log.info("bulk_update_complete", succeeded=success_count, failed=failure_count)
 
-        response = {
-            "summary": {"total": len(results), "succeeded": success_count, "failed": failure_count},
-            "results": results,
-        }
-
-        return json.dumps(response, indent=2)
+        return BulkUpdateResult(
+            summary=BulkSummary(total=len(results), succeeded=success_count, failed=failure_count),
+            results=list(results),
+        )
 
     except Exception as e:
         log.error("bulk_update_failed", error=str(e))
         raise
 
 
-@mcp.tool(annotations=READONLY)
+@mcp.tool(annotations=READONLY, title="Get Account Holdings")
 @track_usage
-async def get_account_holdings() -> str:
-    """Get investment portfolio data from brokerage accounts."""
+async def get_account_holdings(account_id: str) -> HoldingsResult:
+    """Get investment portfolio data (holdings) for a brokerage account.
+
+    Args:
+        account_id: ID of the investment/brokerage account to fetch holdings for.
+    """
     await ensure_authenticated()
 
     try:
-        holdings = await api_call_with_retry("get_account_holdings")
+        holdings = await api_call_with_retry("get_account_holdings", account_id=account_id)
         holdings = convert_dates_to_strings(holdings)
-        return json.dumps(holdings, indent=2)
+        return HoldingsResult(holdings=holdings)
     except Exception as e:
-        log.error("Failed to fetch account holdings", error=str(e))
+        log.error("Failed to fetch account holdings", error=str(e), account_id=account_id)
         raise
 
 
-@mcp.tool(annotations=READONLY)
+@mcp.tool(annotations=READONLY, title="Get Account History")
 @track_usage
-async def get_account_history(account_id: str, start_date: str | None = None, end_date: str | None = None) -> str:
+async def get_account_history(
+    account_id: str, start_date: str | None = None, end_date: str | None = None
+) -> AccountHistoryResult:
     """Get historical account balance data."""
     await ensure_authenticated()
 
@@ -1640,45 +1893,46 @@ async def get_account_history(account_id: str, start_date: str | None = None, en
     try:
         history = await api_call_with_retry("get_account_history", **kwargs)
         history = convert_dates_to_strings(history)
-        return json.dumps(history, indent=2)
+        return AccountHistoryResult(account_id=account_id, history=history)
     except Exception as e:
         log.error("Failed to fetch account history", error=str(e), account_id=account_id)
         raise
 
 
-@mcp.tool(annotations=READONLY)
+@mcp.tool(annotations=READONLY, title="Get Institutions")
 @track_usage
-async def get_institutions() -> str:
+async def get_institutions() -> InstitutionsResult:
     """Get linked financial institutions."""
     await ensure_authenticated()
 
     try:
         institutions = await api_call_with_retry("get_institutions")
         institutions = convert_dates_to_strings(institutions)
-        return json.dumps(institutions, indent=2)
+        institution_list = institutions if isinstance(institutions, list) else []
+        return InstitutionsResult(institutions=institution_list, count=len(institution_list))
     except Exception as e:
         log.error("Failed to fetch institutions", error=str(e))
         raise
 
 
-@mcp.tool(annotations=READONLY)
+@mcp.tool(annotations=READONLY, title="Get Recurring Transactions")
 @track_usage
-async def get_recurring_transactions() -> str:
+async def get_recurring_transactions() -> RecurringResult:
     """Get scheduled recurring transactions."""
     await ensure_authenticated()
 
     try:
         recurring = await api_call_with_retry("get_recurring_transactions")
         recurring = convert_dates_to_strings(recurring)
-        return json.dumps(recurring, indent=2)
+        return RecurringResult(recurring=recurring)
     except Exception as e:
         log.error("Failed to fetch recurring transactions", error=str(e))
         raise
 
 
-@mcp.tool(annotations=WRITE_IDEMPOTENT)
+@mcp.tool(annotations=WRITE_IDEMPOTENT, title="Set Budget Amount")
 @track_usage
-async def set_budget_amount(category_id: str, amount: float) -> str:
+async def set_budget_amount(category_id: str, amount: float) -> SetBudgetResult:
     """Set budget amount for a category."""
     await ensure_authenticated()
 
@@ -1686,15 +1940,15 @@ async def set_budget_amount(category_id: str, amount: float) -> str:
         result = await api_call_with_retry("set_budget_amount", category_id=category_id, amount=amount)
         result = convert_dates_to_strings(result)
         log.info("Budget amount updated", category_id=category_id, amount=amount)
-        return json.dumps(result, indent=2)
+        return SetBudgetResult(category_id=category_id, amount=amount, result=result)
     except Exception as e:
         log.error("Failed to set budget amount", error=str(e), category_id=category_id)
         raise
 
 
-@mcp.tool(annotations=WRITE_CREATE)
+@mcp.tool(annotations=WRITE_CREATE, title="Create Manual Account")
 @track_usage
-async def create_manual_account(account_name: str, account_type: str, balance: float) -> str:
+async def create_manual_account(account_name: str, account_type: str, balance: float) -> CreateAccountResult:
     """Create a manually tracked account."""
     await ensure_authenticated()
 
@@ -1704,17 +1958,17 @@ async def create_manual_account(account_name: str, account_type: str, balance: f
         )
         result = convert_dates_to_strings(result)
         log.info("Manual account created", name=account_name, type=account_type)
-        return json.dumps(result, indent=2)
+        return CreateAccountResult(account=result)
     except Exception as e:
         log.error("Failed to create manual account", error=str(e), name=account_name)
         raise
 
 
-@mcp.tool(annotations=READONLY)
+@mcp.tool(annotations=READONLY, title="Get Spending Summary")
 @track_usage
 async def get_spending_summary(
     start_date: str | None = None, end_date: str | None = None, group_by: str = "category"
-) -> str:
+) -> SpendingSummaryResult:
     """Get intelligent spending summary with aggregations.
 
     Args:
@@ -1784,25 +2038,35 @@ async def get_spending_summary(
 
         # Sort groups by total spending (expenses)
         sorted_groups = dict(sorted(summary["groups"].items(), key=lambda x: x[1]["expenses"], reverse=True))
-        summary["groups"] = sorted_groups
+
+        totals_data: dict[str, float] = summary["totals"]
+        result = SpendingSummaryResult(
+            period=Period(start=start_date, end=end_date),
+            group_by=group_by,
+            groups={
+                key: GroupSummary(income=g["income"], expenses=g["expenses"], net=g["net"], count=int(g["count"]))
+                for key, g in sorted_groups.items()
+            },
+            totals=Totals(income=totals_data["income"], expenses=totals_data["expenses"], net=totals_data["net"]),
+        )
 
         log.info(
             "Spending summary generated",
             total_transactions=len(transactions),
-            groups_count=len(summary["groups"]),
-            net_amount=summary["totals"]["net"],
+            groups_count=len(result.groups),
+            net_amount=result.totals.net,
         )
 
-        return json.dumps(summary, indent=2)
+        return result
 
     except Exception as e:
         log.error("Failed to generate spending summary", error=str(e))
         raise
 
 
-@mcp.tool(annotations=WRITE_SIDE_EFFECT)
+@mcp.tool(annotations=WRITE_SIDE_EFFECT, title="Refresh Accounts")
 @track_usage
-async def refresh_accounts() -> str:
+async def refresh_accounts() -> RefreshResult:
     """Request a refresh of all account data from financial institutions."""
     await ensure_authenticated()
 
@@ -1810,15 +2074,15 @@ async def refresh_accounts() -> str:
         result = await api_call_with_retry("request_accounts_refresh")
         result = convert_dates_to_strings(result)
         log.info("Account refresh requested")
-        return json.dumps(result, indent=2)
+        return RefreshResult(result=result)
     except Exception as e:
         log.error("Failed to refresh accounts", error=str(e))
         raise
 
 
-@mcp.tool(annotations=READONLY)
+@mcp.tool(annotations=READONLY, title="Complete Financial Overview")
 @track_usage
-async def get_complete_financial_overview(period: str = "this month") -> str:
+async def get_complete_financial_overview(period: str = "this month", ctx: Context | None = None) -> FinancialOverview:
     """Get complete financial overview in a single call - accounts, transactions, budgets, cashflow.
 
     This intelligent batch tool combines multiple API calls to provide comprehensive financial analysis,
@@ -1830,6 +2094,9 @@ async def get_complete_financial_overview(period: str = "this month") -> str:
     await ensure_authenticated()
 
     try:
+        if ctx is not None:
+            await ctx.report_progress(0, 5, "Fetching accounts, budgets, cashflow, transactions, categories…")
+
         # Parse the period into date filters
         filters = build_date_filter(period, None)
 
@@ -1901,32 +2168,40 @@ async def get_complete_financial_overview(period: str = "this month") -> str:
         else:
             results["categories"] = {"error": str(categories)}
 
-        # Add metadata about the batch operation
-        results["_batch_metadata"] = {
+        if ctx is not None:
+            await ctx.report_progress(5, 5, "Assembled financial overview")
+
+        # Metadata about the batch operation (leading underscore avoided so it
+        # round-trips through the Pydantic model rather than being treated as private).
+        results["batch_metadata"] = {
             "period": period,
             "filters_applied": convert_dates_to_strings(filters),
             "api_calls_made": 5,
             "timestamp": datetime.now().isoformat(),
         }
+        results["period"] = period
 
         accounts_val = results.get("accounts", [])
+        summary_val = results.get("transaction_summary")
         log.info(
             "Complete financial overview generated",
             period=period,
             accounts_count=len(accounts_val) if isinstance(accounts_val, list) else 0,
-            transactions_count=results.get("transaction_summary", {}).get("total_count", 0),
+            transactions_count=summary_val.get("total_count", 0) if isinstance(summary_val, dict) else 0,
         )
 
-        return json.dumps(results, indent=2)
+        return FinancialOverview.model_validate(results)
 
     except Exception as e:
         log.error("Failed to generate financial overview", error=str(e), period=period)
         raise
 
 
-@mcp.tool(annotations=READONLY)
+@mcp.tool(annotations=READONLY, title="Analyze Spending Patterns")
 @track_usage
-async def analyze_spending_patterns(lookback_months: int = 6, include_forecasting: bool = True) -> str:
+async def analyze_spending_patterns(
+    lookback_months: int = 6, include_forecasting: bool = True, ctx: Context | None = None
+) -> SpendingPatterns:
     """Intelligent spending pattern analysis with trend forecasting.
 
     Combines multiple data sources to provide deep spending insights including:
@@ -1942,6 +2217,9 @@ async def analyze_spending_patterns(lookback_months: int = 6, include_forecastin
     await ensure_authenticated()
 
     try:
+        if ctx is not None:
+            await ctx.report_progress(0, 2, "Fetching transactions, budgets, accounts, categories…")
+
         # Calculate date ranges for analysis
         end_date = datetime.now().date()
         start_date = end_date - relativedelta(months=lookback_months)
@@ -1958,6 +2236,9 @@ async def analyze_spending_patterns(lookback_months: int = 6, include_forecastin
             transactions_task, budgets_task, accounts_task, categories_task, return_exceptions=True
         )
         transactions, budgets, accounts, categories = api_results
+
+        if ctx is not None:
+            await ctx.report_progress(1, 2, "Computing trends, category and account analysis…")
 
         analysis = {
             "analysis_period": {
@@ -2051,13 +2332,16 @@ async def analyze_spending_patterns(lookback_months: int = 6, include_forecastin
         if not isinstance(budgets, Exception):
             analysis["budget_performance"] = convert_dates_to_strings(budgets)
 
-        # Add metadata
+        # Metadata (leading underscore avoided so it round-trips through the model).
         txn_count = len(transactions_list) if not isinstance(transactions, Exception) else 0
-        analysis["_metadata"] = {
+        analysis["metadata"] = {
             "api_calls_made": 4,
             "total_transactions_analyzed": txn_count,
             "analysis_timestamp": datetime.now().isoformat(),
         }
+
+        if ctx is not None:
+            await ctx.report_progress(2, 2, "Spending pattern analysis complete")
 
         log.info(
             "Spending pattern analysis completed",
@@ -2066,7 +2350,7 @@ async def analyze_spending_patterns(lookback_months: int = 6, include_forecastin
             include_forecasting=include_forecasting,
         )
 
-        return json.dumps(analysis, indent=2)
+        return SpendingPatterns.model_validate(analysis)
 
     except Exception as e:
         log.error("Failed to analyze spending patterns", error=str(e), lookback_months=lookback_months)
