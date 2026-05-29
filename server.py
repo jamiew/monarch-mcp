@@ -2394,7 +2394,11 @@ async def main() -> None:
         raise
 
 
-if __name__ == "__main__":
+def run() -> None:
+    """Synchronous console-script entry point (`monarch-mcp-jamiew`).
+
+    Wraps the async `main()` so the published entry point actually awaits it.
+    """
 
     def signal_handler(signum: int, frame: Any) -> None:
         log.info("signal_received", signum=signum)
@@ -2424,3 +2428,7 @@ if __name__ == "__main__":
         else:
             log.error("fatal_error", error=str(eg))
             raise
+
+
+if __name__ == "__main__":
+    run()
