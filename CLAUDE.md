@@ -171,22 +171,23 @@ refactor: split server.py into modular components (auth, tools, models)
 - Structured logging with `structlog` for debugging
 - Environment variables: `MONARCH_EMAIL`, `MONARCH_PASSWORD`, `MONARCH_MFA_SECRET`
 
-**Complete Monarch Money API Coverage (22 Tools)**
+**Complete Monarch Money API Coverage (19 Tools)**
 - **Core**: `get_accounts`, `get_transactions`, `get_budgets`, `get_cashflow`
 - **Categories**: `get_transaction_categories`
 - **Transactions**: `create_transaction`, `update_transaction`, `update_transactions_bulk`, `search_transactions`
-- **Investments**: `get_account_holdings`, `get_account_history`
+- **Investments**: `get_account_holdings` (requires `account_id`), `get_account_history`
 - **Banking**: `get_institutions`, `refresh_accounts`
 - **Planning**: `get_recurring_transactions`, `set_budget_amount`
 - **Manual**: `create_manual_account`
-- **Batch Operations**: `get_transactions_batch`, `get_spending_summary`, `update_transactions_bulk`
+- **Batch Operations**: `get_spending_summary`, `update_transactions_bulk`
 - **Intelligent Analysis**: `get_complete_financial_overview`, `analyze_spending_patterns`
-- **Analytics**: `get_usage_analytics`
 
-**Type-Safe Data Processing**
-- Pydantic models for validation (still available for reference)
-- `convert_dates_to_strings()` ensures JSON compatibility
-- Strict typing throughout (only 8 mypy warnings remain - untyped decorators)
+Also exposes 5 MCP resources (3 static lists + 2 parameterized templates: `accounts://{account_id}/holdings|history`) and 4 prompt templates.
+
+**Type-Safe Structured Output**
+- Every tool returns a typed Pydantic model, so FastMCP advertises an `outputSchema` and emits structured content (plus a text fallback for older clients). See the "Structured output models" block in `server.py`.
+- Monarch's GraphQL responses are dicts (e.g. `{"accounts": [...]}`), not bare lists. Use `extract_list(response, key)` (next to `extract_transactions_list`) to unwrap the inner list before counting it — passing the dict straight into a `list[...]` model field silently yields an empty list.
+- `convert_dates_to_strings()` ensures JSON compatibility.
 
 ### Monarch Money API Integration
 
@@ -260,8 +261,7 @@ Server runs as MCP server configured in `.mcp.json` with:
 ### ✅ ADVANCED FEATURES (Recently Completed)
 
 #### Smart Tool Design & UX
-- **✅ Batch operations**: `get_transactions_batch()` for efficient multi-queries with parallel execution
-- **✅ Bulk updates** (NEW October 2025): `update_transactions_bulk()` for updating multiple transactions in one call
+- **✅ Bulk updates**: `update_transactions_bulk()` for updating multiple transactions in one call
   - Parallel execution for maximum performance
   - Individual error handling per transaction
   - Summary statistics (succeeded/failed counts)
@@ -274,10 +274,9 @@ Server runs as MCP server configured in `.mcp.json` with:
 - **✅ Smart aggregations**: `get_spending_summary()` with category/account/month grouping
 - **✅ AsyncIO Runtime Fix**: Server now uses `mcp.run_stdio()` for proper MCP protocol compliance
 
-#### Usage Analytics & Optimization (NEW)
-- **✅ Usage tracking**: `@track_usage` decorator on all 20 tools for comprehensive analytics
+#### Usage Analytics & Optimization
+- **✅ Usage tracking**: `@track_usage` decorator on every tool for comprehensive analytics (logs tool calls, timing, and result sizes to stderr — there is no `get_usage_analytics` tool; analytics are observed via Claude's MCP log)
 - **✅ Performance monitoring**: Execution time, error rates, and pattern detection
-- **✅ Intelligent batching**: Real-time analysis of usage patterns to suggest optimizations
 - **✅ Analytics logging**: Special markers in Claude's MCP log for easy filtering and optimization insights
 - **✅ Session-based tracking**: UUID-based session tracking with in-memory pattern analysis
 
@@ -293,12 +292,7 @@ Server runs as MCP server configured in `.mcp.json` with:
   - Predictive forecasting based on 3-month rolling averages
   - Smart aggregations with confidence indicators
   - Account usage patterns and category performance metrics
-  
-- **✅ Optimization Insights**: `get_usage_analytics()` - Real-time optimization:
-  - Tool usage frequency analysis and performance metrics
-  - Automatic detection of common usage sequences (30-second windows)
-  - Intelligent suggestions for batch operations
-  - Performance bottleneck identification
+  - Reports progress through an injected `Context` (`ctx.report_progress`)
 
 #### Production Stability & Reliability Fixes (NEW)
 - **✅ JSON-RPC Protocol Compliance**: All logging redirected to stderr to prevent stdout contamination
@@ -355,7 +349,7 @@ Server runs as MCP server configured in `.mcp.json` with:
 - Add investment performance tracking and portfolio analysis
 
 #### 6. Advanced Tool Features
-**Current State**: All 20 core tools implemented
+**Current State**: 19 core tools implemented
 **Remaining Work:**
 - Add bulk transaction operations (import/export)
 - Implement transaction search with fuzzy matching
@@ -365,7 +359,7 @@ Server runs as MCP server configured in `.mcp.json` with:
 ### 🔄 REMAINING LOW PRIORITY TASKS
 
 #### 7. Code Architecture & Organization
-**Current State**: Single file with 20 tools, comprehensive tests
+**Current State**: Single file with 19 tools, comprehensive tests
 **Remaining Work:**
 - Split into modules: `auth.py`, `tools.py`, `models.py`, `config.py` (optional - current structure works well)
 - Implement Pydantic Settings for configuration management
