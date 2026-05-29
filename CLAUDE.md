@@ -248,9 +248,10 @@ Server runs as MCP server configured in `.mcp.json` with:
 - **✅ Structured Logging**: Context-rich logs with `structlog`
 - **✅ Complete API Coverage**: All 14 Monarch Money API methods as tools
 
-#### Quality Metrics (Updated October 2025)
-- **70 passing tests** with comprehensive coverage including analytics, search, and bulk operations
-- **MyPy errors reduced**: 111 → 84 (mainly untyped external decorators, ongoing improvement)
+#### Quality Metrics (Updated May 2026)
+- **202 passing tests** with comprehensive coverage including analytics, search, bulk operations, structured output, completions, resource templates, and progress
+- **19 tools** (all returning typed Pydantic models / structured output), 3 static resources + 2 resource templates, 4 prompts
+- **MyPy clean** under the repo's strict config (no `Any` at non-boundaries, no `as`)
 - **Security**: Proper session handling and MFA support
 - **Modern stack**: FastMCP 1.12.2, Pydantic, structlog, pytest
 - **Usage analytics**: Real-time performance tracking and optimization suggestions
@@ -400,7 +401,7 @@ Server runs as MCP server configured in `.mcp.json` with:
 5. **Phase 5 (Intelligence)**: ML features, advanced analytics, financial insights
 6. **Phase 6 (Ecosystem)**: MCP extensions, developer tools, architectural improvements
 
-**Current Status** (Updated October 2025): Production-ready with 70 passing tests, 22 intelligent tools, comprehensive analytics, robust error handling, and enhanced reliability. Recent features: `update_transactions_bulk()` for parallel batch updates, `search_transactions` tool for efficient context-aware search, detailed tool call debugging with result size tracking. Recent critical fixes completed: authentication retry bug (stale client after re-auth), date serialization, broken pipe handling, dependency updates, and enhanced date parsing. Server is stable and ready for real-world usage with excellent user experience for date filtering, bulk operations, and error recovery.
+**Current Status** (Updated May 2026): Production-ready with 202 passing tests, 19 intelligent tools, comprehensive analytics, robust error handling, and enhanced reliability. Recent MCP modernization: every tool returns structured output (outputSchema + structured content with a text fallback), tools/resources/prompts carry human-friendly `title`s, parameterized resource templates (`accounts://{account_id}/holdings|history`), argument completions for prompts/templates, and Context-based progress reporting on the batch tools. Earlier features: `update_transactions_bulk()` for parallel batch updates, `search_transactions`, result-size tracking; fixes for the auth retry bug, date serialization, broken pipes, and date parsing. Note: `get_account_holdings` now requires an `account_id` (the underlying library always did).
 
 ## Upstream Library & Fork Landscape
 
@@ -436,5 +437,6 @@ Re-run this analysis periodically (e.g. quarterly, or when something breaks):
 - **MCP Python SDK**: https://github.com/modelcontextprotocol/python-sdk
 - **Monarch Money API**: https://github.com/hammem/monarchmoney
 - **MCP Server Examples**: https://github.com/modelcontextprotocol/servers
-- Current MCP Protocol Version: "2025-06-18"
+- Current stable MCP Protocol Version: "2025-11-25" (a newer draft exists that goes stateless and deprecates Sampling/Roots/MCP-logging — this server already logs to stderr, so it's well-positioned)
+- This server uses structured tool output (outputSchema), tool/resource/prompt titles, resource templates, completions, and Context progress reporting (all 2025-06-18 features)
 - Re-read all resources regularly to ensure compliance with any API or protocol changes
