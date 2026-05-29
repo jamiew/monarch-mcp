@@ -295,7 +295,5 @@ class TestSearchTransactionsIntegration:
             get_txns = json.loads(get_result)
 
             # Both should have same compact format
-            if search_txns and get_txns:
-                search_keys = set(search_txns[0].keys())
-                get_keys = set(get_txns[0].keys())
-                assert search_keys == get_keys
+            assert search_txns and get_txns, "both queries should return the mocked transaction"
+            assert set(search_txns[0].keys()) == set(get_txns[0].keys())
