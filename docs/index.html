@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Monarch Money MCP Server</title>
-    <meta name="description" content="An MCP server that provides AI assistants access to Monarch Money financial data through 20+ tools.">
+    <meta name="description" content="An MCP server that provides AI assistants access to Monarch Money financial data through 19 tools.">
     <style>
         * {
             margin: 0;
@@ -375,7 +375,7 @@
                     <a href="#tools">Tools</a>
                     <a href="#installation">Installation</a>
                     <a href="#credits">Credits</a>
-                    <a href="https://github.com/jamiew/monarch-money-mcp" class="btn-primary">
+                    <a href="https://github.com/jamiew/monarch-mcp" class="btn-primary">
                         <span>GitHub</span>
                         <span>→</span>
                     </a>
@@ -393,11 +393,11 @@
                 </p>
                 <div class="hero-stats">
                     <div class="stat">
-                        <div class="stat-number">20+</div>
+                        <div class="stat-number">19</div>
                         <div class="stat-label">Tools</div>
                     </div>
                     <div class="stat">
-                        <div class="stat-number">42</div>
+                        <div class="stat-number">202</div>
                         <div class="stat-label">Tests</div>
                     </div>
                     <div class="stat">
@@ -461,6 +461,11 @@
                         <h3>Transaction Management</h3>
 
                         <div class="tool-item">
+                            <div class="tool-name">search_transactions</div>
+                            <div class="tool-desc">Search transactions by merchant name or keyword.</div>
+                        </div>
+
+                        <div class="tool-item">
                             <div class="tool-name">create_transaction</div>
                             <div class="tool-desc">Create a new transaction with amount, description, category, and date.</div>
                         </div>
@@ -468,6 +473,11 @@
                         <div class="tool-item">
                             <div class="tool-name">update_transaction</div>
                             <div class="tool-desc">Update an existing transaction's details.</div>
+                        </div>
+
+                        <div class="tool-item">
+                            <div class="tool-name">update_transactions_bulk</div>
+                            <div class="tool-desc">Update multiple transactions in parallel in a single call.</div>
                         </div>
                     </div>
 
@@ -518,11 +528,6 @@
                         <h3>Intelligent Analysis</h3>
 
                         <div class="tool-item">
-                            <div class="tool-name">get_transactions_batch</div>
-                            <div class="tool-desc">Execute multiple transaction queries in parallel for efficient batch processing.</div>
-                        </div>
-
-                        <div class="tool-item">
                             <div class="tool-name">get_spending_summary</div>
                             <div class="tool-desc">Get spending summaries grouped by category, account, or month.</div>
                         </div>
@@ -555,11 +560,6 @@
                                 </ul>
                             </div>
                         </div>
-
-                        <div class="tool-item">
-                            <div class="tool-name">get_usage_analytics</div>
-                            <div class="tool-desc">View analytics on tool usage patterns to identify optimization opportunities.</div>
-                        </div>
                     </div>
                 </div>
             </div>
@@ -572,28 +572,24 @@
                     Setup takes just a few minutes
                 </p>
 
-                <h3 style="margin-top: 2rem; margin-bottom: 1rem;">1. Install Dependencies</h3>
-                <div class="code-block">
-                    <pre>cd /path/to/monarch-money-mcp
-uv sync</pre>
-                </div>
-
-                <h3 style="margin-top: 2rem; margin-bottom: 1rem;">2. Configure MCP Client</h3>
                 <p style="color: var(--text-secondary); margin-bottom: 1rem;">
-                    Add to your <code>.mcp.json</code> configuration:
+                    Published to PyPI &mdash; no clone needed. With <a href="https://docs.astral.sh/uv/" target="_blank">uv</a> installed,
+                    every MCP client runs it on demand with <code>uvx</code>. The config is the same shape everywhere:
+                    command <code>uvx</code>, package <code>monarch-mcp-jamiew</code>, and your three credentials as env vars.
+                </p>
+
+                <h3 style="margin-top: 2rem; margin-bottom: 1rem;">Claude Desktop</h3>
+                <p style="color: var(--text-secondary); margin-bottom: 1rem;">
+                    Add this to <code>claude_desktop_config.json</code>
+                    (<code>~/Library/Application Support/Claude/</code> on macOS,
+                    <code>%APPDATA%\Claude\</code> on Windows), then restart Claude:
                 </p>
                 <div class="code-block">
                     <pre>{
   "mcpServers": {
     "monarch-money": {
-      "command": "/path/to/uv",
-      "args": [
-        "--directory",
-        "/path/to/monarch-money-mcp",
-        "run",
-        "python",
-        "server.py"
-      ],
+      "command": "uvx",
+      "args": ["monarch-mcp-jamiew"],
       "env": {
         "MONARCH_EMAIL": "your-email@example.com",
         "MONARCH_PASSWORD": "your-password",
@@ -603,6 +599,28 @@ uv sync</pre>
   }
 }</pre>
                 </div>
+
+                <h3 style="margin-top: 2rem; margin-bottom: 1rem;">Claude Code</h3>
+                <div class="code-block">
+                    <pre>claude mcp add monarch-money \
+  -e MONARCH_EMAIL=your-email@example.com \
+  -e MONARCH_PASSWORD=your-password \
+  -e MONARCH_MFA_SECRET=your-mfa-secret-key \
+  -- uvx monarch-mcp-jamiew</pre>
+                </div>
+
+                <h3 style="margin-top: 2rem; margin-bottom: 1rem;">Codex CLI</h3>
+                <div class="code-block">
+                    <pre>codex mcp add monarch-money \
+  --env MONARCH_EMAIL=your-email@example.com \
+  --env MONARCH_PASSWORD=your-password \
+  --env MONARCH_MFA_SECRET=your-mfa-secret-key \
+  -- uvx monarch-mcp-jamiew</pre>
+                </div>
+
+                <p style="color: var(--text-secondary); margin-top: 1rem;">
+                    Cursor, VS Code, Windsurf, Cline, Zed and other MCP clients accept the same standard config shown above.
+                </p>
 
                 <div class="info-box">
                     <h3>Getting Your MFA Secret</h3>
@@ -614,7 +632,7 @@ uv sync</pre>
                     </p>
                 </div>
 
-                <h3 style="margin-top: 2rem; margin-bottom: 1rem;">3. Use with AI Assistant</h3>
+                <h3 style="margin-top: 2rem; margin-bottom: 1rem;">Use with Your AI Assistant</h3>
                 <p style="color: var(--text-secondary); margin-bottom: 1rem;">
                     Example queries:
                 </p>
@@ -700,8 +718,8 @@ uv sync</pre>
         <div class="container">
             <p>
                 MIT License •
-                <a href="https://github.com/jamiew/monarch-money-mcp" target="_blank">GitHub</a> •
-                <a href="https://github.com/jamiew/monarch-money-mcp/issues" target="_blank">Issues</a>
+                <a href="https://github.com/jamiew/monarch-mcp" target="_blank">GitHub</a> •
+                <a href="https://github.com/jamiew/monarch-mcp/issues" target="_blank">Issues</a>
             </p>
         </div>
     </footer>
