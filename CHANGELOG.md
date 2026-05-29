@@ -2,6 +2,15 @@
 
 ## 2026-05-28
 
+### MCP 2025 protocol features: structured output, titles, resource templates, completions, progress
+
+- every tool now returns a typed Pydantic model, so FastMCP advertises an `outputSchema` and emits machine-readable structured content alongside a text fallback for older clients.
+- added human-friendly `title`s to all tools, resources, and prompts.
+- added parameterized resource templates: `accounts://{account_id}/holdings` and `accounts://{account_id}/history`.
+- added argument completions for the prompt `category` and resource-template `account_id`, backed by live Monarch data.
+- the batch tools (complete overview, spending patterns) now report progress via an injected Context.
+- fixed `get_account_holdings` to pass the required `account_id` — the no-arg version was a latent bug.
+
 ### Dependencies refreshed and mypy 2.x adopted
 
 - bumped the lockfile to latest compatible across the board (pydantic 2.13, cryptography 48, starlette 1.2, rich 15, mcp 1.27, monarchmoneycommunity 1.3.2).
