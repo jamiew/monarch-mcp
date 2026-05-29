@@ -2,6 +2,12 @@
 
 ## 2026-05-28
 
+### Fix broken `uvx` install (0.3.2)
+
+- fixed the published console-script entry point: it pointed at the async `main()`, so `uvx monarch-mcp-jamiew` launched a coroutine that was never awaited and the server never started. Added a synchronous `run()` wrapper. (0.3.0/0.3.1 on PyPI were unusable via `uvx`.)
+- floored `monarchmoneycommunity>=1.3.2` since the dev-only git pin isn't carried in the published wheel.
+- rewrote the README install section to be `uvx`-first with per-client steps (Claude Desktop, Claude Code, Codex, others, from-source).
+
 ### MCP 2025 protocol features: structured output, titles, resource templates, completions, progress
 
 - every tool now returns a typed Pydantic model, so FastMCP advertises an `outputSchema` and emits machine-readable structured content alongside a text fallback for older clients.
