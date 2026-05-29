@@ -119,10 +119,13 @@ class TestReadToolSuccess:
 
     @pytest.mark.asyncio
     async def test_get_transaction_categories_compact_strips_to_id_and_name(self, mock_api: AsyncMock) -> None:
-        mock_api.return_value = [
-            {"id": "cat_1", "name": "Groceries", "group": {"name": "Food"}, "order": 3},
-            {"id": "cat_2", "name": "Transit", "group": {"name": "Auto"}, "order": 4},
-        ]
+        # The real client wraps the list under a "categories" key.
+        mock_api.return_value = {
+            "categories": [
+                {"id": "cat_1", "name": "Groceries", "group": {"name": "Food"}, "order": 3},
+                {"id": "cat_2", "name": "Transit", "group": {"name": "Auto"}, "order": 4},
+            ]
+        }
         result = await server.get_transaction_categories(verbose=False)
         assert result.categories == [{"id": "cat_1", "name": "Groceries"}, {"id": "cat_2", "name": "Transit"}]
         assert result.count == 2
@@ -130,7 +133,9 @@ class TestReadToolSuccess:
 
     @pytest.mark.asyncio
     async def test_get_transaction_categories_verbose_keeps_all_fields(self, mock_api: AsyncMock) -> None:
-        mock_api.return_value = [{"id": "cat_1", "name": "Groceries", "group": {"name": "Food"}, "order": 3}]
+        mock_api.return_value = {
+            "categories": [{"id": "cat_1", "name": "Groceries", "group": {"name": "Food"}, "order": 3}]
+        }
         result = await server.get_transaction_categories(verbose=True)
         assert result.categories[0]["group"] == {"name": "Food"}
         assert result.categories[0]["order"] == 3

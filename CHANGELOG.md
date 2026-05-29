@@ -10,6 +10,7 @@
 - added argument completions for the prompt `category` and resource-template `account_id`, backed by live Monarch data.
 - the batch tools (complete overview, spending patterns) now report progress via an injected Context.
 - fixed `get_account_holdings` to pass the required `account_id` — the no-arg version was a latent bug.
+- unwrap dict-shaped API responses for `get_accounts`, `get_transaction_categories`, and the autocompletion helpers: the real client returns `{"accounts": [...]}` / `{"categories": [...]}`, so the new structured tools were reporting empty lists on otherwise-successful calls. `get_institutions` now passes its full `{credentials, accounts, subscription}` payload through.
 
 ### Dependencies refreshed and mypy 2.x adopted
 

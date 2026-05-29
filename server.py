@@ -270,6 +270,22 @@ def extract_transactions_list(response: Any) -> list[dict[str, Any]]:
         return []
 
 
+def extract_list(response: Any, key: str) -> list[Any]:
+    """Pull a named list out of a Monarch API response.
+
+    Most Monarch GraphQL queries return a dict like ``{"accounts": [...]}`` rather
+    than a bare list, so the inner list has to be unwrapped before counting it.
+    Tolerates an already-flat list and unexpected shapes (returns []).
+    """
+    if isinstance(response, list):
+        return response
+    if isinstance(response, dict):
+        value = response.get(key)
+        if isinstance(value, list):
+            return value
+    return []
+
+
 def format_transactions_compact(transactions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
     Format transactions in a compact format with only essential fields.
@@ -588,8 +604,9 @@ class AccountHistoryResult(MMModel):
 
 
 class InstitutionsResult(MMModel):
-    institutions: list[JsonValue]
-    count: int
+    # Monarch's institution-settings query returns a dict (credentials, accounts,
+    # subscription), not a flat list, so the full payload is passed through.
+    institutions: JsonValue
 
 
 class RecurringResult(MMModel):
@@ -845,7 +862,7 @@ async def _category_name_completions(partial: str) -> list[str]:
     """Live category names for autocompletion. Best-effort: never raises."""
     try:
         await ensure_authenticated()
-        categories = await api_call_with_retry("get_transaction_categories")
+        categories = extract_list(await api_call_with_retry("get_transaction_categories"), "categories")
     except Exception as e:
         log.warning("completion_categories_failed", error=str(e))
         return []
@@ -858,7 +875,7 @@ async def _account_id_completions(partial: str) -> list[str]:
     """Live account IDs for autocompletion. Best-effort: never raises."""
     try:
         await ensure_authenticated()
-        accounts = await api_call_with_retry("get_accounts")
+        accounts = extract_list(await api_call_with_retry("get_accounts"), "accounts")
     except Exception as e:
         log.warning("completion_accounts_failed", error=str(e))
         return []
@@ -1235,7 +1252,7 @@ async def get_accounts() -> AccountsResult:
     try:
         accounts = await api_call_with_retry("get_accounts")
         accounts = convert_dates_to_strings(accounts)
-        account_list = accounts if isinstance(accounts, list) else []
+        account_list = extract_list(accounts, "accounts")
         return AccountsResult(accounts=account_list, count=len(account_list))
     except Exception as e:
         log.error("Failed to fetch accounts", error=str(e))
@@ -1378,6 +1395,8 @@ async def get_transactions(
             transactions = format_transactions_compact(transactions)
 
         log.info("Transactions retrieved", count=len(transactions))
+        # model_validate (not the constructor) sidesteps mypy's list invariance:
+        # list[dict[str, Any]] is not assignable to the model's list[JsonValue].
         return TransactionsResult.model_validate(
             {"transactions": transactions, "count": len(transactions), "verbose": verbose}
         )
@@ -1464,6 +1483,7 @@ async def search_transactions(
         )
 
         log.info("Search complete", query=query_str, result_count=len(transactions))
+        # model_validate (not the constructor) sidesteps mypy's list invariance.
         return SearchResult.model_validate({"search_metadata": metadata, "transactions": transactions})
 
     except Exception as e:
@@ -1541,7 +1561,7 @@ async def get_transaction_categories(verbose: bool = False) -> CategoriesResult:
 
     categories = await api_call_with_retry("get_transaction_categories")
     categories = convert_dates_to_strings(categories)
-    category_list = categories if isinstance(categories, list) else []
+    category_list = extract_list(categories, "categories")
 
     if not verbose:
         category_list = [
@@ -1908,8 +1928,7 @@ async def get_institutions() -> InstitutionsResult:
     try:
         institutions = await api_call_with_retry("get_institutions")
         institutions = convert_dates_to_strings(institutions)
-        institution_list = institutions if isinstance(institutions, list) else []
-        return InstitutionsResult(institutions=institution_list, count=len(institution_list))
+        return InstitutionsResult(institutions=institutions)
     except Exception as e:
         log.error("Failed to fetch institutions", error=str(e))
         raise
@@ -1989,7 +2008,6 @@ async def get_spending_summary(
 
         # Aggregate spending data
         summary: dict[str, Any] = {
-            "period": {"start": start_date, "end": end_date},
             "groups": {},
             "totals": {"income": 0, "expenses": 0, "net": 0},
         }

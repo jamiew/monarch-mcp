@@ -66,7 +66,12 @@ class TestNewMonarchTools:
     async def test_get_institutions(self) -> None:
         """Test get_institutions functionality."""
         mock_client = AsyncMock()
-        mock_institutions = [{"id": "inst1", "name": "Chase Bank"}, {"id": "inst2", "name": "Wells Fargo"}]
+        # The real client returns a dict (credentials/accounts/subscription), not a list.
+        mock_institutions = {
+            "credentials": [{"id": "cred1", "institution": {"name": "Chase Bank"}}],
+            "accounts": [{"id": "acc1", "displayName": "Checking"}],
+            "subscription": {"hasPremiumEntitlement": True},
+        }
         mock_client.get_institutions.return_value = mock_institutions
 
         original_client = server.mm_client
@@ -77,7 +82,6 @@ class TestNewMonarchTools:
 
             assert isinstance(result, server.InstitutionsResult)
             assert result.institutions == mock_institutions
-            assert result.count == len(mock_institutions)
             mock_client.get_institutions.assert_called_once()
 
         finally:

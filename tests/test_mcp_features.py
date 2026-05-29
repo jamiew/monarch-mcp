@@ -177,7 +177,7 @@ class TestCompletions:
 
     @pytest.mark.asyncio
     async def test_category_completion_filters_live_names(self, mock_api: AsyncMock) -> None:
-        mock_api.return_value = [{"id": "c1", "name": "Groceries"}, {"id": "c2", "name": "Gas"}]
+        mock_api.return_value = {"categories": [{"id": "c1", "name": "Groceries"}, {"id": "c2", "name": "Gas"}]}
         ref = PromptReference(type="ref/prompt", name="analyze_spending")
         completion = await server.handle_completion(ref, CompletionArgument(name="category", value="gro"), None)
         assert completion is not None
@@ -185,7 +185,7 @@ class TestCompletions:
 
     @pytest.mark.asyncio
     async def test_account_id_completion_filters_live_ids(self, mock_api: AsyncMock) -> None:
-        mock_api.return_value = [{"id": "acc_123"}, {"id": "acc_999"}]
+        mock_api.return_value = {"accounts": [{"id": "acc_123"}, {"id": "acc_999"}]}
         ref = ResourceTemplateReference(type="ref/resource", uri="accounts://{account_id}/holdings")
         completion = await server.handle_completion(ref, CompletionArgument(name="account_id", value="123"), None)
         assert completion is not None

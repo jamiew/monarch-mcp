@@ -83,13 +83,17 @@ class TestFastMCPServer:
     @pytest.mark.asyncio
     async def test_get_accounts_with_mock_client(self) -> None:
         """Test get_accounts with mocked client."""
-        # Setup mock client
+        # Setup mock client. The real client wraps accounts in a dict alongside
+        # householdPreferences, so the tool must unwrap the nested list.
         mock_client = AsyncMock()
-        mock_accounts_data = [
+        mock_accounts_list = [
             {"id": "1", "name": "Checking", "balance": 1000.0},
             {"id": "2", "name": "Savings", "balance": 5000.0},
         ]
-        mock_client.get_accounts.return_value = mock_accounts_data
+        mock_client.get_accounts.return_value = {
+            "accounts": mock_accounts_list,
+            "householdPreferences": {"id": "hp1"},
+        }
 
         # Set global client
         original_client = server.mm_client
@@ -100,8 +104,8 @@ class TestFastMCPServer:
 
             # Verify structured result wraps the account list with a count
             assert isinstance(result, server.AccountsResult)
-            assert result.accounts == mock_accounts_data
-            assert result.count == len(mock_accounts_data)
+            assert result.accounts == mock_accounts_list
+            assert result.count == len(mock_accounts_list)
 
             # Verify mock was called
             mock_client.get_accounts.assert_called_once()
