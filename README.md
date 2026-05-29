@@ -10,13 +10,14 @@ Built on the [`monarchmoneycommunity`](https://github.com/bradleyseanf/monarchmo
 ## Features
 
 - **19 tools** covering accounts, transactions, budgets, cashflow, investments, categories, goals, net worth, recurring transactions, and more
-- **MCP resources** for quick access to categories, accounts, and institutions
-- **MCP prompts** for guided financial analysis workflows
+- **Structured output** — every tool returns a typed schema (`outputSchema` + machine-readable structured content) with a text fallback for older clients
+- **MCP resources** for quick access to categories, accounts, and institutions, plus parameterized templates for per-account holdings and history (`accounts://{account_id}/holdings|history`)
+- **MCP prompts** for guided financial analysis workflows, with live argument autocompletion
 - **Smart output formatting** — compact transaction format reduces token usage by ~80%
 - **Natural language dates** — "last month", "30 days ago", "this year" all work
-- **Batch operations** — parallel multi-account queries, bulk transaction updates
+- **Batch operations** — parallel multi-account queries, bulk transaction updates, with progress reporting
 - **Spending analysis** — multi-month trend analysis with category/account breakdowns
-- **Tool annotations** — proper read/write metadata for MCP clients
+- **Tool annotations & titles** — read/write metadata and human-friendly titles for MCP clients
 
 ## Setup
 
@@ -75,16 +76,16 @@ Use absolute paths — find yours with `which uv` and `pwd`.
 | `update_transactions_bulk` | Update multiple transactions in parallel |
 | `get_budgets` | Budget data and spending analysis |
 | `get_cashflow` | Income and expense analysis |
-| `get_account_holdings` | Investment holdings |
+| `get_account_holdings` | Investment holdings for an account (requires `account_id`) |
 | `get_account_history` | Account balance history |
 | `get_institutions` | Linked financial institutions |
 | `get_recurring_transactions` | Recurring transaction detection |
 | `set_budget_amount` | Set a budget category amount |
 | `create_manual_account` | Create a manually-tracked account |
 | `refresh_accounts` | Trigger account data refresh |
+| `get_spending_summary` | Spending aggregated by category, account, or month |
 | `get_complete_financial_overview` | Combined 5-API call in parallel |
 | `analyze_spending_patterns` | Multi-month trend analysis |
-| `get_usage_analytics` | Tool usage stats and optimization tips |
 
 ### Transaction format
 
