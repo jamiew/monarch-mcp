@@ -231,6 +231,10 @@ Server runs as MCP server configured in `.mcp.json` with:
 - Absolute paths required for proper MCP integration
 - Implements MCP capability negotiation for feature discovery
 
+### Releasing & Publishing
+
+Published to PyPI as `monarch-mcp-jamiew` and to the MCP Registry as `io.github.jamiew/monarch-mcp`. Users install via `uvx monarch-mcp-jamiew` (no clone) — so the `[project.scripts]` `monarch-mcp-jamiew = "server:run"` entry point must stay a *synchronous* wrapper (`run()`), never the async `main()` directly, or `uvx` launches a coroutine that's never awaited. Release flow: `/release` bumps `pyproject.toml`, tags `vX.Y.Z`, and `gh release create`s; the `release: published` event triggers `.github/workflows/publish.yml`, which publishes to both PyPI and the registry via **OIDC trusted publishing — no tokens stored**. The workflow sets `server.json`'s version from the tag, so `pyproject.toml` is the only manual version bump. Note: `[tool.uv.sources]`'s git pin of `monarchmoneycommunity` is dev-only and is *not* in the published wheel — PyPI installs resolve the `>=1.3.2` floor from `pyproject.toml` dependencies.
+
 ### Session Management
 
 - Session files stored in `.mm/` directory (created automatically)

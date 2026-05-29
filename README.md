@@ -21,29 +21,18 @@ Built on the [`monarchmoneycommunity`](https://github.com/bradleyseanf/monarchmo
 
 ## Setup
 
-### 1. Install dependencies
+The server is published to [PyPI](https://pypi.org/project/monarch-mcp-jamiew/), so there's nothing to clone — [`uv`](https://docs.astral.sh/uv/) runs it on demand with `uvx`. You'll need `uv` installed and your Monarch credentials (see [Getting your MFA secret](#getting-your-mfa-secret) below).
 
-```bash
-cd /path/to/monarch-mcp
-uv sync
-```
+### Standard config
 
-### 2. Configure your MCP client
-
-Add to your `.mcp.json` (Claude Desktop, Claude Code, etc.):
+Every MCP client uses the same shape — command `uvx`, package `monarch-mcp-jamiew`, and your three credentials as env vars:
 
 ```json
 {
   "mcpServers": {
     "monarch-money": {
-      "command": "/path/to/uv",
-      "args": [
-        "--directory",
-        "/path/to/monarch-mcp",
-        "run",
-        "python",
-        "server.py"
-      ],
+      "command": "uvx",
+      "args": ["monarch-mcp-jamiew"],
       "env": {
         "MONARCH_EMAIL": "your-email@example.com",
         "MONARCH_PASSWORD": "your-password",
@@ -54,9 +43,99 @@ Add to your `.mcp.json` (Claude Desktop, Claude Code, etc.):
 }
 ```
 
-Use absolute paths — find yours with `which uv` and `pwd`.
+Pick your client below for the exact steps.
 
-### 3. Get your MFA secret
+<details>
+<summary><b>Claude Desktop</b></summary>
+
+Edit your config file (create it if it doesn't exist) and add the [standard config](#standard-config) above under `mcpServers`:
+
+- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+
+Then fully quit and reopen Claude Desktop.
+
+</details>
+
+<details>
+<summary><b>Claude Code</b></summary>
+
+```bash
+claude mcp add monarch-money \
+  -e MONARCH_EMAIL=your-email@example.com \
+  -e MONARCH_PASSWORD=your-password \
+  -e MONARCH_MFA_SECRET=your-mfa-secret-key \
+  -- uvx monarch-mcp-jamiew
+```
+
+Add `-s user` to make it available across all your projects. Verify with `claude mcp list`.
+
+</details>
+
+<details>
+<summary><b>Codex CLI</b></summary>
+
+```bash
+codex mcp add monarch-money \
+  --env MONARCH_EMAIL=your-email@example.com \
+  --env MONARCH_PASSWORD=your-password \
+  --env MONARCH_MFA_SECRET=your-mfa-secret-key \
+  -- uvx monarch-mcp-jamiew
+```
+
+Or add the equivalent block to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.monarch-money]
+command = "uvx"
+args = ["monarch-mcp-jamiew"]
+env = { MONARCH_EMAIL = "your-email@example.com", MONARCH_PASSWORD = "your-password", MONARCH_MFA_SECRET = "your-mfa-secret-key" }
+```
+
+</details>
+
+<details>
+<summary><b>Other clients (Cursor, VS Code, Windsurf, Cline, Zed, …)</b></summary>
+
+These all accept the same [standard config](#standard-config) — drop it into the client's MCP config (e.g. Cursor's `~/.cursor/mcp.json`, or VS Code via `code --add-mcp`). Anything that speaks MCP over stdio works.
+
+</details>
+
+<details>
+<summary><b>From source (development)</b></summary>
+
+To run against a local checkout (and the git-pinned `monarchmoneycommunity` lib):
+
+```bash
+git clone https://github.com/jamiew/monarch-mcp
+cd monarch-mcp
+uv sync
+```
+
+Then point your client at the local copy with absolute paths (find them with `which uv` and `pwd`):
+
+```json
+{
+  "mcpServers": {
+    "monarch-money": {
+      "command": "/abs/path/to/uv",
+      "args": ["--directory", "/abs/path/to/monarch-mcp", "run", "python", "server.py"],
+      "env": {
+        "MONARCH_EMAIL": "your-email@example.com",
+        "MONARCH_PASSWORD": "your-password",
+        "MONARCH_MFA_SECRET": "your-mfa-secret-key"
+      }
+    }
+  }
+}
+```
+
+</details>
+
+> [!NOTE]
+> The `claude mcp add` / `codex mcp add` one-liners put your credentials in shell history. If that bothers you, edit the client's config file directly (as shown for Claude Desktop / Codex above) instead.
+
+### Getting your MFA secret
 
 1. Go to Monarch Money settings and enable 2FA
 2. When shown the QR code, look for "Can't scan?" or "Enter manually"
@@ -142,6 +221,10 @@ Run all checks locally (same as GitHub Actions CI):
 ```bash
 uv run python scripts/ci.py
 ```
+
+### Releasing
+
+Cut a release with the `/release` flow (bump version in `pyproject.toml` → commit → tag `vX.Y.Z` → push → `gh release create`). Publishing the GitHub release triggers [`.github/workflows/publish.yml`](.github/workflows/publish.yml), which builds and pushes to **PyPI** and the **MCP Registry** via OIDC trusted publishing — no API tokens are stored anywhere. The workflow injects the tag version into `server.json` automatically, so `pyproject.toml` is the only version field you bump by hand.
 
 ### Log analysis
 
