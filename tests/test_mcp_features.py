@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from mcp.types import CompletionArgument, PromptReference, ResourceTemplateReference
 
 import server
 
@@ -123,3 +124,113 @@ class TestMCPPrompts:
         assert "Amazon Purchase" in result
         assert "categories://list" in result
         assert "Best Category Match" in result
+
+
+class TestDisplayTitles:
+    """Every tool and prompt advertises a human-friendly title (2025-06-18)."""
+
+    def test_all_tools_have_titles(self) -> None:
+        untitled = [t.name for t in server.mcp._tool_manager.list_tools() if not t.title]
+        assert untitled == []
+
+    def test_all_prompts_have_titles(self) -> None:
+        untitled = [p.name for p in server.mcp._prompt_manager.list_prompts() if not p.title]
+        assert untitled == []
+
+    def test_specific_tool_title(self) -> None:
+        assert server.mcp._tool_manager.get_tool("get_accounts").title == "Get Accounts"
+
+
+class TestResourceTemplates:
+    """Parameterized resource templates for per-account holdings and history."""
+
+    @pytest.mark.asyncio
+    async def test_templates_are_registered(self) -> None:
+        templates = await server.mcp.list_resource_templates()
+        uris = {t.uriTemplate for t in templates}
+        assert "accounts://{account_id}/holdings" in uris
+        assert "accounts://{account_id}/history" in uris
+
+    @pytest.mark.asyncio
+    async def test_holdings_template_calls_api_with_account_id(self) -> None:
+        with patch.object(server, "ensure_authenticated", new_callable=AsyncMock):
+            with patch.object(
+                server, "api_call_with_retry", new_callable=AsyncMock, return_value=[{"symbol": "AAPL"}]
+            ) as mock_api:
+                result = await server.account_holdings_resource(account_id="acc_1")
+                mock_api.assert_awaited_once_with("get_account_holdings", account_id="acc_1")
+                assert "AAPL" in result
+
+    @pytest.mark.asyncio
+    async def test_history_template_calls_api_with_account_id(self) -> None:
+        with patch.object(server, "ensure_authenticated", new_callable=AsyncMock):
+            with patch.object(
+                server, "api_call_with_retry", new_callable=AsyncMock, return_value=[{"balance": 100}]
+            ) as mock_api:
+                result = await server.account_history_resource(account_id="acc_9")
+                mock_api.assert_awaited_once_with("get_account_history", account_id="acc_9")
+                assert "100" in result
+
+
+class TestCompletions:
+    """Argument autocompletion for prompts and resource templates."""
+
+    @pytest.mark.asyncio
+    async def test_category_completion_filters_live_names(self, mock_api: AsyncMock) -> None:
+        mock_api.return_value = [{"id": "c1", "name": "Groceries"}, {"id": "c2", "name": "Gas"}]
+        ref = PromptReference(type="ref/prompt", name="analyze_spending")
+        completion = await server.handle_completion(ref, CompletionArgument(name="category", value="gro"), None)
+        assert completion is not None
+        assert completion.values == ["Groceries"]
+
+    @pytest.mark.asyncio
+    async def test_account_id_completion_filters_live_ids(self, mock_api: AsyncMock) -> None:
+        mock_api.return_value = [{"id": "acc_123"}, {"id": "acc_999"}]
+        ref = ResourceTemplateReference(type="ref/resource", uri="accounts://{account_id}/holdings")
+        completion = await server.handle_completion(ref, CompletionArgument(name="account_id", value="123"), None)
+        assert completion is not None
+        assert completion.values == ["acc_123"]
+
+    @pytest.mark.asyncio
+    async def test_completion_returns_none_for_unknown_argument(self, mock_api: AsyncMock) -> None:
+        ref = PromptReference(type="ref/prompt", name="budget_review")
+        completion = await server.handle_completion(ref, CompletionArgument(name="month", value="Jan"), None)
+        assert completion is None
+
+    @pytest.mark.asyncio
+    async def test_completion_is_best_effort_on_api_failure(self, mock_api: AsyncMock) -> None:
+        # A failing upstream call must not raise out of a completion request.
+        mock_api.side_effect = RuntimeError("API down")
+        ref = PromptReference(type="ref/prompt", name="analyze_spending")
+        completion = await server.handle_completion(ref, CompletionArgument(name="category", value="x"), None)
+        assert completion is not None
+        assert completion.values == []
+
+
+class TestProgressReporting:
+    """Batch tools report progress through an injected Context."""
+
+    @pytest.mark.asyncio
+    async def test_overview_reports_progress(self, mock_api: AsyncMock) -> None:
+        mock_api.return_value = []
+        ctx = AsyncMock()
+        await server.get_complete_financial_overview(period="this month", ctx=ctx)
+        assert ctx.report_progress.await_count >= 2
+        first_progress = ctx.report_progress.await_args_list[0].args[0]
+        last_progress = ctx.report_progress.await_args_list[-1].args[0]
+        assert first_progress == 0
+        assert last_progress == 5
+
+    @pytest.mark.asyncio
+    async def test_analyze_patterns_reports_progress(self, mock_api: AsyncMock) -> None:
+        mock_api.return_value = []
+        ctx = AsyncMock()
+        await server.analyze_spending_patterns(lookback_months=2, include_forecasting=False, ctx=ctx)
+        assert ctx.report_progress.await_count >= 2
+
+    @pytest.mark.asyncio
+    async def test_overview_works_without_context(self, mock_api: AsyncMock) -> None:
+        # ctx is optional; omitting it must not raise.
+        mock_api.return_value = []
+        result = await server.get_complete_financial_overview(period="this month")
+        assert isinstance(result, server.FinancialOverview)

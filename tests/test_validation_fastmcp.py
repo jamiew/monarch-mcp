@@ -1,6 +1,5 @@
 """Tests for FastMCP validation and parameter handling."""
 
-import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -34,9 +33,8 @@ class TestFastMCPParameterValidation:
                 verbose=True,  # Get full transaction details for testing
             )
 
-            assert isinstance(result, str)
-            parsed_result = json.loads(result)
-            assert parsed_result == mock_transactions
+            assert isinstance(result, server.TransactionsResult)
+            assert result.transactions == mock_transactions
 
             # Verify mock was called with correct parameters
             mock_client.get_transactions.assert_called_once()
@@ -62,9 +60,8 @@ class TestFastMCPParameterValidation:
             # Test with no parameters (should use defaults)
             result = await server.get_transactions(verbose=True)  # Get full transaction details for testing
 
-            assert isinstance(result, str)
-            parsed_result = json.loads(result)
-            assert parsed_result == mock_transactions
+            assert isinstance(result, server.TransactionsResult)
+            assert result.transactions == mock_transactions
 
             # Verify defaults were used
             mock_client.get_transactions.assert_called_once()
@@ -95,9 +92,8 @@ class TestFastMCPParameterValidation:
                 category_id="cat123",
             )
 
-            assert isinstance(result, str)
-            parsed_result = json.loads(result)
-            assert parsed_result == mock_result
+            assert isinstance(result, server.TransactionResult)
+            assert result.transaction == mock_result
 
             # Verify parameters were passed correctly
             mock_client.create_transaction.assert_called_once()
@@ -131,9 +127,8 @@ class TestFastMCPParameterValidation:
                 notes="Test notes",
             )
 
-            assert isinstance(result, str)
-            parsed_result = json.loads(result)
-            assert parsed_result == mock_result
+            assert isinstance(result, server.TransactionResult)
+            assert result.transaction == mock_result
 
             # Verify optional parameters were passed
             mock_client.create_transaction.assert_called_once()
@@ -163,9 +158,8 @@ class TestFastMCPParameterValidation:
                 # Other fields left as None (default)
             )
 
-            assert isinstance(result, str)
-            parsed_result = json.loads(result)
-            assert parsed_result == mock_result
+            assert isinstance(result, server.TransactionResult)
+            assert result.transaction == mock_result
 
             # Verify only specified fields were passed
             mock_client.update_transaction.assert_called_once()

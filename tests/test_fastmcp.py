@@ -1,6 +1,5 @@
 """Tests for FastMCP server implementation."""
 
-import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -99,10 +98,10 @@ class TestFastMCPServer:
         try:
             result = await server.get_accounts()
 
-            # Verify result is JSON string
-            assert isinstance(result, str)
-            parsed_result = json.loads(result)
-            assert parsed_result == mock_accounts_data
+            # Verify structured result wraps the account list with a count
+            assert isinstance(result, server.AccountsResult)
+            assert result.accounts == mock_accounts_data
+            assert result.count == len(mock_accounts_data)
 
             # Verify mock was called
             mock_client.get_accounts.assert_called_once()
@@ -133,10 +132,11 @@ class TestFastMCPServer:
                 verbose=True,  # Get full transaction details for testing
             )
 
-            # Verify result is JSON string
-            assert isinstance(result, str)
-            parsed_result = json.loads(result)
-            assert parsed_result == mock_transactions
+            # Verify structured result wraps the transaction list
+            assert isinstance(result, server.TransactionsResult)
+            assert result.transactions == mock_transactions
+            assert result.count == len(mock_transactions)
+            assert result.verbose is True
 
             # Verify mock was called with correct parameters
             mock_client.get_transactions.assert_called_once()
@@ -170,10 +170,9 @@ class TestFastMCPServer:
                 notes="Test notes",
             )
 
-            # Verify result is JSON string
-            assert isinstance(result, str)
-            parsed_result = json.loads(result)
-            assert parsed_result == mock_result
+            # Verify structured result wraps the created transaction
+            assert isinstance(result, server.TransactionResult)
+            assert result.transaction == mock_result
 
             # Verify mock was called with correct parameters
             mock_client.create_transaction.assert_called_once()
