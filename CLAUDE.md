@@ -214,7 +214,7 @@ refactor: split server.py into modular components (auth, tools, models)
 ### Dependencies (Latest Versions - Updated July 2025)
 
 - **mcp[cli]**: Latest MCP protocol with FastMCP support (≥1.12.2)  
-- **monarchmoney**: Python client for Monarch Money API (≥0.1.15)
+- **monarchmoneycommunity**: Python client for Monarch Money API — a maintained community fork, pinned to a commit SHA in `[tool.uv.sources]`. See "Upstream Library & Fork Landscape" below.
 - **pydantic**: Runtime type validation and data models (≥2.11.7)
 - **python-dateutil**: Enhanced date parsing support (≥2.9.0.post0)
 - **structlog**: Structured logging for debugging (≥25.4.0)
@@ -401,6 +401,33 @@ Server runs as MCP server configured in `.mcp.json` with:
 6. **Phase 6 (Ecosystem)**: MCP extensions, developer tools, architectural improvements
 
 **Current Status** (Updated October 2025): Production-ready with 70 passing tests, 22 intelligent tools, comprehensive analytics, robust error handling, and enhanced reliability. Recent features: `update_transactions_bulk()` for parallel batch updates, `search_transactions` tool for efficient context-aware search, detailed tool call debugging with result size tracking. Recent critical fixes completed: authentication retry bug (stale client after re-auth), date serialization, broken pipe handling, dependency updates, and enhanced date parsing. Server is stable and ready for real-world usage with excellent user experience for date filtering, bulk operations, and error recovery.
+
+## Upstream Library & Fork Landscape
+
+**Last checked: 2026-05-28.** Update the date and findings below whenever you re-analyze (see "How to keep this current").
+
+This MCP server is a thin wrapper over a Python Monarch Money client. That client is a *fork of a fork*, so it's worth understanding the lineage:
+
+| Repo | Role | Stars | Health (as of last check) |
+|---|---|---|---|
+| [`hammem/monarchmoney`](https://github.com/hammem/monarchmoney) | original parent | ~490 | **Effectively abandoned.** Critical fixes sit unmerged in 5+ open PRs (e.g. #184 API domain change, #191 gql 4.0 break). Do **not** depend on this directly. |
+| [`bradleyseanf/monarchmoneycommunity`](https://github.com/bradleyseanf/monarchmoneycommunity) | **what we use** | ~84 | Active. `dev` branch was ~97 commits ahead of parent / 0 behind. Already carries the domain fix (`api.monarch.com`), gql 4.0 fix, auth persistence, and budget query fix. Published to PyPI as `monarchmoneycommunity`. |
+| [`keithah/monarchmoney-enhanced`](https://github.com/keithah/monarchmoney-enhanced) | sibling fork, **not used yet** | ~24 | Active, MIT, on PyPI as `monarchmoney-enhanced`. ~6,100 LOC vs our ~3,500 — much larger surface. |
+
+**Our pin:** `pyproject.toml` → `[tool.uv.sources]` pins `monarchmoneycommunity` to a **specific commit SHA** (the fork's `dev` HEAD), not a moving branch, for reproducible builds. When bumping, update the SHA *and* the comment date there.
+
+**Unused capabilities in the fork we already depend on** (zero new dependencies — just need new `@mcp.tool()` wrappers in `server.py`): transaction tags (`get/set/create_transaction_tag`), splits (`get/update_transaction_splits`), `find_duplicate_transactions`, `get_transaction_details`, `get_cashflow_summary`, `get_subscription_details`, `get_credit_history`, `delete_transaction`, `create_transaction_category`, `update_account`, `request_accounts_refresh_and_wait`.
+
+**`keithah/monarchmoney-enhanced` (worth exploring in a followup, needs testing):** adds whole capability areas neither our fork nor the parent has, several of which map onto TODOs above — a transaction **rules engine** (categorization/amount/ignore rules + apply-to-existing), a built-in **caching layer** (`preload_cache`, `clear_cache`, cache metrics), **proactive session management** (`validate_session`, `ensure_valid_session`, `is_session_stale`), **goals**, **bills** (`get_bills`), **merchants**, and **insights** (`get_insights`, `get_net_worth_history`, `get_investment_performance`, `get_credit_score`). Caveat: it is **not** a strict superset — our current fork has a few methods it lacks (`upload_attachment`, `reset_budget`, flex-budget methods, `get_credit_history`). So adopting it is a real decision (switch dependency vs. cherry-pick specific GraphQL queries), not a drop-in — needs hands-on testing against a live account first.
+
+### How to keep this current
+
+Re-run this analysis periodically (e.g. quarterly, or when something breaks):
+1. **Check our fork moved:** `gh api repos/bradleyseanf/monarchmoneycommunity/compare/main...dev` and compare `dev` HEAD SHA against our pinned SHA in `uv.lock`. Bump if meaningfully ahead.
+2. **Check parent for new critical fixes:** `gh api 'repos/hammem/monarchmoney/issues?state=open&sort=reactions'` and the open PRs — verify our fork carries any new breaking-bug fixes.
+3. **Check sibling forks:** `gh api 'repos/hammem/monarchmoney/forks?sort=stargazers'`. Diff method surfaces by downloading each fork's `monarchmoney/monarchmoney.py` and `comm`-ing the `def ` lists.
+4. **Find unused wins:** diff the installed lib's public methods against the method names `server.py` passes to `api_call_with_retry(...)` — anything in the lib but not wrapped is a cheap new tool.
+5. Update the **Last checked** date and the table above with what changed.
 
 ## Documentation References
 
