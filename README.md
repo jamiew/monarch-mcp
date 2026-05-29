@@ -3,9 +3,9 @@
 
 An [MCP](https://modelcontextprotocol.io/) server for [Monarch Money](https://www.monarchmoney.com/) — gives AI assistants like Claude access to your financial accounts, transactions, budgets, and more.
 
-Originally forked from [@colvint/monarch-money-mcp](https://github.com/colvint/monarch-money-mcp) but has diverged significantly with a full rewrite, many new features, and a modern FastMCP architecture.
+Originally forked from [@colvint/monarch-money-mcp](https://github.com/colvint/monarch-money-mcp) but has diverged into a full rewrite on a modern **FastMCP** architecture. It's grown from the original handful of tools to **19** — adding server-side transaction search, parallel **bulk transaction updates**, multi-month **spending-pattern analysis** with forecasting, and a single-call **financial overview** that fans out to five Monarch APIs at once. Responses are tuned hard for token efficiency: the default compact transaction format cuts payload size by **~80%**, categories return just `id`+`name` unless you ask for more, and every tool accepts a `verbose` flag when you want the full payload. It also ships MCP **resources** and guided **prompts**, natural-language date parsing ("last month", "30 days ago"), and proper read/write **tool annotations** so clients know what's safe to call.
 
-Built with the [MonarchMoney](https://github.com/hammem/monarchmoney) Python library by [@hammem](https://github.com/hammem) — a fantastic unofficial API for Monarch Money with full MFA support. We currently use the [community fork](https://github.com/bradleyseanf/monarchmoneycommunity) by [@bradleyseanf](https://github.com/bradleyseanf) which tracks the latest Monarch Money API changes.
+Built on the [`monarchmoneycommunity`](https://github.com/bradleyseanf/monarchmoneycommunity) library by [@bradleyseanf](https://github.com/bradleyseanf) — an actively-maintained community fork that tracks the latest Monarch Money API changes (the `api.monarch.com` domain move, gql 4.0, auth persistence) with full MFA support, pinned to a specific commit for reproducible builds. It descends from the original [`monarchmoney`](https://github.com/hammem/monarchmoney) library by [@hammem](https://github.com/hammem), which is no longer actively maintained.
 
 ## Features
 
