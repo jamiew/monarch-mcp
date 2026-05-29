@@ -4,7 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Monarch Money MCP Server</title>
-    <meta name="description" content="An MCP server that provides AI assistants access to Monarch Money financial data through 19 tools.">
+    <meta name="description" content="An MCP server that provides AI assistants access to Monarch Money financial data — accounts, transactions, budgets, cashflow, investments, and spending analysis.">
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%91%91%3C/text%3E%3C/svg%3E">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..600;1,9..144,400..500&family=Hanken+Grotesk:wght@400;500;600;700&family=Spline+Sans+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <style>
         * {
             margin: 0;
@@ -13,306 +17,708 @@
         }
 
         :root {
-            --accent-color: #e85d4d;
-            --text-primary: #000000;
-            --text-secondary: #666666;
-            --bg-primary: #ffffff;
-            --bg-secondary: #fafafa;
-            --border-color: #e0e0e0;
-            --code-bg: #1a1a1a;
+            --paper: #FBF6EF;
+            --paper-alt: #F3EADC;
+            --card: #FFFFFF;
+            --ink: #221C17;
+            --ink-soft: #6E655B;
+            --line: #E7DDCD;
+            --accent: #E1543E;
+            --accent-deep: #BC3F2B;
+            --gold: #C99A4E;
+            --green: #5BA372;
+            --code-bg: #211B16;
+            --code-text: #ECE3D5;
+
+            --display: 'Fraunces', Georgia, 'Times New Roman', serif;
+            --body: 'Hanken Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
+            --mono: 'Spline Sans Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+
+            --shadow-card: 0 1px 2px rgba(34,28,23,0.04), 0 12px 28px -20px rgba(34,28,23,0.28);
+            --shadow-hover: 0 2px 4px rgba(34,28,23,0.06), 0 22px 44px -22px rgba(34,28,23,0.38);
+        }
+
+        html {
+            scroll-behavior: smooth;
         }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
-            line-height: 1.6;
-            color: var(--text-primary);
-            background: var(--bg-primary);
+            font-family: var(--body);
+            line-height: 1.65;
+            color: var(--ink);
+            background: var(--paper);
+            -webkit-font-smoothing: antialiased;
+            text-rendering: optimizeLegibility;
+        }
+
+        /* Grain overlay */
+        .grain {
+            position: fixed;
+            inset: 0;
+            z-index: 9999;
+            pointer-events: none;
+            opacity: 0.05;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
         }
 
         .container {
-            max-width: 1200px;
+            max-width: 1120px;
             margin: 0 auto;
-            padding: 0 1.5rem;
+            padding: 0 1.75rem;
+        }
+
+        a {
+            color: var(--accent-deep);
+            text-decoration: none;
+        }
+
+        ::selection {
+            background: var(--accent);
+            color: #fff;
+        }
+
+        /* Inline code */
+        code {
+            font-family: var(--mono);
+            font-size: 0.85em;
+            background: var(--paper-alt);
+            color: var(--accent-deep);
+            padding: 0.12em 0.42em;
+            border-radius: 5px;
+            border: 1px solid var(--line);
         }
 
         /* Header */
         header {
-            background: var(--bg-primary);
-            border-bottom: 1px solid var(--border-color);
-            padding: 1.5rem 0;
             position: sticky;
             top: 0;
             z-index: 100;
-            backdrop-filter: blur(10px);
-            background: rgba(255, 255, 255, 0.95);
+            border-bottom: 1px solid var(--line);
+            background: rgba(251, 246, 239, 0.82);
+            backdrop-filter: blur(14px) saturate(140%);
+            -webkit-backdrop-filter: blur(14px) saturate(140%);
         }
 
         .header-content {
             display: flex;
             justify-content: space-between;
             align-items: center;
+            padding: 1.1rem 0;
         }
 
         .logo {
             display: flex;
             align-items: center;
-            gap: 0.75rem;
-            font-size: 1.25rem;
-            font-weight: 600;
-            color: var(--text-primary);
-            text-decoration: none;
+            gap: 0.7rem;
+            color: var(--ink);
         }
 
         .logo-icon {
-            width: 36px;
-            height: 36px;
-            background: var(--accent-color);
-            border-radius: 6px;
+            width: 38px;
+            height: 38px;
+            background: linear-gradient(150deg, var(--accent), var(--accent-deep));
+            border-radius: 10px;
             display: flex;
             align-items: center;
             justify-content: center;
-            color: white;
-            font-size: 1.25rem;
+            font-size: 1.2rem;
+            box-shadow: 0 6px 16px -6px rgba(225,84,62,0.6);
+            transform: rotate(-4deg);
+        }
+
+        .logo-text {
+            font-family: var(--display);
+            font-size: 1.3rem;
+            font-weight: 600;
+            letter-spacing: -0.01em;
         }
 
         .nav-links {
             display: flex;
-            gap: 2rem;
+            gap: 1.9rem;
             align-items: center;
         }
 
         .nav-links a {
-            color: var(--text-secondary);
-            text-decoration: none;
+            color: var(--ink-soft);
+            font-size: 0.92rem;
             font-weight: 500;
             transition: color 0.2s;
+            position: relative;
         }
 
-        .nav-links a:hover {
-            color: var(--text-primary);
+        .nav-links a:not(.btn-primary)::after {
+            content: "";
+            position: absolute;
+            left: 0;
+            bottom: -4px;
+            width: 0;
+            height: 2px;
+            background: var(--accent);
+            transition: width 0.25s ease;
+        }
+
+        .nav-links a:not(.btn-primary):hover {
+            color: var(--ink);
+        }
+
+        .nav-links a:not(.btn-primary):hover::after {
+            width: 100%;
         }
 
         .btn-primary {
-            background: var(--text-primary);
-            color: white;
-            padding: 0.625rem 1.25rem;
-            border-radius: 6px;
-            text-decoration: none;
+            background: var(--ink);
+            color: var(--paper);
+            padding: 0.6rem 1.2rem;
+            border-radius: 8px;
             font-weight: 600;
-            transition: all 0.2s;
+            font-size: 0.92rem;
+            transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
             display: inline-flex;
             align-items: center;
-            gap: 0.5rem;
+            gap: 0.45rem;
+            box-shadow: 0 8px 20px -12px rgba(34,28,23,0.6);
         }
 
         .btn-primary:hover {
-            background: var(--accent-color);
+            background: var(--accent-deep);
+            color: #fff;
+            transform: translateY(-2px);
+            box-shadow: 0 14px 28px -12px rgba(188,63,43,0.7);
         }
 
-        /* Hero Section */
-        .hero {
-            padding: 4rem 0 3rem;
-            text-align: center;
+        .btn-primary .arrow {
+            transition: transform 0.2s ease;
         }
 
-        .hero h1 {
-            font-size: 2.5rem;
-            font-weight: 700;
-            margin-bottom: 1rem;
-            color: var(--text-primary);
+        .btn-primary:hover .arrow {
+            transform: translateX(3px);
         }
 
-        .hero p {
-            font-size: 1.125rem;
-            color: var(--text-secondary);
-            max-width: 650px;
-            margin: 0 auto 2rem;
-        }
-
-        .hero-stats {
-            display: flex;
-            gap: 2rem;
-            justify-content: center;
-            flex-wrap: wrap;
-            margin: 2rem 0;
-        }
-
-        .stat {
-            text-align: center;
-        }
-
-        .stat-number {
-            font-size: 2rem;
-            font-weight: 700;
-            color: var(--accent-color);
-        }
-
-        .stat-label {
-            font-size: 0.875rem;
-            color: var(--text-secondary);
+        /* Eyebrow label */
+        .eyebrow {
+            font-family: var(--mono);
+            font-size: 0.72rem;
+            letter-spacing: 0.24em;
             text-transform: uppercase;
-            letter-spacing: 0.05em;
+            color: var(--accent-deep);
+            display: inline-flex;
+            align-items: center;
+            gap: 0.55rem;
         }
 
-        /* Tools Section */
-        .tools {
-            padding: 3rem 0;
-            background: var(--bg-secondary);
+        .eyebrow::before {
+            content: "";
+            width: 1.6rem;
+            height: 1px;
+            background: var(--accent);
+        }
+
+        .section-head {
+            text-align: center;
+            max-width: 640px;
+            margin: 0 auto 3.25rem;
+        }
+
+        .section-head .eyebrow {
+            justify-content: center;
+            margin-bottom: 1rem;
+        }
+
+        .section-head .eyebrow::after {
+            content: "";
+            width: 1.6rem;
+            height: 1px;
+            background: var(--accent);
         }
 
         .section-title {
-            font-size: 1.75rem;
-            font-weight: 700;
-            text-align: center;
-            margin-bottom: 0.5rem;
+            font-family: var(--display);
+            font-size: clamp(1.9rem, 3.6vw, 2.6rem);
+            font-weight: 500;
+            line-height: 1.1;
+            letter-spacing: -0.018em;
         }
 
         .section-subtitle {
-            text-align: center;
-            color: var(--text-secondary);
-            margin-bottom: 3rem;
+            color: var(--ink-soft);
+            margin-top: 0.85rem;
+            font-size: 1.02rem;
         }
 
+        /* Hero */
+        .hero {
+            position: relative;
+            overflow: hidden;
+            padding: clamp(3.5rem, 9vw, 6.5rem) 0 clamp(3rem, 6vw, 5rem);
+            text-align: center;
+        }
+
+        .hero::before {
+            content: "";
+            position: absolute;
+            top: -28%;
+            left: 50%;
+            transform: translateX(-50%);
+            width: min(960px, 120vw);
+            height: 620px;
+            background: radial-gradient(ellipse at center, rgba(225,84,62,0.18), rgba(201,154,78,0.08) 38%, transparent 64%);
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .hero::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background-image: linear-gradient(var(--line) 1px, transparent 1px), linear-gradient(90deg, var(--line) 1px, transparent 1px);
+            background-size: 56px 56px;
+            -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 30%, #000, transparent 75%);
+            mask-image: radial-gradient(ellipse 70% 60% at 50% 30%, #000, transparent 75%);
+            opacity: 0.4;
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .hero .container {
+            position: relative;
+            z-index: 1;
+        }
+
+        .hero .eyebrow {
+            justify-content: center;
+            margin-bottom: 1.5rem;
+        }
+
+        .hero h1 {
+            font-family: var(--display);
+            font-size: clamp(2.6rem, 6.5vw, 4.4rem);
+            font-weight: 500;
+            line-height: 1.02;
+            letter-spacing: -0.03em;
+            max-width: 14ch;
+            margin: 0 auto;
+        }
+
+        .hero h1 em {
+            font-style: italic;
+            color: var(--accent-deep);
+            font-weight: 400;
+        }
+
+        .hero-lede {
+            font-size: clamp(1.05rem, 1.7vw, 1.2rem);
+            color: var(--ink-soft);
+            max-width: 600px;
+            margin: 1.5rem auto 0;
+        }
+
+        .hero-capabilities {
+            display: flex;
+            gap: 0.55rem;
+            justify-content: center;
+            flex-wrap: wrap;
+            max-width: 660px;
+            margin: 2rem auto 0;
+        }
+
+        .chip {
+            background: var(--card);
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            padding: 0.45rem 0.95rem;
+            font-size: 0.84rem;
+            font-weight: 500;
+            color: var(--ink);
+            box-shadow: 0 1px 2px rgba(34,28,23,0.04);
+            transition: transform 0.18s ease, border-color 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
+        }
+
+        .chip:hover {
+            transform: translateY(-2px);
+            border-color: var(--accent);
+            color: var(--accent-deep);
+            box-shadow: 0 8px 18px -10px rgba(225,84,62,0.5);
+        }
+
+        .hero-brags {
+            max-width: 580px;
+            margin: 2rem auto 0;
+            display: flex;
+            flex-direction: column;
+            gap: 0.7rem;
+        }
+
+        .hero-brag {
+            color: var(--ink-soft);
+            font-size: 0.96rem;
+        }
+
+        .hero-brag strong {
+            color: var(--ink);
+            font-weight: 600;
+        }
+
+        .hero-cmd {
+            background: var(--code-bg);
+            color: var(--code-text);
+            font-family: var(--mono);
+            font-size: 0.84rem;
+            padding: 0.25rem 0.6rem;
+            border-radius: 6px;
+            border: none;
+            white-space: nowrap;
+        }
+
+        .hero-cta {
+            margin-top: 2.25rem;
+            display: flex;
+            gap: 0.9rem;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .btn-lg {
+            font-size: 1rem;
+            padding: 0.85rem 1.7rem;
+        }
+
+        .btn-ghost {
+            background: transparent;
+            color: var(--ink);
+            border: 1px solid var(--line);
+            box-shadow: none;
+        }
+
+        .btn-ghost:hover {
+            background: var(--card);
+            color: var(--ink);
+            border-color: var(--ink);
+        }
+
+        .hero-techline {
+            margin-top: 2.25rem;
+            font-family: var(--mono);
+            font-size: 0.78rem;
+            letter-spacing: 0.02em;
+            color: var(--ink-soft);
+        }
+
+        .hero-techline strong {
+            color: var(--ink);
+            font-weight: 600;
+        }
+
+        .hero-techline .dot {
+            color: var(--accent);
+            margin: 0 0.5rem;
+        }
+
+        /* Section shells */
+        section.band {
+            padding: clamp(3.75rem, 8vw, 6.5rem) 0;
+        }
+
+        section.alt {
+            background: var(--paper-alt);
+            border-top: 1px solid var(--line);
+            border-bottom: 1px solid var(--line);
+        }
+
+        /* Feature / efficiency grid */
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(265px, 1fr));
+            gap: 1.25rem;
+            max-width: 960px;
+            margin: 0 auto;
+        }
+
+        .feature-card {
+            position: relative;
+            background: var(--card);
+            padding: 1.6rem 1.5rem;
+            border-radius: 14px;
+            border: 1px solid var(--line);
+            box-shadow: var(--shadow-card);
+            transition: transform 0.22s ease, box-shadow 0.22s ease, border-color 0.22s ease;
+            overflow: hidden;
+        }
+
+        .feature-card::before {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 3px;
+            background: linear-gradient(90deg, var(--accent), var(--gold));
+            transform: scaleX(0);
+            transform-origin: left;
+            transition: transform 0.3s ease;
+        }
+
+        .feature-card:hover {
+            transform: translateY(-4px);
+            box-shadow: var(--shadow-hover);
+            border-color: transparent;
+        }
+
+        .feature-card:hover::before {
+            transform: scaleX(1);
+        }
+
+        .feature-card h3 {
+            font-size: 1.05rem;
+            font-weight: 700;
+            margin-bottom: 0.55rem;
+            letter-spacing: -0.01em;
+        }
+
+        .feature-card p {
+            font-size: 0.92rem;
+            color: var(--ink-soft);
+            line-height: 1.55;
+        }
+
+        .feature-card code {
+            overflow-wrap: anywhere;
+        }
+
+        /* Tools */
         .tools-list {
-            max-width: 900px;
+            max-width: 980px;
             margin: 0 auto;
         }
 
         .tool-group {
-            margin-bottom: 3rem;
+            margin-bottom: 2.75rem;
         }
 
-        .tool-group h3 {
-            font-size: 1.125rem;
-            font-weight: 700;
-            margin-bottom: 1rem;
-            color: var(--text-primary);
-            border-bottom: 2px solid var(--accent-color);
-            padding-bottom: 0.5rem;
+        .tool-group:last-child {
+            margin-bottom: 0;
+        }
+
+        .tool-group > h3 {
+            font-family: var(--display);
+            font-size: 1.3rem;
+            font-weight: 500;
+            letter-spacing: -0.01em;
+            margin-bottom: 1.25rem;
+            padding-bottom: 0.6rem;
+            border-bottom: 1px solid var(--line);
+            display: flex;
+            align-items: center;
+            gap: 0.7rem;
+        }
+
+        .tool-group > h3::before {
+            content: "";
+            width: 0.55rem;
+            height: 0.55rem;
+            border-radius: 2px;
+            background: var(--accent);
+            transform: rotate(45deg);
+        }
+
+        .tool-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1rem;
         }
 
         .tool-item {
-            background: var(--bg-primary);
-            padding: 1.25rem;
-            margin-bottom: 1rem;
-            border-radius: 8px;
-            border: 1px solid var(--border-color);
+            background: var(--card);
+            padding: 1.15rem 1.25rem;
+            border-radius: 12px;
+            border: 1px solid var(--line);
+            transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+        }
+
+        .tool-item:hover {
+            transform: translateY(-3px);
+            box-shadow: var(--shadow-card);
+            border-color: var(--accent);
         }
 
         .tool-name {
-            font-family: 'Courier New', monospace;
-            font-size: 0.938rem;
-            font-weight: 700;
-            color: var(--text-primary);
-            margin-bottom: 0.5rem;
+            font-family: var(--mono);
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: var(--accent-deep);
+            margin-bottom: 0.45rem;
+            word-break: break-word;
         }
 
         .tool-desc {
-            font-size: 0.938rem;
-            color: var(--text-secondary);
+            font-size: 0.9rem;
+            color: var(--ink-soft);
             line-height: 1.5;
         }
 
         .tool-params {
-            margin-top: 0.75rem;
-            padding-top: 0.75rem;
-            border-top: 1px solid var(--border-color);
-            font-size: 0.875rem;
-            color: var(--text-secondary);
+            margin-top: 0.8rem;
+            padding-top: 0.8rem;
+            border-top: 1px dashed var(--line);
+            font-size: 0.85rem;
+            color: var(--ink-soft);
         }
 
         .tool-params-title {
             font-weight: 600;
-            color: var(--text-primary);
-            margin-bottom: 0.25rem;
+            color: var(--ink);
+            margin-bottom: 0.35rem;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
         }
 
         .tool-params ul {
-            margin-left: 1.25rem;
-            margin-top: 0.5rem;
+            margin-left: 1.1rem;
         }
 
         .tool-params li {
             margin-bottom: 0.25rem;
         }
 
-        /* Installation Section */
-        .installation {
-            padding: 3rem 0;
+        /* Installation */
+        .install-body {
+            max-width: 760px;
+            margin: 0 auto;
+        }
+
+        .install-lede {
+            color: var(--ink-soft);
+            text-align: center;
+            margin-bottom: 2.5rem;
+            font-size: 1.02rem;
+        }
+
+        .install-step {
+            font-family: var(--display);
+            font-size: 1.25rem;
+            font-weight: 500;
+            margin: 2.5rem 0 0.9rem;
+            display: flex;
+            align-items: baseline;
+            gap: 0.7rem;
+        }
+
+        .install-step .num {
+            font-family: var(--mono);
+            font-size: 0.85rem;
+            color: var(--accent-deep);
+            font-weight: 600;
+        }
+
+        .install-note {
+            color: var(--ink-soft);
+            margin-bottom: 0.5rem;
+            font-size: 0.95rem;
         }
 
         .code-block {
+            position: relative;
             background: var(--code-bg);
-            color: #e0e0e0;
-            padding: 1.5rem;
-            border-radius: 8px;
-            overflow-x: auto;
-            font-family: 'Courier New', monospace;
-            font-size: 0.875rem;
-            line-height: 1.7;
-            margin: 1.5rem 0;
+            color: var(--code-text);
+            padding: 2.85rem 1.4rem 1.4rem;
+            border-radius: 12px;
+            overflow: hidden;
+            font-family: var(--mono);
+            font-size: 0.84rem;
+            line-height: 1.75;
+            margin: 1rem 0;
+            border: 1px solid rgba(255,255,255,0.07);
+            box-shadow: 0 20px 44px -26px rgba(34,28,23,0.6);
+        }
+
+        .code-block::before {
+            content: "";
+            position: absolute;
+            top: 1.05rem;
+            left: 1.3rem;
+            width: 0.68rem;
+            height: 0.68rem;
+            border-radius: 50%;
+            background: var(--accent);
+            box-shadow: 1.05rem 0 0 var(--gold), 2.1rem 0 0 var(--green);
+        }
+
+        .code-block::after {
+            content: "";
+            position: absolute;
+            top: 2.25rem;
+            left: 0;
+            right: 0;
+            height: 1px;
+            background: rgba(255,255,255,0.07);
         }
 
         .code-block pre {
             margin: 0;
+            overflow-x: auto;
         }
 
         .info-box {
-            background: var(--bg-secondary);
-            border-left: 3px solid var(--accent-color);
-            padding: 1.25rem;
-            border-radius: 6px;
-            margin: 2rem 0;
+            background: var(--card);
+            border: 1px solid var(--line);
+            border-left: 3px solid var(--accent);
+            padding: 1.4rem 1.5rem;
+            border-radius: 10px;
+            margin: 2.5rem 0;
+            box-shadow: var(--shadow-card);
         }
 
         .info-box h3 {
             font-size: 1rem;
-            margin-bottom: 0.75rem;
+            margin-bottom: 0.65rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
         }
 
         .info-box p {
-            color: var(--text-secondary);
-            font-size: 0.938rem;
+            color: var(--ink-soft);
+            font-size: 0.93rem;
         }
 
-        /* Credits Section */
-        .credits {
-            padding: 3rem 0;
-            background: var(--bg-secondary);
-        }
-
+        /* Credits */
         .credits-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-            gap: 1.5rem;
-            margin-top: 2rem;
-            max-width: 900px;
-            margin-left: auto;
-            margin-right: auto;
+            grid-template-columns: repeat(auto-fit, minmax(245px, 1fr));
+            gap: 1.25rem;
+            max-width: 980px;
+            margin: 0 auto;
         }
 
         .credit-card {
-            background: var(--bg-primary);
-            padding: 1.5rem;
-            border-radius: 8px;
-            border: 1px solid var(--border-color);
+            background: var(--card);
+            padding: 1.6rem;
+            border-radius: 14px;
+            border: 1px solid var(--line);
+            box-shadow: var(--shadow-card);
+            transition: transform 0.22s ease, box-shadow 0.22s ease;
+        }
+
+        .credit-card:hover {
+            transform: translateY(-4px);
+            box-shadow: var(--shadow-hover);
         }
 
         .credit-card h3 {
-            font-size: 1.125rem;
-            font-weight: 700;
-            margin-bottom: 0.5rem;
+            font-family: var(--display);
+            font-size: 1.2rem;
+            font-weight: 500;
+            margin-bottom: 0.7rem;
         }
 
         .credit-card p {
-            color: var(--text-secondary);
+            color: var(--ink-soft);
             margin-bottom: 0.5rem;
-            font-size: 0.938rem;
+            font-size: 0.92rem;
         }
 
         .credit-card a {
-            color: var(--accent-color);
-            text-decoration: none;
             font-weight: 600;
         }
 
@@ -320,64 +726,127 @@
             text-decoration: underline;
         }
 
+        .credit-card .credit-link {
+            margin-top: 1rem;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.3rem;
+        }
+
         /* Footer */
         footer {
-            background: var(--bg-primary);
-            padding: 2rem 0;
+            padding: 2.75rem 0;
             text-align: center;
-            border-top: 1px solid var(--border-color);
-            color: var(--text-secondary);
-            font-size: 0.875rem;
+            border-top: 1px solid var(--line);
+            color: var(--ink-soft);
+            font-family: var(--mono);
+            font-size: 0.82rem;
         }
 
         footer a {
-            color: var(--accent-color);
-            text-decoration: none;
+            color: var(--ink-soft);
+            transition: color 0.2s;
         }
 
         footer a:hover {
-            text-decoration: underline;
+            color: var(--accent-deep);
         }
+
+        footer .sep {
+            color: var(--accent);
+            margin: 0 0.6rem;
+        }
+
+        /* Motion */
+        @keyframes fadeUp {
+            from { opacity: 0; transform: translateY(18px); }
+            to { opacity: 1; transform: none; }
+        }
+
+        .hero-load > * {
+            opacity: 0;
+            animation: fadeUp 0.7s cubic-bezier(0.2, 0.7, 0.2, 1) forwards;
+        }
+
+        .hero-load > *:nth-child(1) { animation-delay: 0.05s; }
+        .hero-load > *:nth-child(2) { animation-delay: 0.13s; }
+        .hero-load > *:nth-child(3) { animation-delay: 0.21s; }
+        .hero-load > *:nth-child(4) { animation-delay: 0.29s; }
+        .hero-load > *:nth-child(5) { animation-delay: 0.37s; }
+        .hero-load > *:nth-child(6) { animation-delay: 0.45s; }
+        .hero-load > *:nth-child(7) { animation-delay: 0.53s; }
+
+        .js .reveal-section .section-head,
+        .js .reveal-section .feature-card,
+        .js .reveal-section .tool-group,
+        .js .reveal-section .credit-card,
+        .js .reveal-section .install-body > * {
+            opacity: 0;
+            transform: translateY(20px);
+            transition: opacity 0.6s ease, transform 0.6s ease;
+        }
+
+        .reveal-section.in .section-head,
+        .reveal-section.in .feature-card,
+        .reveal-section.in .tool-group,
+        .reveal-section.in .credit-card,
+        .reveal-section.in .install-body > * {
+            opacity: 1;
+            transform: none;
+        }
+
+        .reveal-section.in .feature-card:nth-child(2),
+        .reveal-section.in .credit-card:nth-child(2) { transition-delay: 0.08s; }
+        .reveal-section.in .feature-card:nth-child(3),
+        .reveal-section.in .credit-card:nth-child(3) { transition-delay: 0.16s; }
+        .reveal-section.in .feature-card:nth-child(4),
+        .reveal-section.in .credit-card:nth-child(4) { transition-delay: 0.24s; }
+        .reveal-section.in .feature-card:nth-child(5) { transition-delay: 0.32s; }
 
         /* Responsive */
         @media (max-width: 768px) {
-            .hero h1 {
-                font-size: 2rem;
-            }
-
-            .hero p {
-                font-size: 1rem;
-            }
-
             .nav-links {
+                gap: 1.1rem;
+            }
+            .nav-links a:not(.btn-primary) {
                 display: none;
             }
-
-            .section-title {
-                font-size: 1.5rem;
+            .hero::after {
+                background-size: 40px 40px;
             }
+        }
 
-            .hero-stats {
-                gap: 1.5rem;
+        @media (prefers-reduced-motion: reduce) {
+            html { scroll-behavior: auto; }
+            *, .hero-load > * {
+                animation: none !important;
+                transition: none !important;
+                opacity: 1 !important;
+                transform: none !important;
             }
         }
     </style>
 </head>
 <body>
+    <script>document.documentElement.className += ' js';</script>
+    <div class="grain"></div>
+
     <header>
         <div class="container">
             <div class="header-content">
                 <a href="#" class="logo">
                     <div class="logo-icon">👑</div>
-                    <span>Monarch Money MCP</span>
+                    <span class="logo-text">Monarch&nbsp;MCP</span>
                 </a>
                 <nav class="nav-links">
+                    <a href="#features">Features</a>
+                    <a href="#efficiency">Efficiency</a>
                     <a href="#tools">Tools</a>
-                    <a href="#installation">Installation</a>
+                    <a href="#installation">Install</a>
                     <a href="#credits">Credits</a>
                     <a href="https://github.com/jamiew/monarch-mcp" class="btn-primary">
                         <span>GitHub</span>
-                        <span>→</span>
+                        <span class="arrow">→</span>
                     </a>
                 </nav>
             </div>
@@ -387,177 +856,250 @@
     <main>
         <section class="hero">
             <div class="container">
-                <h1>Monarch Money MCP Server</h1>
-                <p>
-                    An MCP server that provides AI assistants with access to Monarch Money financial data.
-                </p>
-                <div class="hero-stats">
-                    <div class="stat">
-                        <div class="stat-number">19</div>
-                        <div class="stat-label">Tools</div>
+                <div class="hero-load">
+                    <div class="eyebrow">Self-hosted · Model Context Protocol</div>
+                    <h1>Your money, fluent in <em>Claude</em>.</h1>
+                    <p class="hero-lede">
+                        An MCP server that gives Claude — or any MCP client — a window into your finances:
+                        query accounts, search transactions, track budgets and investments, and run
+                        multi-month spending analysis, all from plain-language prompts.
+                    </p>
+                    <div class="hero-capabilities">
+                        <span class="chip">Accounts &amp; balances</span>
+                        <span class="chip">Transaction search</span>
+                        <span class="chip">Spending analysis</span>
+                        <span class="chip">Budgets &amp; cashflow</span>
+                        <span class="chip">Investments</span>
+                        <span class="chip">Bulk edits</span>
                     </div>
-                    <div class="stat">
-                        <div class="stat-number">202</div>
-                        <div class="stat-label">Tests</div>
+                    <div class="hero-brags">
+                        <p class="hero-brag">
+                            Token-efficient by design: <strong>compact output is ~80% smaller</strong>,
+                            and batch tools pull <strong>five Monarch APIs in a single call</strong>.
+                        </p>
+                        <p class="hero-brag">
+                            <strong>One-line install</strong> — no clone, no path wrangling:
+                            <code class="hero-cmd">uvx monarch-mcp-jamiew</code>
+                        </p>
+                        <p class="hero-brag">
+                            Runs locally; your credentials stay in your client config and
+                            <strong>never pass through the LLM</strong>.
+                        </p>
                     </div>
-                    <div class="stat">
-                        <div class="stat-number">100%</div>
-                        <div class="stat-label">Type-Safe</div>
+                    <div class="hero-cta">
+                        <a href="#installation" class="btn-primary btn-lg">
+                            Get Started <span class="arrow">→</span>
+                        </a>
+                        <a href="#tools" class="btn-primary btn-ghost btn-lg">Browse the tools</a>
                     </div>
+                    <p class="hero-techline">
+                        <strong>19</strong> tools<span class="dot">·</span><strong>~8K</strong> tokens of definitions<span class="dot">·</span><strong>202</strong> tests<span class="dot">·</span><strong>100%</strong> type-safe
+                    </p>
                 </div>
-                <a href="#installation" class="btn-primary" style="font-size: 1rem; padding: 0.75rem 1.5rem; margin-top: 1rem;">
-                    Get Started
-                </a>
             </div>
         </section>
 
-        <section id="tools" class="tools">
+        <section id="features" class="band reveal-section">
             <div class="container">
-                <h2 class="section-title">Available Tools</h2>
-                <p class="section-subtitle">
-                    Complete coverage of the Monarch Money API
-                </p>
+                <div class="section-head">
+                    <div class="eyebrow">Capabilities</div>
+                    <h2 class="section-title">Built on modern MCP</h2>
+                    <p class="section-subtitle">
+                        Designed for token efficiency and the latest protocol features
+                    </p>
+                </div>
+                <div class="feature-grid">
+                    <div class="feature-card">
+                        <h3>Structured output</h3>
+                        <p>Every tool returns a typed <code>outputSchema</code> with machine-readable content and a text fallback for older clients.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h3>Resources &amp; templates</h3>
+                        <p>MCP resources for categories, accounts, and institutions, plus parameterized per-account holdings and history.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h3>Guided prompts</h3>
+                        <p>Prompt workflows for financial analysis, with live argument autocompletion.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h3>Natural-language dates</h3>
+                        <p>Filters understand "last month", "30 days ago", and "this year" out of the box.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h3>Tool annotations</h3>
+                        <p>Read/write metadata and human-friendly titles so clients know what's safe to call.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="efficiency" class="band alt reveal-section">
+            <div class="container">
+                <div class="section-head">
+                    <div class="eyebrow">Performance</div>
+                    <h2 class="section-title">Token &amp; request efficiency</h2>
+                    <p class="section-subtitle">
+                        Built to spend as few tokens and round-trips as possible
+                    </p>
+                </div>
+                <div class="feature-grid">
+                    <div class="feature-card">
+                        <h3>~80% smaller responses</h3>
+                        <p>Compact transaction format by default; categories return just <code>id</code> + <code>name</code>. Pass <code>verbose=True</code> for the full API payload when you need it.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h3>5 APIs in 1 call</h3>
+                        <p><code>get_complete_financial_overview</code> fans out to five Monarch APIs at once, <code>update_transactions_bulk</code> edits many transactions in one parallel call, and the summary tools aggregate server-side instead of dumping raw rows on the model.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h3>~8K-token tool surface</h3>
+                        <p>All 19 tool schemas cost ~8K tokens of context up front in clients without deferred loading. Descriptions and schemas are kept tight to hold that fixed cost down.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="tools" class="band reveal-section">
+            <div class="container">
+                <div class="section-head">
+                    <div class="eyebrow">Reference</div>
+                    <h2 class="section-title">Available tools</h2>
+                    <p class="section-subtitle">
+                        Broad coverage of the Monarch Money API
+                    </p>
+                </div>
 
                 <div class="tools-list">
                     <div class="tool-group">
                         <h3>Core Data Access</h3>
-
-                        <div class="tool-item">
-                            <div class="tool-name">get_accounts</div>
-                            <div class="tool-desc">Retrieve all linked financial accounts with balances and details.</div>
-                        </div>
-
-                        <div class="tool-item">
-                            <div class="tool-name">get_transactions</div>
-                            <div class="tool-desc">Fetch transactions with flexible filtering by date, account, and category.</div>
-                            <div class="tool-params">
-                                <div class="tool-params-title">Key features:</div>
-                                <ul>
-                                    <li>Natural language dates: "last month", "30 days ago", "this year"</li>
-                                    <li>Compact format reduces data size by ~80% (verbose mode available)</li>
-                                    <li>Filter by account, category, date range</li>
-                                    <li>Pagination with limit and offset</li>
-                                </ul>
+                        <div class="tool-grid">
+                            <div class="tool-item">
+                                <div class="tool-name">get_accounts</div>
+                                <div class="tool-desc">Retrieve all linked financial accounts with balances and details.</div>
                             </div>
-                        </div>
-
-                        <div class="tool-item">
-                            <div class="tool-name">get_budgets</div>
-                            <div class="tool-desc">Retrieve budget information and spending analysis.</div>
-                        </div>
-
-                        <div class="tool-item">
-                            <div class="tool-name">get_cashflow</div>
-                            <div class="tool-desc">Analyze income and expense cashflow data.</div>
-                        </div>
-
-                        <div class="tool-item">
-                            <div class="tool-name">get_transaction_categories</div>
-                            <div class="tool-desc">List all available transaction categories.</div>
+                            <div class="tool-item">
+                                <div class="tool-name">get_transactions</div>
+                                <div class="tool-desc">Fetch transactions with flexible filtering by date, account, and category.</div>
+                                <div class="tool-params">
+                                    <div class="tool-params-title">Key features</div>
+                                    <ul>
+                                        <li>Natural language dates: "last month", "30 days ago", "this year"</li>
+                                        <li>Compact format reduces data size by ~80% (verbose mode available)</li>
+                                        <li>Filter by account, category, date range</li>
+                                        <li>Pagination with limit and offset</li>
+                                    </ul>
+                                </div>
+                            </div>
+                            <div class="tool-item">
+                                <div class="tool-name">get_budgets</div>
+                                <div class="tool-desc">Retrieve budget information and spending analysis.</div>
+                            </div>
+                            <div class="tool-item">
+                                <div class="tool-name">get_cashflow</div>
+                                <div class="tool-desc">Analyze income and expense cashflow data.</div>
+                            </div>
+                            <div class="tool-item">
+                                <div class="tool-name">get_transaction_categories</div>
+                                <div class="tool-desc">List all available transaction categories.</div>
+                            </div>
                         </div>
                     </div>
 
                     <div class="tool-group">
                         <h3>Transaction Management</h3>
-
-                        <div class="tool-item">
-                            <div class="tool-name">search_transactions</div>
-                            <div class="tool-desc">Search transactions by merchant name or keyword.</div>
-                        </div>
-
-                        <div class="tool-item">
-                            <div class="tool-name">create_transaction</div>
-                            <div class="tool-desc">Create a new transaction with amount, description, category, and date.</div>
-                        </div>
-
-                        <div class="tool-item">
-                            <div class="tool-name">update_transaction</div>
-                            <div class="tool-desc">Update an existing transaction's details.</div>
-                        </div>
-
-                        <div class="tool-item">
-                            <div class="tool-name">update_transactions_bulk</div>
-                            <div class="tool-desc">Update multiple transactions in parallel in a single call.</div>
+                        <div class="tool-grid">
+                            <div class="tool-item">
+                                <div class="tool-name">search_transactions</div>
+                                <div class="tool-desc">Search transactions by merchant name or keyword.</div>
+                            </div>
+                            <div class="tool-item">
+                                <div class="tool-name">create_transaction</div>
+                                <div class="tool-desc">Create a new transaction with amount, description, category, and date.</div>
+                            </div>
+                            <div class="tool-item">
+                                <div class="tool-name">update_transaction</div>
+                                <div class="tool-desc">Update an existing transaction's details.</div>
+                            </div>
+                            <div class="tool-item">
+                                <div class="tool-name">update_transactions_bulk</div>
+                                <div class="tool-desc">Update multiple transactions in parallel in a single call.</div>
+                            </div>
                         </div>
                     </div>
 
                     <div class="tool-group">
-                        <h3>Investment & Banking</h3>
-
-                        <div class="tool-item">
-                            <div class="tool-name">get_account_holdings</div>
-                            <div class="tool-desc">View investment portfolio holdings from brokerage accounts.</div>
-                        </div>
-
-                        <div class="tool-item">
-                            <div class="tool-name">get_account_history</div>
-                            <div class="tool-desc">Track historical account balance data over time.</div>
-                        </div>
-
-                        <div class="tool-item">
-                            <div class="tool-name">get_institutions</div>
-                            <div class="tool-desc">List all linked financial institutions.</div>
-                        </div>
-
-                        <div class="tool-item">
-                            <div class="tool-name">refresh_accounts</div>
-                            <div class="tool-desc">Request a refresh of account data from financial institutions.</div>
+                        <h3>Investment &amp; Banking</h3>
+                        <div class="tool-grid">
+                            <div class="tool-item">
+                                <div class="tool-name">get_account_holdings</div>
+                                <div class="tool-desc">View investment portfolio holdings for a brokerage account (requires <code>account_id</code>).</div>
+                            </div>
+                            <div class="tool-item">
+                                <div class="tool-name">get_account_history</div>
+                                <div class="tool-desc">Track historical account balance data over time.</div>
+                            </div>
+                            <div class="tool-item">
+                                <div class="tool-name">get_institutions</div>
+                                <div class="tool-desc">List all linked financial institutions.</div>
+                            </div>
+                            <div class="tool-item">
+                                <div class="tool-name">refresh_accounts</div>
+                                <div class="tool-desc">Request a refresh of account data from financial institutions.</div>
+                            </div>
                         </div>
                     </div>
 
                     <div class="tool-group">
-                        <h3>Planning & Budgets</h3>
-
-                        <div class="tool-item">
-                            <div class="tool-name">get_recurring_transactions</div>
-                            <div class="tool-desc">View scheduled recurring transactions and bills.</div>
-                        </div>
-
-                        <div class="tool-item">
-                            <div class="tool-name">set_budget_amount</div>
-                            <div class="tool-desc">Set or update budget amount for a specific category.</div>
-                        </div>
-
-                        <div class="tool-item">
-                            <div class="tool-name">create_manual_account</div>
-                            <div class="tool-desc">Create a manually tracked account for cash or assets.</div>
+                        <h3>Planning &amp; Budgets</h3>
+                        <div class="tool-grid">
+                            <div class="tool-item">
+                                <div class="tool-name">get_recurring_transactions</div>
+                                <div class="tool-desc">View scheduled recurring transactions and bills.</div>
+                            </div>
+                            <div class="tool-item">
+                                <div class="tool-name">set_budget_amount</div>
+                                <div class="tool-desc">Set or update budget amount for a specific category.</div>
+                            </div>
+                            <div class="tool-item">
+                                <div class="tool-name">create_manual_account</div>
+                                <div class="tool-desc">Create a manually tracked account for cash or assets.</div>
+                            </div>
                         </div>
                     </div>
 
                     <div class="tool-group">
                         <h3>Intelligent Analysis</h3>
-
-                        <div class="tool-item">
-                            <div class="tool-name">get_spending_summary</div>
-                            <div class="tool-desc">Get spending summaries grouped by category, account, or month.</div>
-                        </div>
-
-                        <div class="tool-item">
-                            <div class="tool-name">get_complete_financial_overview</div>
-                            <div class="tool-desc">Get a comprehensive financial snapshot combining accounts, transactions, budgets, and cashflow in a single call.</div>
-                            <div class="tool-params">
-                                <div class="tool-params-title">Combines 5 API calls:</div>
-                                <ul>
-                                    <li>All accounts with current balances</li>
-                                    <li>Recent transactions for the period</li>
-                                    <li>Budget status and performance</li>
-                                    <li>Cashflow analysis (income vs expenses)</li>
-                                    <li>Transaction categories</li>
-                                </ul>
+                        <div class="tool-grid">
+                            <div class="tool-item">
+                                <div class="tool-name">get_spending_summary</div>
+                                <div class="tool-desc">Get spending summaries grouped by category, account, or month.</div>
                             </div>
-                        </div>
-
-                        <div class="tool-item">
-                            <div class="tool-name">analyze_spending_patterns</div>
-                            <div class="tool-desc">Analyze spending trends with multi-month analysis and optional predictive forecasting.</div>
-                            <div class="tool-params">
-                                <div class="tool-params-title">Provides insights on:</div>
-                                <ul>
-                                    <li>Monthly spending trends by category</li>
-                                    <li>Account usage patterns</li>
-                                    <li>Budget performance over time</li>
-                                    <li>Predictive spending forecasts (optional)</li>
-                                </ul>
+                            <div class="tool-item">
+                                <div class="tool-name">get_complete_financial_overview</div>
+                                <div class="tool-desc">Get a comprehensive financial snapshot combining accounts, transactions, budgets, and cashflow in a single call.</div>
+                                <div class="tool-params">
+                                    <div class="tool-params-title">Combines 5 API calls</div>
+                                    <ul>
+                                        <li>All accounts with current balances</li>
+                                        <li>Recent transactions for the period</li>
+                                        <li>Budget status and performance</li>
+                                        <li>Cashflow analysis (income vs expenses)</li>
+                                        <li>Transaction categories</li>
+                                    </ul>
+                                </div>
+                            </div>
+                            <div class="tool-item">
+                                <div class="tool-name">analyze_spending_patterns</div>
+                                <div class="tool-desc">Analyze spending trends with multi-month analysis and optional predictive forecasting.</div>
+                                <div class="tool-params">
+                                    <div class="tool-params-title">Provides insights on</div>
+                                    <ul>
+                                        <li>Monthly spending trends by category</li>
+                                        <li>Account usage patterns</li>
+                                        <li>Budget performance over time</li>
+                                        <li>Predictive spending forecasts (optional)</li>
+                                    </ul>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -565,27 +1107,31 @@
             </div>
         </section>
 
-        <section id="installation" class="installation">
+        <section id="installation" class="band alt reveal-section">
             <div class="container">
-                <h2 class="section-title">Installation</h2>
-                <p class="section-subtitle">
-                    Setup takes just a few minutes
-                </p>
+                <div class="section-head">
+                    <div class="eyebrow">Setup</div>
+                    <h2 class="section-title">Installed in a few minutes</h2>
+                    <p class="section-subtitle">
+                        Same shape everywhere: command <code>uvx</code>, package <code>monarch-mcp-jamiew</code>, three env vars
+                    </p>
+                </div>
 
-                <p style="color: var(--text-secondary); margin-bottom: 1rem;">
-                    Published to PyPI &mdash; no clone needed. With <a href="https://docs.astral.sh/uv/" target="_blank">uv</a> installed,
-                    every MCP client runs it on demand with <code>uvx</code>. The config is the same shape everywhere:
-                    command <code>uvx</code>, package <code>monarch-mcp-jamiew</code>, and your three credentials as env vars.
-                </p>
+                <div class="install-body">
+                    <p class="install-lede">
+                        Published to PyPI &mdash; no clone needed. With
+                        <a href="https://docs.astral.sh/uv/" target="_blank">uv</a> installed, every MCP client
+                        runs it on demand with <code>uvx</code>.
+                    </p>
 
-                <h3 style="margin-top: 2rem; margin-bottom: 1rem;">Claude Desktop</h3>
-                <p style="color: var(--text-secondary); margin-bottom: 1rem;">
-                    Add this to <code>claude_desktop_config.json</code>
-                    (<code>~/Library/Application Support/Claude/</code> on macOS,
-                    <code>%APPDATA%\Claude\</code> on Windows), then restart Claude:
-                </p>
-                <div class="code-block">
-                    <pre>{
+                    <div class="install-step"><span class="num">01</span> Claude Desktop</div>
+                    <p class="install-note">
+                        Add this to <code>claude_desktop_config.json</code>
+                        (<code>~/Library/Application Support/Claude/</code> on macOS,
+                        <code>%APPDATA%\Claude\</code> on Windows), then restart Claude:
+                    </p>
+                    <div class="code-block">
+                        <pre>{
   "mcpServers": {
     "monarch-money": {
       "command": "uvx",
@@ -598,90 +1144,80 @@
     }
   }
 }</pre>
-                </div>
+                    </div>
 
-                <h3 style="margin-top: 2rem; margin-bottom: 1rem;">Claude Code</h3>
-                <div class="code-block">
-                    <pre>claude mcp add monarch-money \
+                    <div class="install-step"><span class="num">02</span> Claude Code</div>
+                    <div class="code-block">
+                        <pre>claude mcp add monarch-money \
   -e MONARCH_EMAIL=your-email@example.com \
   -e MONARCH_PASSWORD=your-password \
   -e MONARCH_MFA_SECRET=your-mfa-secret-key \
   -- uvx monarch-mcp-jamiew</pre>
-                </div>
+                    </div>
 
-                <h3 style="margin-top: 2rem; margin-bottom: 1rem;">Codex CLI</h3>
-                <div class="code-block">
-                    <pre>codex mcp add monarch-money \
+                    <div class="install-step"><span class="num">03</span> Codex CLI</div>
+                    <div class="code-block">
+                        <pre>codex mcp add monarch-money \
   --env MONARCH_EMAIL=your-email@example.com \
   --env MONARCH_PASSWORD=your-password \
   --env MONARCH_MFA_SECRET=your-mfa-secret-key \
   -- uvx monarch-mcp-jamiew</pre>
-                </div>
+                    </div>
 
-                <p style="color: var(--text-secondary); margin-top: 1rem;">
-                    Cursor, VS Code, Windsurf, Cline, Zed and other MCP clients accept the same standard config shown above.
-                </p>
-
-                <div class="info-box">
-                    <h3>Getting Your MFA Secret</h3>
-                    <p>
-                        1. Enable 2FA in Monarch Money settings<br>
-                        2. Click "Can't scan?" when shown the QR code<br>
-                        3. Copy the secret key (format: T5SPVJIBRNPNNINFSH5W7RFVF2XYADYX)<br>
-                        4. Use this as your MONARCH_MFA_SECRET
+                    <p class="install-note" style="margin-top: 1rem;">
+                        Cursor, VS Code, Windsurf, Cline, Zed and other MCP clients accept the same standard config shown above.
                     </p>
-                </div>
 
-                <h3 style="margin-top: 2rem; margin-bottom: 1rem;">Use with Your AI Assistant</h3>
-                <p style="color: var(--text-secondary); margin-bottom: 1rem;">
-                    Example queries:
-                </p>
-                <div class="code-block">
-                    <pre>"Show me my account balances"
+                    <div class="info-box">
+                        <h3>🔑 Getting your MFA secret</h3>
+                        <p>
+                            1. Enable 2FA in Monarch Money settings<br>
+                            2. Click "Can't scan?" when shown the QR code<br>
+                            3. Copy the secret key (format: <code>T5SPVJIBRNPNNINFSH5W7RFVF2XYADYX</code>)<br>
+                            4. Use this as your <code>MONARCH_MFA_SECRET</code>
+                        </p>
+                    </div>
+
+                    <div class="install-step"><span class="num">04</span> Talk to your assistant</div>
+                    <p class="install-note">Example prompts once it's wired up:</p>
+                    <div class="code-block">
+                        <pre>"Show me my account balances"
 "Get all transactions from last month"
 "Analyze my spending patterns for the last 3 months"
 "What's my complete financial overview for this quarter?"</pre>
+                    </div>
                 </div>
             </div>
         </section>
 
-        <section id="credits" class="credits">
+        <section id="credits" class="band reveal-section">
             <div class="container">
-                <h2 class="section-title">Credits</h2>
-                <p class="section-subtitle">
-                    Built on open source tools
-                </p>
+                <div class="section-head">
+                    <div class="eyebrow">Acknowledgements</div>
+                    <h2 class="section-title">Credits</h2>
+                    <p class="section-subtitle">
+                        Built on open source tools
+                    </p>
+                </div>
                 <div class="credits-grid">
                     <div class="credit-card">
                         <h3>MCP Server</h3>
-                        <p><strong>Author:</strong> Taurus Colvin</p>
+                        <p><strong>Author:</strong> Jamie Dubs &nbsp;·&nbsp; <a href="https://github.com/jamiew" target="_blank">@jamiew</a></p>
                         <p>
-                            <a href="https://github.com/colvint" target="_blank">@colvint</a>
+                            A FastMCP rewrite with structured output, type safety, and comprehensive testing.
+                            Originally forked from <a href="https://github.com/colvint" target="_blank">@colvint</a>'s implementation.
                         </p>
-                        <p>
-                            MCP server wrapper for Monarch Money with type safety and comprehensive testing.
-                        </p>
-                        <p style="margin-top: 1rem;">
-                            <a href="https://github.com/colvint/monarch-money-mcp" target="_blank">
-                                View Original Repository →
-                            </a>
-                        </p>
+                        <a class="credit-link" href="https://github.com/jamiew/monarch-mcp" target="_blank">View repository →</a>
                     </div>
 
                     <div class="credit-card">
                         <h3>MonarchMoney Library</h3>
-                        <p><strong>Author:</strong> hammem</p>
+                        <p><strong>Author:</strong> <a href="https://github.com/bradleyseanf" target="_blank">@bradleyseanf</a></p>
                         <p>
-                            <a href="https://github.com/hammem" target="_blank">@hammem</a>
+                            The <code>monarchmoneycommunity</code> fork that provides API access to Monarch Money,
+                            descended from <a href="https://github.com/hammem/monarchmoney" target="_blank">@hammem</a>'s original library.
                         </p>
-                        <p>
-                            The Python library that provides API access to Monarch Money.
-                        </p>
-                        <p style="margin-top: 1rem;">
-                            <a href="https://github.com/hammem/monarchmoney" target="_blank">
-                                View Library →
-                            </a>
-                        </p>
+                        <a class="credit-link" href="https://github.com/bradleyseanf/monarchmoneycommunity" target="_blank">View library →</a>
                     </div>
 
                     <div class="credit-card">
@@ -690,24 +1226,16 @@
                         <p>
                             Open protocol for connecting AI assistants to external data sources.
                         </p>
-                        <p style="margin-top: 1rem;">
-                            <a href="https://modelcontextprotocol.io" target="_blank">
-                                Learn More →
-                            </a>
-                        </p>
+                        <a class="credit-link" href="https://modelcontextprotocol.io" target="_blank">Learn more →</a>
                     </div>
 
                     <div class="credit-card">
                         <h3>Monarch Money</h3>
-                        <p><strong>Service:</strong> Financial Management</p>
+                        <p><strong>Service:</strong> Financial management</p>
                         <p>
                             Platform for tracking accounts, budgets, and investments.
                         </p>
-                        <p style="margin-top: 1rem;">
-                            <a href="https://www.monarchmoney.com" target="_blank">
-                                Visit Monarch Money →
-                            </a>
-                        </p>
+                        <a class="credit-link" href="https://www.monarchmoney.com" target="_blank">Visit Monarch Money →</a>
                     </div>
                 </div>
             </div>
@@ -717,11 +1245,31 @@
     <footer>
         <div class="container">
             <p>
-                MIT License •
-                <a href="https://github.com/jamiew/monarch-mcp" target="_blank">GitHub</a> •
+                MIT License
+                <span class="sep">·</span>
+                <a href="https://github.com/jamiew/monarch-mcp" target="_blank">GitHub</a>
+                <span class="sep">·</span>
                 <a href="https://github.com/jamiew/monarch-mcp/issues" target="_blank">Issues</a>
             </p>
         </div>
     </footer>
+
+    <script>
+        const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        const sections = document.querySelectorAll('.reveal-section');
+        if (prefersReduced || !('IntersectionObserver' in window)) {
+            sections.forEach(s => s.classList.add('in'));
+        } else {
+            const obs = new IntersectionObserver((entries) => {
+                entries.forEach(entry => {
+                    if (entry.isIntersecting) {
+                        entry.target.classList.add('in');
+                        obs.unobserve(entry.target);
+                    }
+                });
+            }, { threshold: 0.12, rootMargin: '0px 0px -8% 0px' });
+            sections.forEach(s => obs.observe(s));
+        }
+    </script>
 </body>
 </html>
