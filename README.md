@@ -3,13 +3,13 @@
 
 An [MCP](https://modelcontextprotocol.io/) server for [Monarch Money](https://www.monarchmoney.com/) — gives AI assistants like Claude access to your financial accounts, transactions, budgets, and more.
 
-Originally forked from [@colvint/monarch-money-mcp](https://github.com/colvint/monarch-money-mcp) but has diverged into a full rewrite on a modern **FastMCP** architecture. It's grown from the original handful of tools to **19** — adding server-side transaction search, parallel **bulk transaction updates**, multi-month **spending-pattern analysis** with forecasting, and a single-call **financial overview** that fans out to five Monarch APIs at once. Responses are tuned hard for token efficiency: the default compact transaction format cuts payload size by **~80%**, categories return just `id`+`name` unless you ask for more, and every tool accepts a `verbose` flag when you want the full payload. It also ships MCP **resources** and guided **prompts**, natural-language date parsing ("last month", "30 days ago"), and proper read/write **tool annotations** so clients know what's safe to call.
+Originally forked from [@colvint/monarch-money-mcp](https://github.com/colvint/monarch-money-mcp) but has diverged into a full rewrite on a modern **FastMCP** architecture. It's grown from a handful of tools to a broad toolset — adding server-side transaction search, parallel **bulk transaction updates**, multi-month **spending-pattern analysis** with forecasting, and a single-call **financial overview** that fans out to five Monarch APIs at once. Responses are tuned hard for token efficiency: the default compact transaction format cuts payload size by **~80%**, categories return just `id`+`name` unless you ask for more, and every tool accepts a `verbose` flag when you want the full payload. It also ships MCP **resources** and guided **prompts**, natural-language date parsing ("last month", "30 days ago"), and proper read/write **tool annotations** so clients know what's safe to call.
 
 Built on the [`monarchmoneycommunity`](https://github.com/bradleyseanf/monarchmoneycommunity) library by [@bradleyseanf](https://github.com/bradleyseanf) — an actively-maintained community fork that tracks the latest Monarch Money API changes (the `api.monarch.com` domain move, gql 4.0, auth persistence) with full MFA support, pinned to a specific commit for reproducible builds. It descends from the original [`monarchmoney`](https://github.com/hammem/monarchmoney) library by [@hammem](https://github.com/hammem), which is no longer actively maintained.
 
 ## Features
 
-- **19 tools** covering accounts, transactions, budgets, cashflow, investments, categories, goals, net worth, recurring transactions, and more
+- **Tools** covering accounts, transactions, budgets, cashflow, investments, categories, recurring transactions, and spending analysis
 - **Structured output** — every tool returns a typed schema (`outputSchema` + machine-readable structured content) with a text fallback for older clients
 - **MCP resources** for quick access to categories, accounts, and institutions, plus parameterized templates for per-account holdings and history (`accounts://{account_id}/holdings|history`)
 - **MCP prompts** for guided financial analysis workflows, with live argument autocompletion
@@ -21,7 +21,7 @@ Built on the [`monarchmoneycommunity`](https://github.com/bradleyseanf/monarchmo
 
 ## Setup
 
-The server is published to [PyPI](https://pypi.org/project/monarch-mcp-jamiew/), so there's nothing to clone — [`uv`](https://docs.astral.sh/uv/) runs it on demand with `uvx`. You'll need `uv` installed and your Monarch credentials (see [Getting your MFA secret](#getting-your-mfa-secret) below).
+**One-line install, no clone, no absolute-path wrangling.** The server is published to [PyPI](https://pypi.org/project/monarch-mcp-jamiew/), so [`uv`](https://docs.astral.sh/uv/) runs it on demand with `uvx monarch-mcp-jamiew`. You'll need `uv` installed and your Monarch credentials (see [Getting your MFA secret](#getting-your-mfa-secret) below).
 
 ### Standard config
 
@@ -242,6 +242,7 @@ uv run scripts/eval_session.py analyze            # analyze new entries
 
 > **Warning**: Monarch Money does not provide an official API. This server uses unofficial API access that requires your actual account credentials. Use with appropriate caution.
 
+- The server runs locally on your machine — your credentials live in your MCP client config and **never pass through the LLM**. Only the financial data you actually query is returned to the assistant.
 - Your credentials have full account access — treat them like passwords
 - The MFA secret (TOTP key) provides ongoing access
 - Session files in `.mm/` contain auth tokens — keep them secure
