@@ -95,9 +95,45 @@ env = { MONARCH_EMAIL = "your-email@example.com", MONARCH_PASSWORD = "your-passw
 </details>
 
 <details>
-<summary><b>Other clients (Cursor, VS Code, Windsurf, Cline, Zed, …)</b></summary>
+<summary><b><code>.mcp.json</code> (project-scoped)</b></summary>
 
-These all accept the same [standard config](#standard-config) — drop it into the client's MCP config (e.g. Cursor's `~/.cursor/mcp.json`, or VS Code via `code --add-mcp`). Anything that speaks MCP over stdio works.
+Drop the [standard config](#standard-config) into a `.mcp.json` file at your project root. Claude Code (project scope) and most clients auto-load it.
+
+</details>
+
+<details>
+<summary><b>Hermes</b></summary>
+
+Add to `~/.hermes/config.yaml` under `mcp_servers:`, then `/reload-mcp` (or restart Hermes):
+
+```yaml
+mcp_servers:
+  monarch-money:
+    command: uvx
+    args: ["monarch-mcp-jamiew"]
+    env:
+      MONARCH_EMAIL: "your-email@example.com"
+      MONARCH_PASSWORD: "your-password"
+      MONARCH_MFA_SECRET: "your-mfa-secret-key"
+```
+
+</details>
+
+<details>
+<summary><b>OpenClaw</b></summary>
+
+Add the [standard config](#standard-config) to `~/.openclaw/openclaw.json` under `mcpServers`, then restart the gateway.
+
+</details>
+
+<details>
+<summary><b>Any other MCP client (Cursor, VS Code, Windsurf, Cline, Zed, …)</b></summary>
+
+Most accept the same [standard config](#standard-config) — drop it into the client's MCP config (e.g. Cursor's `~/.cursor/mcp.json`, or VS Code via `code --add-mcp`). Anything that speaks MCP over stdio works.
+
+Not sure how? Tell your agent:
+
+> Install the Monarch Money MCP server from https://github.com/jamiew/monarch-mcp — it's on PyPI as `monarch-mcp-jamiew`, runs via `uvx monarch-mcp-jamiew`, and needs env vars `MONARCH_EMAIL`, `MONARCH_PASSWORD`, and `MONARCH_MFA_SECRET`.
 
 </details>
 

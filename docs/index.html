@@ -617,6 +617,58 @@
             font-size: 0.95rem;
         }
 
+        .client-list {
+            list-style: none;
+            margin: 0.4rem 0 0;
+            display: grid;
+            gap: 0.55rem;
+        }
+
+        .client-list li {
+            position: relative;
+            padding-left: 1.2rem;
+            color: var(--ink-soft);
+            font-size: 0.94rem;
+        }
+
+        .client-list li::before {
+            content: "→";
+            position: absolute;
+            left: 0;
+            color: var(--accent);
+        }
+
+        .client-list strong {
+            color: var(--ink);
+            font-weight: 600;
+        }
+
+        .prompt-box {
+            margin-top: 1.25rem;
+            background: var(--card);
+            border: 1px solid var(--line);
+            border-left: 3px solid var(--accent);
+            border-radius: 0 10px 10px 0;
+            padding: 1rem 1.2rem;
+        }
+
+        .prompt-box .label {
+            font-family: var(--mono);
+            font-size: 0.68rem;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            color: var(--accent-deep);
+            display: block;
+            margin-bottom: 0.5rem;
+        }
+
+        .prompt-box p {
+            color: var(--ink-soft);
+            font-size: 0.92rem;
+            font-style: italic;
+            line-height: 1.55;
+        }
+
         .code-block {
             position: relative;
             background: var(--code-bg);
@@ -1164,9 +1216,19 @@
   -- uvx monarch-mcp-jamiew</pre>
                     </div>
 
-                    <p class="install-note" style="margin-top: 1rem;">
-                        Cursor, VS Code, Windsurf, Cline, Zed and other MCP clients accept the same standard config shown above.
-                    </p>
+                    <div class="install-step"><span class="num">04</span> Everything else</div>
+                    <p class="install-note">Same standard config, different file:</p>
+                    <ul class="client-list">
+                        <li><strong><code>.mcp.json</code></strong> — drop the standard config in your project root; Claude Code (project scope) and most clients auto-load it.</li>
+                        <li><strong>OpenClaw</strong> — add it to <code>~/.openclaw/openclaw.json</code> under <code>mcpServers</code>, then restart the gateway.</li>
+                        <li><strong>Hermes</strong> — add it to <code>~/.hermes/config.yaml</code> under <code>mcp_servers:</code> (YAML), then <code>/reload-mcp</code>.</li>
+                        <li><strong>Cursor · VS Code · Windsurf · Cline · Zed</strong> — same standard config; anything that speaks MCP over stdio works.</li>
+                    </ul>
+
+                    <div class="prompt-box">
+                        <span class="label">Stuck? Ask your agent</span>
+                        <p>"Install the Monarch Money MCP server from github.com/jamiew/monarch-mcp — it's on PyPI as monarch-mcp-jamiew, runs via <code>uvx monarch-mcp-jamiew</code>, and needs env vars MONARCH_EMAIL, MONARCH_PASSWORD, and MONARCH_MFA_SECRET."</p>
+                    </div>
 
                     <div class="info-box">
                         <h3>🔑 Getting your MFA secret</h3>
@@ -1178,7 +1240,7 @@
                         </p>
                     </div>
 
-                    <div class="install-step"><span class="num">04</span> Talk to your assistant</div>
+                    <div class="install-step"><span class="num">05</span> Talk to your assistant</div>
                     <p class="install-note">Example prompts once it's wired up:</p>
                     <div class="code-block">
                         <pre>"Show me my account balances"
