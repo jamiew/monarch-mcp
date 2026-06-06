@@ -30,7 +30,7 @@ Use generic, obviously-fake examples instead: "Main Credit Card", "Corner Deli",
 - `MONARCH_FORCE_LOGIN=true uv run python server.py` - Force fresh login (if session expires)
 
 ### Debugging Startup Issues (Updated July 2025)
-- **Session expired**: Delete `.mm/session.pickle` or set `MONARCH_FORCE_LOGIN=true`
+- **Session expired**: Delete `~/.monarch-mcp/session.pickle` or set `MONARCH_FORCE_LOGIN=true`
 - **JSON parse errors**: Fixed - all stdout output suppressed with `contextlib.redirect_stdout()`
 - **MCP protocol compliance**: All logging/warnings redirected to stderr, third-party lib output suppressed
 - **AsyncIO errors**: Fixed - uses `run_stdio_async()` in async context
@@ -166,7 +166,7 @@ refactor: split server.py into modular components (auth, tools, models)
 - Automatic capability negotiation and tool discovery
 
 **Secure Authentication & Session Management**
-- Sessions stored in `.mm/` directory with 0700 permissions  
+- Sessions stored in `~/.monarch-mcp/` directory (override via `MONARCH_SESSION_DIR`) with 0700 permissions  
 - Proper `RequireMFAException` handling
 - Structured logging with `structlog` for debugging
 - Environment variables: `MONARCH_EMAIL`, `MONARCH_PASSWORD`, `MONARCH_MFA_SECRET`
@@ -237,7 +237,7 @@ Published to PyPI as `monarch-mcp-jamiew` and to the MCP Registry as `io.github.
 
 ### Session Management
 
-- Session files stored in `.mm/` directory (created automatically)
+- Session files stored in `~/.monarch-mcp/` directory (created automatically; override via `MONARCH_SESSION_DIR`)
 - Session invalidation handled gracefully with automatic re-authentication
 - Use `MONARCH_FORCE_LOGIN=true` to bypass session cache for debugging
 - Sessions follow Monarch Money API session management patterns
@@ -249,7 +249,7 @@ Published to PyPI as `monarch-mcp-jamiew` and to the MCP Registry as `io.github.
 #### Phase 1 Critical Fixes (All Complete)
 - **✅ Type Safety**: Eliminated `Any` types, added Pydantic models, strict typing
 - **✅ FastMCP Migration**: Modern MCP protocol with `@mcp.tool()` decorators
-- **✅ Authentication Security**: `.mm/` directory, 0600 permissions, `RequireMFAException` handling
+- **✅ Authentication Security**: `~/.monarch-mcp/` directory, 0600 permissions, `RequireMFAException` handling
 - **✅ Structured Logging**: Context-rich logs with `structlog`
 - **✅ Complete API Coverage**: All 14 Monarch Money API methods as tools
 

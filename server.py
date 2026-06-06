@@ -921,9 +921,14 @@ auth_error: str | None = None  # Store last auth error for debugging
 auth_failed_at: float | None = None  # Timestamp of last auth failure for cooldown
 AUTH_RETRY_COOLDOWN_SECONDS = 60  # Wait 60 seconds before retrying after FAILED state
 
-# Secure session directory with proper permissions
-session_dir = Path(".mm")
-session_dir.mkdir(mode=0o700, exist_ok=True)
+# Secure session directory with proper permissions.
+# Resolve to an absolute, writable path: many MCP clients (e.g. Claude Desktop)
+# launch the server with a read-only working directory like "/", so a relative
+# ".mm" would fail with "Read-only file system". Honor MONARCH_SESSION_DIR if set,
+# otherwise default to ~/.monarch-mcp which is always writable.
+_session_dir_env = os.getenv("MONARCH_SESSION_DIR")
+session_dir = Path(_session_dir_env).expanduser() if _session_dir_env else Path.home() / ".monarch-mcp"
+session_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
 session_file = session_dir / "session.pickle"
 
 

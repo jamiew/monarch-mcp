@@ -224,9 +224,9 @@ By default, transactions return a compact format with the fields that matter:
 
 ## Session management
 
-Sessions are cached in a `.mm` directory for faster subsequent logins. If you hit auth issues:
+Sessions are cached in `~/.monarch-mcp/` for faster subsequent logins (override the location with the `MONARCH_SESSION_DIR` env var). If you hit auth issues:
 
-- Delete `.mm/session.pickle` to clear the cached session
+- Delete `~/.monarch-mcp/session.pickle` to clear the cached session
 - Set `MONARCH_FORCE_LOGIN=true` in your env config to force a fresh login
 - Make sure your system clock is accurate (required for TOTP)
 
@@ -281,7 +281,7 @@ uv run scripts/eval_session.py analyze            # analyze new entries
 - The server runs locally on your machine — your credentials live in your MCP client config and **never pass through the LLM**. Only the financial data you actually query is returned to the assistant.
 - Your credentials have full account access — treat them like passwords
 - The MFA secret (TOTP key) provides ongoing access
-- Session files in `.mm/` contain auth tokens — keep them secure
+- Session files in `~/.monarch-mcp/` contain auth tokens — keep them secure
 - Never commit `.env` or `.mcp.json` files to version control
 - This is an unofficial API — Monarch Money could change or restrict access at any time
 
