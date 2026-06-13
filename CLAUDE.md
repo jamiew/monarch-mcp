@@ -171,10 +171,11 @@ refactor: split server.py into modular components (auth, tools, models)
 - Structured logging with `structlog` for debugging
 - Environment variables: `MONARCH_EMAIL`, `MONARCH_PASSWORD`, `MONARCH_MFA_SECRET`
 
-**Complete Monarch Money API Coverage (19 Tools)**
+**Complete Monarch Money API Coverage (21 Tools)**
 - **Core**: `get_accounts`, `get_transactions`, `get_budgets`, `get_cashflow`
 - **Categories**: `get_transaction_categories`
 - **Transactions**: `create_transaction`, `update_transaction`, `update_transactions_bulk`, `search_transactions`
+- **Splits**: `get_transaction_splits`, `update_transaction_splits` (full-replace; empty list removes all splits)
 - **Investments**: `get_account_holdings` (requires `account_id`), `get_account_history`
 - **Banking**: `get_institutions`, `refresh_accounts`
 - **Planning**: `get_recurring_transactions`, `set_budget_amount`
@@ -254,8 +255,8 @@ Published to PyPI as `monarch-mcp-jamiew` and to the MCP Registry as `io.github.
 - **✅ Complete API Coverage**: All 14 Monarch Money API methods as tools
 
 #### Quality Metrics (Updated May 2026)
-- **202 passing tests** with comprehensive coverage including analytics, search, bulk operations, structured output, completions, resource templates, and progress
-- **19 tools** (all returning typed Pydantic models / structured output), 3 static resources + 2 resource templates, 4 prompts
+- **206 passing tests** with comprehensive coverage including analytics, search, bulk operations, splits, structured output, completions, resource templates, and progress
+- **21 tools** (all returning typed Pydantic models / structured output), 3 static resources + 2 resource templates, 4 prompts
 - **MyPy clean** under the repo's strict config (no `Any` at non-boundaries, no `as`)
 - **Security**: Proper session handling and MFA support
 - **Modern stack**: FastMCP 1.12.2, Pydantic, structlog, pytest
@@ -363,7 +364,7 @@ Published to PyPI as `monarch-mcp-jamiew` and to the MCP Registry as `io.github.
 ### 🔄 REMAINING LOW PRIORITY TASKS
 
 #### 7. Code Architecture & Organization
-**Current State**: Single file with 19 tools, comprehensive tests
+**Current State**: Single file with 21 tools, comprehensive tests
 **Remaining Work:**
 - Split into modules: `auth.py`, `tools.py`, `models.py`, `config.py` (optional - current structure works well)
 - Implement Pydantic Settings for configuration management
@@ -399,7 +400,7 @@ Published to PyPI as `monarch-mcp-jamiew` and to the MCP Registry as `io.github.
 5. **Phase 5 (Intelligence)**: ML features, advanced analytics, financial insights
 6. **Phase 6 (Ecosystem)**: MCP extensions, developer tools, architectural improvements
 
-**Current Status** (Updated May 2026): Production-ready with 202 passing tests, 19 intelligent tools, comprehensive analytics, robust error handling, and enhanced reliability. Recent MCP modernization: every tool returns structured output (outputSchema + structured content with a text fallback), tools/resources/prompts carry human-friendly `title`s, parameterized resource templates (`accounts://{account_id}/holdings|history`), argument completions for prompts/templates, and Context-based progress reporting on the batch tools. Earlier features: `update_transactions_bulk()` for parallel batch updates, `search_transactions`, result-size tracking; fixes for the auth retry bug, date serialization, broken pipes, and date parsing. Note: `get_account_holdings` now requires an `account_id` (the underlying library always did).
+**Current Status** (Updated June 2026): Production-ready with 206 passing tests, 21 intelligent tools (including transaction splitting via `get_transaction_splits` / `update_transaction_splits`), comprehensive analytics, robust error handling, and enhanced reliability. Recent MCP modernization: every tool returns structured output (outputSchema + structured content with a text fallback), tools/resources/prompts carry human-friendly `title`s, parameterized resource templates (`accounts://{account_id}/holdings|history`), argument completions for prompts/templates, and Context-based progress reporting on the batch tools. Earlier features: `update_transactions_bulk()` for parallel batch updates, `search_transactions`, result-size tracking; fixes for the auth retry bug, date serialization, broken pipes, and date parsing. Note: `get_account_holdings` now requires an `account_id` (the underlying library always did).
 
 ## Upstream Library & Fork Landscape
 
@@ -415,7 +416,7 @@ This MCP server is a thin wrapper over a Python Monarch Money client. That clien
 
 **Our pin:** `pyproject.toml` → `[tool.uv.sources]` pins `monarchmoneycommunity` to a **specific commit SHA** (the fork's `dev` HEAD), not a moving branch, for reproducible builds. When bumping, update the SHA *and* the comment date there.
 
-**Unused capabilities in the fork we already depend on** (zero new dependencies — just need new `@mcp.tool()` wrappers in `server.py`): transaction tags (`get/set/create_transaction_tag`), splits (`get/update_transaction_splits`), `find_duplicate_transactions`, `get_transaction_details`, `get_cashflow_summary`, `get_subscription_details`, `get_credit_history`, `delete_transaction`, `create_transaction_category`, `update_account`, `request_accounts_refresh_and_wait`.
+**Unused capabilities in the fork we already depend on** (zero new dependencies — just need new `@mcp.tool()` wrappers in `server.py`): transaction tags (`get/set/create_transaction_tag`), `find_duplicate_transactions`, `get_transaction_details`, `get_cashflow_summary`, `get_subscription_details`, `get_credit_history`, `delete_transaction`, `create_transaction_category`, `update_account`, `request_accounts_refresh_and_wait`.
 
 **`keithah/monarchmoney-enhanced` (worth exploring in a followup, needs testing):** adds whole capability areas neither our fork nor the parent has, several of which map onto TODOs above — a transaction **rules engine** (categorization/amount/ignore rules + apply-to-existing), a built-in **caching layer** (`preload_cache`, `clear_cache`, cache metrics), **proactive session management** (`validate_session`, `ensure_valid_session`, `is_session_stale`), **goals**, **bills** (`get_bills`), **merchants**, and **insights** (`get_insights`, `get_net_worth_history`, `get_investment_performance`, `get_credit_score`). Caveat: it is **not** a strict superset — our current fork has a few methods it lacks (`upload_attachment`, `reset_budget`, flex-budget methods, `get_credit_history`). So adopting it is a real decision (switch dependency vs. cherry-pick specific GraphQL queries), not a drop-in — needs hands-on testing against a live account first.
 

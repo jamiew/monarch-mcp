@@ -51,6 +51,14 @@ TOOL_CALLS: list[Any] = [
         id="create_transaction",
     ),
     pytest.param(lambda: server.update_transaction(transaction_id="txn_1", notes="memo"), id="update_transaction"),
+    pytest.param(lambda: server.get_transaction_splits(transaction_id="txn_1"), id="get_transaction_splits"),
+    pytest.param(
+        lambda: server.update_transaction_splits(
+            transaction_id="txn_1",
+            splits=[server.TransactionSplit(amount=-10.0, category_id="cat_1")],
+        ),
+        id="update_transaction_splits",
+    ),
     pytest.param(lambda: server.get_account_holdings(account_id="acc_1"), id="get_account_holdings"),
     pytest.param(lambda: server.get_account_history(account_id="acc_1"), id="get_account_history"),
     pytest.param(lambda: server.get_institutions(), id="get_institutions"),
