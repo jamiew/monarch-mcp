@@ -576,6 +576,33 @@ class TransactionResult(MMModel):
     transaction: JsonValue
 
 
+class TransactionSplit(BaseModel):
+    """One leg of a split transaction.
+
+    The split amounts must sum to the parent transaction's amount (Monarch
+    validates this and rejects the update otherwise). Amounts keep the parent's
+    sign convention — expenses are negative, income positive.
+    """
+
+    amount: float
+    category_id: str | None = None
+    merchant_name: str | None = None
+    notes: str | None = None
+
+
+class TransactionSplitsResult(MMModel):
+    transaction_id: str
+    has_split_transactions: bool
+    splits: list[JsonValue]
+
+
+class UpdateSplitsResult(MMModel):
+    transaction_id: str
+    has_split_transactions: bool
+    splits: list[JsonValue]
+    message: str
+
+
 class BulkSummary(BaseModel):
     total: int
     succeeded: int
@@ -1879,6 +1906,123 @@ async def update_transactions_bulk(updates: str) -> BulkUpdateResult:
 
     except Exception as e:
         log.error("bulk_update_failed", error=str(e))
+        raise
+
+
+@mcp.tool(annotations=READONLY, title="Get Transaction Splits")
+@track_usage
+async def get_transaction_splits(transaction_id: str) -> TransactionSplitsResult:
+    """Get the split legs of a transaction.
+
+    Splitting lets a single transaction be divided across multiple categories
+    (e.g. a Target run that is part groceries, part household). This returns the
+    current split legs, if any.
+
+    Args:
+        transaction_id: ID of the transaction to inspect
+
+    Returns:
+        The transaction id, whether it currently has splits, and the list of
+        split legs (each with its own amount, category, merchant, and notes).
+        ``splits`` is empty for an un-split transaction.
+    """
+    await ensure_authenticated()
+
+    try:
+        result = await api_call_with_retry("get_transaction_splits", transaction_id=transaction_id)
+        result = convert_dates_to_strings(result)
+        transaction = result.get("getTransaction") or {} if isinstance(result, dict) else {}
+        splits = transaction.get("splitTransactions") or []
+        return TransactionSplitsResult(
+            transaction_id=transaction_id,
+            has_split_transactions=bool(splits),
+            splits=splits,
+        )
+    except Exception as e:
+        log.error("Failed to get transaction splits", error=str(e), transaction_id=transaction_id)
+        raise
+
+
+@mcp.tool(annotations=WRITE_IDEMPOTENT, title="Update Transaction Splits")
+@track_usage
+async def update_transaction_splits(transaction_id: str, splits: list[TransactionSplit]) -> UpdateSplitsResult:
+    """Create, replace, or remove the splits on a transaction.
+
+    This is a full replacement: the splits you pass become the transaction's
+    complete set of split legs, replacing any that exist. Pass an empty list to
+    remove all splits and restore the transaction to a single un-split entry.
+
+    Args:
+        transaction_id: ID of the transaction to split (required)
+        splits: The complete set of split legs. Each leg has:
+            - amount (required): Leg amount, using the parent's sign convention
+              (expenses negative, income positive). All leg amounts MUST sum to
+              the parent transaction's amount or Monarch rejects the update.
+            - category_id (optional): Category for this leg
+            - merchant_name (optional): Merchant display name for this leg;
+              defaults to the parent merchant when omitted
+            - notes (optional): Per-leg memo
+            Pass an empty list to delete all existing splits.
+
+    Example:
+        Split a -100.00 transaction into groceries and household:
+            transaction_id="txn_123"
+            splits=[
+                {"amount": -70.00, "category_id": "cat_groceries", "notes": "Food"},
+                {"amount": -30.00, "category_id": "cat_household"},
+            ]
+
+    Returns:
+        The transaction id, whether it now has splits, the resulting split legs,
+        and a human-readable summary message.
+    """
+    await ensure_authenticated()
+
+    try:
+        # Translate our snake_case inputs into the camelCase shape the API expects.
+        split_data: list[dict[str, Any]] = []
+        for split in splits:
+            entry: dict[str, Any] = {"amount": split.amount}
+            # Always send merchantName (empty string => inherit the parent merchant),
+            # matching the documented split payload shape.
+            entry["merchantName"] = split.merchant_name if split.merchant_name is not None else ""
+            if split.category_id is not None:
+                entry["categoryId"] = split.category_id
+            if split.notes is not None:
+                entry["notes"] = split.notes
+            split_data.append(entry)
+
+        log.info("updating_transaction_splits", transaction_id=transaction_id, split_count=len(split_data))
+
+        result = await asyncio.wait_for(
+            api_call_with_retry("update_transaction_splits", transaction_id=transaction_id, split_data=split_data),
+            timeout=30.0,
+        )
+        result = convert_dates_to_strings(result)
+
+        payload = result.get("updateTransactionSplit") or {} if isinstance(result, dict) else {}
+        errors = payload.get("errors")
+        if errors:
+            raise ValueError(f"Monarch rejected the split update: {errors}")
+
+        transaction = payload.get("transaction") or {}
+        result_splits = transaction.get("splitTransactions") or []
+        message = (
+            f"Removed all splits from transaction {transaction_id}"
+            if not split_data
+            else f"Set {len(result_splits)} split(s) on transaction {transaction_id}"
+        )
+        return UpdateSplitsResult(
+            transaction_id=transaction_id,
+            has_split_transactions=bool(transaction.get("hasSplitTransactions")),
+            splits=result_splits,
+            message=message,
+        )
+    except asyncio.TimeoutError as e:
+        log.error("update_transaction_splits_timeout", transaction_id=transaction_id)
+        raise ValueError("Split update timed out after 30 seconds. Please try again.") from e
+    except Exception as e:
+        log.error("update_transaction_splits_failed", transaction_id=transaction_id, error=str(e))
         raise
 
 
