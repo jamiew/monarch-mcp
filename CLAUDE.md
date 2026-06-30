@@ -404,21 +404,26 @@ Published to PyPI as `monarch-mcp-jamiew` and to the MCP Registry as `io.github.
 
 ## Upstream Library & Fork Landscape
 
-**Last checked: 2026-05-28.** Update the date and findings below whenever you re-analyze (see "How to keep this current").
+**Last checked: 2026-06-30.** Update the date and findings below whenever you re-analyze (see "How to keep this current").
 
 This MCP server is a thin wrapper over a Python Monarch Money client. That client is a *fork of a fork*, so it's worth understanding the lineage:
 
 | Repo | Role | Stars | Health (as of last check) |
 |---|---|---|---|
-| [`hammem/monarchmoney`](https://github.com/hammem/monarchmoney) | original parent | ~490 | **Effectively abandoned.** Critical fixes sit unmerged in 5+ open PRs (e.g. #184 API domain change, #191 gql 4.0 break). Do **not** depend on this directly. |
-| [`bradleyseanf/monarchmoneycommunity`](https://github.com/bradleyseanf/monarchmoneycommunity) | **what we use** | ~84 | Active. `dev` branch was ~97 commits ahead of parent / 0 behind. Already carries the domain fix (`api.monarch.com`), gql 4.0 fix, auth persistence, and budget query fix. Published to PyPI as `monarchmoneycommunity`. |
-| [`keithah/monarchmoney-enhanced`](https://github.com/keithah/monarchmoney-enhanced) | sibling fork, **not used yet** | ~24 | Active, MIT, on PyPI as `monarchmoney-enhanced`. ~6,100 LOC vs our ~3,500 — much larger surface. |
+| [`hammem/monarchmoney`](https://github.com/hammem/monarchmoney) | original parent | ~502 | **Still effectively abandoned.** Last commit 2025-11-03 (~8 months stale), not archived. Top open items are the same domain-change saga (`api.monarchmoney.com` → `api.monarch.com`); our fork already carries it. No new critical fixes we lack. Do **not** depend on this directly. |
+| [`bradleyseanf/monarchmoneycommunity`](https://github.com/bradleyseanf/monarchmoneycommunity) | **what we use** | ~95 | **Most active fork by far.** `dev` last commit 2026-06-13, ahead 8 / behind 0 vs `main`. Carries the domain fix, gql 4.0 fix, auth persistence, budget query fix, plus newer cookie-auth fallback and `upload_receipt_to_inbox`. PyPI `monarchmoneycommunity` 1.4.0. |
+| [`keithah/monarchmoney-enhanced`](https://github.com/keithah/monarchmoney-enhanced) | sibling fork, **not used** | ~24 | **Gone stale** — last push 2026-01-17 (~5.5 months). Still the most feature-rich sibling (~126 public methods, service-oriented ~6,100 LOC + modules vs our single ~3,960-LOC file), on PyPI as `monarchmoney-enhanced` 0.11.0. The activity gap now favors cherry-picking from it over switching to it. |
 
-**Our pin:** `pyproject.toml` → `[tool.uv.sources]` pins `monarchmoneycommunity` to a **specific commit SHA** (the fork's `dev` HEAD), not a moving branch, for reproducible builds. When bumping, update the SHA *and* the comment date there.
+**Our pin:** `pyproject.toml` → `[tool.uv.sources]` pins `monarchmoneycommunity` to a **specific commit SHA** (the fork's `dev` HEAD), not a moving branch, for reproducible builds. As of this check the pin (`c6904e4`) **equals dev HEAD** — we track the tip. When bumping, update the SHA *and* the comment date there.
 
-**Unused capabilities in the fork we already depend on** (zero new dependencies — just need new `@mcp.tool()` wrappers in `server.py`): transaction tags (`get/set/create_transaction_tag`), `find_duplicate_transactions`, `get_transaction_details`, `get_cashflow_summary`, `get_subscription_details`, `get_credit_history`, `delete_transaction`, `create_transaction_category`, `update_account`, `request_accounts_refresh_and_wait`.
+**Unused capabilities in the fork we already depend on** (zero new dependencies — just need new `@mcp.tool()` wrappers in `server.py`): transaction tags (`get/set/create_transaction_tag`), `find_duplicate_transactions`, `get_transaction_details`, `get_cashflow_summary`, `get_subscription_details`, `get_credit_history`, `delete_transaction`, `create_transaction_category`, `update_account`, `request_accounts_refresh_and_wait`, and the newer `upload_receipt_to_inbox` (upload a receipt image → Monarch AI auto-categorizes/matches it).
 
-**`keithah/monarchmoney-enhanced` (worth exploring in a followup, needs testing):** adds whole capability areas neither our fork nor the parent has, several of which map onto TODOs above — a transaction **rules engine** (categorization/amount/ignore rules + apply-to-existing), a built-in **caching layer** (`preload_cache`, `clear_cache`, cache metrics), **proactive session management** (`validate_session`, `ensure_valid_session`, `is_session_stale`), **goals**, **bills** (`get_bills`), **merchants**, and **insights** (`get_insights`, `get_net_worth_history`, `get_investment_performance`, `get_credit_score`). Caveat: it is **not** a strict superset — our current fork has a few methods it lacks (`upload_attachment`, `reset_budget`, flex-budget methods, `get_credit_history`). So adopting it is a real decision (switch dependency vs. cherry-pick specific GraphQL queries), not a drop-in — needs hands-on testing against a live account first.
+**`keithah/monarchmoney-enhanced` (cherry-pick, don't switch):** has the bigger surface but is now stale (no push since 2026-01-17) and is **not** a strict superset — switching would lose our fork's `upload_attachment`, `upload_receipt_to_inbox`, `reset_budget`, flex-budget methods, and `get_credit_history`. Capabilities worth porting by lifting the isolated GraphQL queries from its `services/*.py` (ranked by value-per-effort):
+1. **Rules engine** (biggest differentiator — maps to the "category auto-classification" TODO): `create_transaction_rule` + categorization/amount/ignore/combined variants, `preview_transaction_rule`, `apply_rules_to_existing_transactions`, `get/update/delete_transaction_rule`. Self-contained in `transaction_service.py`.
+2. **Net worth history + insights** (maps to "financial intelligence / investment performance" TODOs): `get_net_worth_history`, `get_insights`, `get_investment_performance`, `get_credit_score`. Isolated in `insight_service.py` / `investment_service.py`.
+3. **Goals & Bills**: `get_goals`/`create_goal`/…, `get_bills` — small isolated query sets, common personal-finance value.
+
+Skip porting enhanced's caching layer (`preload_cache`, cache metrics) and proactive-session methods (`validate_session`, `ensure_valid_session`) — our server is stateless-per-call, so importing that architecture isn't worth it; the CLAUDE.md caching TODO can be served in-process if needed.
 
 ### How to keep this current
 
