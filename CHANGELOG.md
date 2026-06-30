@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-06-30
+
+### Transaction splitting (0.4.0)
+
+- added two new tools — `get_transaction_splits` and `update_transaction_splits` — bringing the total to 21. Splits are full-replace: passing an empty list clears all splits on a transaction.
+- both return typed Pydantic models / structured output like the rest of the tools.
+- thanks to [@caseypugh](https://github.com/caseypugh) for building this ([#13](https://github.com/jamiew/monarch-mcp/pull/13)) — welcome aboard as a committer! 💛
+
+### Session directory fix
+
+- the session dir now resolves to an absolute, writable path, fixing startup in environments where the relative path wasn't writable. Also [@caseypugh](https://github.com/caseypugh) ([#12](https://github.com/jamiew/monarch-mcp/pull/12)).
+
+### Dependencies refreshed and fork pin bumped
+
+- bumped the lockfile to latest compatible: mcp 1.28, structlog 26 (drops py3.8/3.9, we require >=3.10), cryptography 49, starlette 1.3, plus patch/minor across the tree. No security advisories.
+- bumped the `monarchmoneycommunity` git pin to dev HEAD (1.4.0) — additive only: cookie-auth fallback for when token login hits Cloudflare, and a new `upload_receipt_to_inbox` method.
+- refreshed CLAUDE.md's upstream fork-landscape analysis: our pin now equals dev HEAD, the parent is still abandoned, and `keithah/monarchmoney-enhanced` has gone stale — so the posture is cherry-pick (rules engine / insights / goals) rather than switch dependencies.
+
 ## 2026-05-28
 
 ### Fix broken `uvx` install (0.3.2)
