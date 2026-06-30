@@ -151,5 +151,5 @@ exclude_lines = [
 
 [tool.uv.sources]
 # Pinned to a specific commit (not a moving branch) for reproducible builds.
-# This is the fork's `dev` HEAD as of 2026-05-28 — see "Upstream library" in CLAUDE.md.
-monarchmoneycommunity = { git = "https://github.com/bradleyseanf/monarchmoneycommunity", rev = "befdadc7163f90053be5820346f3095b78c7a857" }
+# This is the fork's `dev` HEAD as of 2026-06-30 — see "Upstream library" in CLAUDE.md.
+monarchmoneycommunity = { git = "https://github.com/bradleyseanf/monarchmoneycommunity", rev = "c6904e4ec8938c7386e73ed503b7c0a0693dd6a4" }
