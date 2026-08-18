@@ -163,6 +163,51 @@ class TestReadToolSuccess:
         assert result.totals.net == 1950.0
 
     @pytest.mark.asyncio
+    async def test_get_spending_summary_paginates_beyond_one_page(self, mock_api: AsyncMock) -> None:
+        """Regression test: a single limit=1000 call used to silently drop everything
+        past the first page. A category could then report a total smaller than a
+        single merchant within it. Build 1,500 nested-response transactions across
+        two pages and assert the aggregation reflects all of them, not just page one.
+        """
+        page_one = [{"amount": -10.0, "category": {"name": "Restaurants"}, "date": "2024-01-01"} for _ in range(1000)]
+        page_two = [{"amount": -10.0, "category": {"name": "Restaurants"}, "date": "2024-01-02"} for _ in range(500)]
+
+        def _side_effect(method_name: str, *args: object, **kwargs: object) -> dict[str, object]:
+            assert method_name == "get_transactions"
+            offset = kwargs.get("offset", 0)
+            results = page_one if offset == 0 else page_two if offset == 1000 else []
+            return {"allTransactions": {"totalCount": 1500, "results": results}}
+
+        mock_api.side_effect = _side_effect
+        result = await server.get_spending_summary(group_by="category")
+
+        assert result.groups["Restaurants"].count == 1500
+        assert result.groups["Restaurants"].expenses == 15000.0
+        assert result.totals.expenses == 15000.0
+        assert mock_api.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_get_spending_summary_flat_list_response_paginates_on_short_page(self, mock_api: AsyncMock) -> None:
+        """extract_transactions_list also accepts a bare list (no totalCount). A
+        naive ``total_count = 0`` fallback would stop after page one regardless of
+        whether the page was full, since any real page length is >= 0. Simulate a
+        full first page (page_size items, so the "short page" signal is absent) to
+        prove pagination continues into a second call rather than stopping early.
+        """
+        page_one = [{"amount": -1.0, "category": {"name": "Misc"}, "date": "2024-01-01"} for _ in range(1000)]
+        page_two = [{"amount": -1.0, "category": {"name": "Misc"}, "date": "2024-01-02"} for _ in range(3)]
+
+        def _side_effect(method_name: str, *args: object, **kwargs: object) -> list[dict[str, object]]:
+            offset = kwargs.get("offset", 0)
+            return page_one if offset == 0 else page_two if offset == 1000 else []
+
+        mock_api.side_effect = _side_effect
+        result = await server.get_spending_summary(group_by="category")
+
+        assert result.groups["Misc"].count == 1003
+        assert mock_api.await_count == 2
+
+    @pytest.mark.asyncio
     async def test_refresh_accounts_returns_result(self, mock_api: AsyncMock) -> None:
         mock_api.return_value = {"status": "refresh_requested"}
         result = await server.refresh_accounts()
