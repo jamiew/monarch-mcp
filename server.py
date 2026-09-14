@@ -2203,11 +2203,35 @@ async def get_spending_summary(
     try:
         log.info("Generating spending summary", start_date=start_date, end_date=end_date, group_by=group_by)
 
-        # Get transactions for the period
+        # Get transactions for the period — paginate; a single limit=1000 call
+        # silently truncates any window with more than 1000 matching transactions
+        # (see monarchmoney's own get_duplicate_transactions for this pattern).
         filters = build_date_filter(start_date, end_date)
-        response = await api_call_with_retry("get_transactions", limit=1000, **filters)  # type: ignore[arg-type]
-        # Extract transactions list from nested response structure
-        transactions = extract_transactions_list(response)
+        page_size = 1000
+        offset = 0
+        transactions: list[dict[str, Any]] = []
+        while True:
+            response = await api_call_with_retry(
+                "get_transactions",
+                limit=page_size,
+                offset=offset,
+                **filters,  # type: ignore[arg-type]
+            )
+            page = extract_transactions_list(response)
+            if not page:
+                break
+            transactions.extend(page)
+            offset += len(page)
+            total_count: int | None = None
+            if isinstance(response, dict):
+                total_count = (response.get("allTransactions") or {}).get("totalCount")
+            if total_count is not None:
+                if len(transactions) >= total_count:
+                    break
+            elif len(page) < page_size:
+                # No totalCount available (e.g. a flat-list response) — a short
+                # page is the only signal that this was the last page.
+                break
 
         # Aggregate spending data
         summary: dict[str, Any] = {
