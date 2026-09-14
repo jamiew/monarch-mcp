@@ -8,6 +8,12 @@
 - Added `update_recurring_transaction` for merchant-wide recurrence settings. Omitted settings stay unchanged; rejected or malformed responses fail rather than report success.
 - Clarified scheduled occurrences versus recorded transactions and payment status.
 
+### Dependencies
+
+- Updated `monarchmoneycommunity` to the September 9 dev commit and raised the published floor to 1.5.2. MCP tools still use released APIs.
+- Refreshed compatible runtime and development dependencies, including MCP 1.30, mypy 2.3, and ruff 0.16.
+- Updated aiohttp and cryptography past the advisories found in the previous environment. The refreshed Python 3.13 environment passed `pip-audit`.
+
 ## 2026-06-30
 
 ### Transaction splitting (0.4.0)

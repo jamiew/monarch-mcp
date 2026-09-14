@@ -27,9 +27,9 @@ classifiers = [
     "Topic :: Office/Business :: Financial",
 ]
 dependencies = [
-    "mcp[cli]>=1.28.0,<2",
-    "monarchmoneycommunity>=1.4.0",
-    "pydantic>=2.12.5",
+    "mcp[cli]>=1.30.0,<2",
+    "monarchmoneycommunity>=1.5.2",
+    "pydantic>=2.13.5",
     "python-dateutil>=2.9.0.post0",
     "structlog>=26.1.0",
 ]
@@ -59,12 +59,12 @@ only-include = [
 
 [dependency-groups]
 dev = [
-    "mypy>=2.1.0",
+    "mypy>=2.3.1",
     "pytest>=9.0.0",
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=7.0.0",
-    "ruff>=0.15.0",
-    "types-python-dateutil>=2.9.0.20260302",
+    "ruff>=0.16.7",
+    "types-python-dateutil>=2.9.0.20260807",
 ]
 
 [tool.mypy]
@@ -151,5 +151,5 @@ exclude_lines = [
 
 [tool.uv.sources]
 # Pinned to a specific commit (not a moving branch) for reproducible builds.
-# This is the fork's `dev` HEAD as of 2026-06-30 — see "Upstream library" in CLAUDE.md.
-monarchmoneycommunity = { git = "https://github.com/bradleyseanf/monarchmoneycommunity", rev = "c6904e4ec8938c7386e73ed503b7c0a0693dd6a4" }
+# This is the fork's `dev` HEAD as of 2026-09-14 — see "Upstream library" in CLAUDE.md.
+monarchmoneycommunity = { git = "https://github.com/bradleyseanf/monarchmoneycommunity", rev = "c2f91f14f3d962d36275cb934dd3594b8aa1dcad" }

@@ -404,35 +404,33 @@ Published to PyPI as `monarch-mcp-jamiew` and to the MCP Registry as `io.github.
 
 ## Upstream Library & Fork Landscape
 
-**Last checked: 2026-06-30.** Update the date and findings below whenever you re-analyze (see "How to keep this current").
+**Last checked: 2026-09-14.** Keep `monarchmoneycommunity`; no inspected sibling is a safer replacement.
 
-This MCP server is a thin wrapper over a Python Monarch Money client. That client is a *fork of a fork*, so it's worth understanding the lineage:
+| Repository | Latest verified activity | Assessment |
+|---|---|---|
+| [hammem/monarchmoney](https://github.com/hammem/monarchmoney) | `98a6e0d`, 2025-11-03 | No new merged fixes. Domain and cookie-auth PRs remain open. |
+| [bradleyseanf/monarchmoneycommunity](https://github.com/bradleyseanf/monarchmoneycommunity) | `dev` `c2f91f14`, 2026-09-09; PyPI 1.5.2, 2026-08-02 | Active dependency. Stable adds liability/ownership fields, pending-transaction filtering, and an MFA error fix. |
+| [keithah/monarchmoney-enhanced](https://github.com/keithah/monarchmoney-enhanced) | `3c7d442`, 2026-08-13; PyPI 0.11.0 | Recent dependency maintenance, but feature-stale. Still uses the old API domain; service queries differ from public methods. |
+| [tommyzed/monarchmoney-i18n-transactions](https://github.com/tommyzed/monarchmoney-i18n-transactions) | `9b5acb9`, 2026-09-14 | Active currency/import application, not a replacement general-purpose client. No differentiated recurring getter found. |
+| [jribnik/monarchmoney-enhanced](https://github.com/jribnik/monarchmoney-enhanced) | PR branches updated 2026-07-28 | Useful proposed schema fixes for enhanced's rules and transactions, not a maintained release. |
+| [amaten69/monarchmoney-maten](https://github.com/amaten69/monarchmoney-maten) | `09bae1e`, 2026-08-17 | Recent transaction changes; no new recurring capability established. |
 
-| Repo | Role | Stars | Health (as of last check) |
-|---|---|---|---|
-| [`hammem/monarchmoney`](https://github.com/hammem/monarchmoney) | original parent | ~502 | **Still effectively abandoned.** Last commit 2025-11-03 (~8 months stale), not archived. Top open items are the same domain-change saga (`api.monarchmoney.com` → `api.monarch.com`); our fork already carries it. No new critical fixes we lack. Do **not** depend on this directly. |
-| [`bradleyseanf/monarchmoneycommunity`](https://github.com/bradleyseanf/monarchmoneycommunity) | **what we use** | ~95 | **Most active fork by far.** `dev` last commit 2026-06-13, ahead 8 / behind 0 vs `main`. Carries the domain fix, gql 4.0 fix, auth persistence, budget query fix, plus newer cookie-auth fallback and `upload_receipt_to_inbox`. PyPI `monarchmoneycommunity` 1.4.0. |
-| [`keithah/monarchmoney-enhanced`](https://github.com/keithah/monarchmoney-enhanced) | sibling fork, **not used** | ~24 | **Gone stale** — last push 2026-01-17 (~5.5 months). Still the most feature-rich sibling (~126 public methods, service-oriented ~6,100 LOC + modules vs our single ~3,960-LOC file), on PyPI as `monarchmoney-enhanced` 0.11.0. The activity gap now favors cherry-picking from it over switching to it. |
+Discovery covered the parent's 15 most-starred and 15 newest forks, 30 community children, and nine enhanced children. Push timestamps alone can reflect inherited commits.
 
-**Our pin:** `pyproject.toml` → `[tool.uv.sources]` pins `monarchmoneycommunity` to a **specific commit SHA** (the fork's `dev` HEAD), not a moving branch, for reproducible builds. As of this check the pin (`c6904e4`) **equals dev HEAD** — we track the tip. When bumping, update the SHA *and* the comment date there.
+**Pin policy:** `[tool.uv.sources]` tracks a verified `dev` HEAD by exact SHA. The pin is now `c2f91f14f3d962d36275cb934dd3594b8aa1dcad`; update its comment date when changing it. Published wheels ignore this source override, so the dependency floor is `>=1.5.2` and MCP tools must use APIs available in that release. Dev-only proxy support, date normalization, all-holdings aggregation, rules, and household ownership APIs are not guaranteed for PyPI installs.
 
-**Unused capabilities in the fork we already depend on** (zero new dependencies — just need new `@mcp.tool()` wrappers in `server.py`): transaction tags (`get/set/create_transaction_tag`), `find_duplicate_transactions`, `get_transaction_details`, `get_cashflow_summary`, `get_subscription_details`, `get_credit_history`, `delete_transaction`, `create_transaction_category`, `update_account`, `request_accounts_refresh_and_wait`, and the newer `upload_receipt_to_inbox` (upload a receipt image → Monarch AI auto-categorizes/matches it).
+**Recurring support:** the stable client already has date-bounded occurrences and the misspelled `update_reoccuring` merchant mutation. The MCP exposes these as `get_recurring_transactions` and `update_recurring_transaction`. Preserve the distinction between forecasts, recorded transactions, and payment status. `isPast` is not proof of payment. Check nested mutation errors before reporting success.
 
-**`keithah/monarchmoney-enhanced` (cherry-pick, don't switch):** has the bigger surface but is now stale (no push since 2026-01-17) and is **not** a strict superset — switching would lose our fork's `upload_attachment`, `upload_receipt_to_inbox`, `reset_budget`, flex-budget methods, and `get_credit_history`. Capabilities worth porting by lifting the isolated GraphQL queries from its `services/*.py` (ranked by value-per-effort):
-1. **Rules engine** (biggest differentiator — maps to the "category auto-classification" TODO): `create_transaction_rule` + categorization/amount/ignore/combined variants, `preview_transaction_rule`, `apply_rules_to_existing_transactions`, `get/update/delete_transaction_rule`. Self-contained in `transaction_service.py`.
-2. **Net worth history + insights** (maps to "financial intelligence / investment performance" TODOs): `get_net_worth_history`, `get_insights`, `get_investment_performance`, `get_credit_score`. Isolated in `insight_service.py` / `investment_service.py`.
-3. **Goals & Bills**: `get_goals`/`create_goal`/…, `get_bills` — small isolated query sets, common personal-finance value.
+**Potential additions, not verified features:** [parent PR #165](https://github.com/hammem/monarchmoney/pull/165) and enhanced's service implement `recurringTransactionStreams`, including liability forecasts. Neither query was live-validated in this review. Enhanced also has paid/late summaries and review/disable mutations, but its open schema-fix PRs argue against copying these without validation. Do not add unverified mutations or switch clients for method count alone.
 
-Skip porting enhanced's caching layer (`preload_cache`, cache metrics) and proactive-session methods (`validate_session`, `ensure_valid_session`) — our server is stateless-per-call, so importing that architecture isn't worth it; the CLAUDE.md caching TODO can be served in-process if needed.
+Other stable capabilities worth considering: transaction details/tags, duplicate detection, cashflow summaries, and receipt uploads. Keep additions tied to a user need.
 
-### How to keep this current
+### Refresh procedure
 
-Re-run this analysis periodically (e.g. quarterly, or when something breaks):
-1. **Check our fork moved:** `gh api repos/bradleyseanf/monarchmoneycommunity/compare/main...dev` and compare `dev` HEAD SHA against our pinned SHA in `uv.lock`. Bump if meaningfully ahead.
-2. **Check parent for new critical fixes:** `gh api 'repos/hammem/monarchmoney/issues?state=open&sort=reactions'` and the open PRs — verify our fork carries any new breaking-bug fixes.
-3. **Check sibling forks:** `gh api 'repos/hammem/monarchmoney/forks?sort=stargazers'`. Diff method surfaces by downloading each fork's `monarchmoney/monarchmoney.py` and `comm`-ing the `def ` lists.
-4. **Find unused wins:** diff the installed lib's public methods against the method names `server.py` passes to `api_call_with_retry(...)` — anything in the lib but not wrapped is a cheap new tool.
-5. Update the **Last checked** date and the table above with what changed.
+1. Compare the pinned SHA with community `dev` and the latest PyPI release. Inspect changes, not just version strings.
+2. Check parent issues/PRs and both popular and recent forks for concrete fixes.
+3. Verify signatures, GraphQL response shapes, nested errors, and published-package availability.
+4. Update the pin, lockfile, release floor when needed, and this dated assessment.
 
 ## Documentation References
 
