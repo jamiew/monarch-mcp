@@ -63,6 +63,12 @@ TOOL_CALLS: list[Any] = [
     pytest.param(lambda: server.get_account_history(account_id="acc_1"), id="get_account_history"),
     pytest.param(lambda: server.get_institutions(), id="get_institutions"),
     pytest.param(lambda: server.get_recurring_transactions(), id="get_recurring_transactions"),
+    pytest.param(
+        lambda: server.update_recurring_transaction(
+            merchant_id="merchant_1", merchant_name="Example Merchant", is_active=False
+        ),
+        id="update_recurring_transaction",
+    ),
     pytest.param(lambda: server.set_budget_amount(category_id="cat_1", amount=500.0), id="set_budget_amount"),
     pytest.param(
         lambda: server.create_manual_account(account_name="Savings", account_type="savings", balance=1000.0),

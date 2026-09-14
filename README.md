@@ -194,13 +194,30 @@ Then point your client at the local copy with absolute paths (find them with `wh
 | `get_account_holdings` | Investment holdings for an account (requires `account_id`) |
 | `get_account_history` | Account balance history |
 | `get_institutions` | Linked financial institutions |
-| `get_recurring_transactions` | Recurring transaction detection |
+| `get_recurring_transactions` | Scheduled occurrences within a date range |
+| `update_recurring_transaction` | Change a merchant's recurring schedule |
 | `set_budget_amount` | Set a budget category amount |
 | `create_manual_account` | Create a manually-tracked account |
 | `refresh_accounts` | Trigger account data refresh |
 | `get_spending_summary` | Spending aggregated by category, account, or month |
 | `get_complete_financial_overview` | Combined 5-API call in parallel |
 | `analyze_spending_patterns` | Multi-month trend analysis |
+
+### Recurring transactions
+
+`get_recurring_transactions(start_date, end_date)` returns scheduled occurrences.
+Dates accept ISO or natural-language input. No dates means the current calendar
+month; one date fills the missing bound from that date's month.
+
+Each occurrence includes its stream, account, category, and matched
+`transactionId`, when present. `isPast` does not mean paid. For recorded
+transactions, use `get_transactions(is_recurring=True)` instead.
+
+`update_recurring_transaction` changes the merchant-wide schedule, not one
+occurrence. Use `stream.merchant.id` and the current merchant name from the read
+result. Pass only settings you want to change: `frequency`, `base_date`, `amount`,
+`is_recurring`, or `is_active`. Use Monarch's existing frequency and signed amount.
+This does not cancel subscriptions, move money, or create posted transactions.
 
 ### Transaction format
 

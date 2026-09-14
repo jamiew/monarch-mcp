@@ -33,7 +33,7 @@ from mcp.types import (
     ToolAnnotations,
 )
 from monarchmoney import MonarchMoney, RequireMFAException
-from pydantic import BaseModel, ConfigDict, JsonValue
+from pydantic import BaseModel, ConfigDict, FiniteFloat, JsonValue
 
 # Type definitions for Monarch Money API responses
 JsonSerializable = str | int | float | bool | None | list["JsonSerializable"] | dict[str, "JsonSerializable"]
@@ -638,6 +638,16 @@ class InstitutionsResult(MMModel):
 
 class RecurringResult(MMModel):
     recurring: JsonValue
+
+
+class RecurringMerchant(BaseModel):
+    id: str
+    name: str
+    recurringTransactionStream: dict[str, JsonValue] | None
+
+
+class UpdateRecurringResult(MMModel):
+    merchant: RecurringMerchant
 
 
 class SetBudgetResult(MMModel):
@@ -2085,17 +2095,81 @@ async def get_institutions() -> InstitutionsResult:
 
 @mcp.tool(annotations=READONLY, title="Get Recurring Transactions")
 @track_usage
-async def get_recurring_transactions() -> RecurringResult:
-    """Get scheduled recurring transactions."""
-    await ensure_authenticated()
+async def get_recurring_transactions(start_date: str | None = None, end_date: str | None = None) -> RecurringResult:
+    """Get scheduled recurring occurrences, not the posted transaction history.
 
-    try:
-        recurring = await api_call_with_retry("get_recurring_transactions")
-        recurring = convert_dates_to_strings(recurring)
-        return RecurringResult(recurring=recurring)
-    except Exception as e:
-        log.error("Failed to fetch recurring transactions", error=str(e))
-        raise
+    Dates accept ISO dates or natural language such as "today" or "last month".
+    With neither date, fetch the current calendar month. With only one date,
+    use the beginning or end of that date's month for the missing bound.
+
+    The recurring.recurringTransactionItems list includes each occurrence's date,
+    amount, account, category, transactionId (when matched), and stream containing
+    the merchant ID, frequency, and expected amount. isPast describes the date,
+    not whether a bill was paid. Use get_transactions(is_recurring=True) for
+    recorded transactions instead.
+    """
+    start = parse_flexible_date(start_date) if start_date is not None else None
+    end = parse_flexible_date(end_date) if end_date is not None else None
+    if start is None:
+        start = (end or date.today()).replace(day=1)
+    if end is None:
+        end = start.replace(day=1) + relativedelta(months=1) - timedelta(days=1)
+    filters = build_date_filter(start.isoformat(), end.isoformat())
+    await ensure_authenticated()
+    recurring = await api_call_with_retry(
+        "get_recurring_transactions", start_date=filters["start_date"], end_date=filters["end_date"]
+    )
+    return RecurringResult(recurring=convert_dates_to_strings(recurring))
+
+
+@mcp.tool(annotations=WRITE_IDEMPOTENT, title="Update Recurring Transaction")
+@track_usage
+async def update_recurring_transaction(
+    merchant_id: str,
+    merchant_name: str,
+    is_recurring: bool | None = None,
+    frequency: str | None = None,
+    base_date: str | None = None,
+    amount: FiniteFloat | None = None,
+    is_active: bool | None = None,
+) -> UpdateRecurringResult:
+    """Change a merchant's recurring schedule, not an individual transaction.
+
+    This affects the merchant-wide recurrence. Get merchant_id from an
+    occurrence's stream.merchant.id, not stream.id or transactionId.
+    Pass the current merchant_name to avoid renaming the merchant.
+
+    Omitted settings stay unchanged. is_recurring enables or removes recurrence;
+    is_active pauses or resumes a schedule. frequency is Monarch's frequency
+    string (for example, "monthly"). base_date is the schedule's anchor date and
+    accepts the same date formats as get_recurring_transactions.
+    amount uses Monarch's signed amount, as returned by the existing stream.
+    This does not create posted transactions or move money.
+    """
+    if not merchant_id.strip() or not merchant_name.strip():
+        raise ValueError("merchant_id and merchant_name must not be blank")
+    if all(value is None for value in (is_recurring, frequency, base_date, amount, is_active)):
+        raise ValueError("Provide at least one recurring setting to change")
+    if frequency is not None and not frequency.strip():
+        raise ValueError("frequency must not be blank")
+    normalized_date = parse_flexible_date(base_date).isoformat() if base_date is not None else None
+    await ensure_authenticated()
+    result = await api_call_with_retry(
+        "update_reoccuring",
+        merchant_id=merchant_id,
+        name=merchant_name,
+        is_recurring=is_recurring,
+        frequency=frequency,
+        base_date=normalized_date,
+        amount=amount,
+        is_active=is_active,
+    )
+    payload = result.get("updateMerchant") if isinstance(result, dict) else None
+    if not isinstance(payload, dict):
+        raise ValueError("Monarch returned an invalid recurring update response")
+    if payload.get("errors"):
+        raise ValueError(f"Monarch rejected the recurring update: {payload['errors']}")
+    return UpdateRecurringResult(merchant=RecurringMerchant.model_validate(payload.get("merchant")))
 
 
 @mcp.tool(annotations=WRITE_IDEMPOTENT, title="Set Budget Amount")

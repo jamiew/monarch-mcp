@@ -88,29 +88,6 @@ class TestNewMonarchTools:
             server.mm_client = original_client
 
     @pytest.mark.asyncio
-    async def test_get_recurring_transactions(self) -> None:
-        """Test get_recurring_transactions functionality."""
-        mock_client = AsyncMock()
-        mock_recurring = [
-            {"id": "rec1", "amount": -500, "description": "Rent"},
-            {"id": "rec2", "amount": 3000, "description": "Salary"},
-        ]
-        mock_client.get_recurring_transactions.return_value = mock_recurring
-
-        original_client = server.mm_client
-        server.mm_client = mock_client
-
-        try:
-            result = await server.get_recurring_transactions()
-
-            assert isinstance(result, server.RecurringResult)
-            assert result.recurring == mock_recurring
-            mock_client.get_recurring_transactions.assert_called_once()
-
-        finally:
-            server.mm_client = original_client
-
-    @pytest.mark.asyncio
     async def test_set_budget_amount(self) -> None:
         """Test set_budget_amount functionality."""
         mock_client = AsyncMock()

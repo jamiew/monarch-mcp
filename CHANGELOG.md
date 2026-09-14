@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Recurring transactions
+
+- Added date ranges to `get_recurring_transactions`, including natural-language dates and calendar-month defaults.
+- Added `update_recurring_transaction` for merchant-wide recurrence settings. Omitted settings stay unchanged; rejected or malformed responses fail rather than report success.
+- Clarified scheduled occurrences versus recorded transactions and payment status.
+
 ## 2026-06-30
 
 ### Transaction splitting (0.4.0)
