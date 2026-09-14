@@ -50,7 +50,7 @@ Pick your client below for the exact steps.
 
 Edit your config file (create it if it doesn't exist) and add the [standard config](#standard-config) above under `mcpServers`:
 
-- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **macOS**: `~/Library/Application\ Support/Claude/claude_desktop_config.json`
 - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 
 Then fully quit and reopen Claude Desktop.
