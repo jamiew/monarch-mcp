@@ -374,7 +374,7 @@ def _build_transaction_filters(
 
 
 # Configure logger to output to stderr only with error handling
-class SafeStreamHandler(logging.StreamHandler[Any]):
+class SafeStreamHandler(logging.StreamHandler):
     """Stream handler that gracefully handles broken pipes."""
 
     def emit(self, record: logging.LogRecord) -> None:
