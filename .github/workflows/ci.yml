@@ -6,54 +6,61 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v10.1.0
 
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --all-groups
+        run: uv sync --locked --all-groups
 
       - name: Run type checking
-        run: uv run mypy server.py
+        run: uv run --locked mypy server.py
 
       - name: Run tests with coverage
-        run: uv run python -m pytest tests/ -v --tb=short --cov=. --cov-report=term-missing --cov-report=xml
+        run: uv run --locked python -m pytest tests/ -v --tb=short --cov=. --cov-report=term-missing --cov-report=xml
 
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.12'
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v7.0.0
         with:
-          file: ./coverage.xml
+          files: ./coverage.xml
           fail_ci_if_error: false
 
   lint:
     runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: "3.12"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v10.1.0
 
       - name: Set up Python
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --all-groups
+        run: uv sync --locked --all-groups
 
       - name: Run ruff check
-        run: uv run ruff check .
+        run: uv run --locked ruff check .
 
       - name: Run ruff format check
-        run: uv run ruff format --check .
+        run: uv run --locked ruff format --check .
