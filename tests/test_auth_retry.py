@@ -14,11 +14,9 @@ class TestAuthenticationRetry:
         """Test that 401 errors trigger session clear and retry."""
         from server import api_call_with_retry
 
-        # Mock the method to fail first, then succeed
         mock_method = AsyncMock()
         mock_method.side_effect = [Exception("401 Unauthorized"), {"success": True}]
 
-        # Mock mm_client with the method
         mock_client = MagicMock()
         mock_client.test_method = mock_method
 
@@ -29,7 +27,6 @@ class TestAuthenticationRetry:
         ):
             result = await api_call_with_retry("test_method")
 
-            # Verify session was cleared and ensure_authenticated was called
             assert mock_clear.called
             assert mock_auth.called
             assert result == {"success": True}
@@ -139,7 +136,6 @@ class TestAuthenticationRetry:
             with pytest.raises(Exception, match="Network timeout"):
                 await api_call_with_retry("test_method")
 
-            # Should not clear session or re-initialize for non-auth errors
             assert not mock_clear.called
             assert not mock_auth.called
 
@@ -150,12 +146,10 @@ class TestAuthenticationRetry:
 
         import server
 
-        # Reset auth state before test
         original_auth_state = server.auth_state
         server.auth_state = server.AuthState.NOT_INITIALIZED
 
         try:
-            # Mock environment variables
             with (
                 patch.dict(
                     os.environ,
@@ -165,25 +159,18 @@ class TestAuthenticationRetry:
                 patch("server.session_file") as mock_session_file,
                 patch("server.MonarchMoney") as mock_mm_class,
             ):
-                # Setup: session file exists
                 mock_session_file.exists.return_value = True
 
-                # Mock the client
                 mock_client = MagicMock()
                 mock_client.login = AsyncMock()
                 mock_mm_class.return_value = mock_client
 
-                # Call initialize_client
                 await server.initialize_client()
 
-                # Verify that session was loaded (load_session called)
                 assert mock_client.load_session.called
-                # Verify that login was NOT called (we loaded existing session)
                 assert not mock_client.login.called
-                # Verify auth state is AUTHENTICATED after loading session
                 assert server.auth_state == server.AuthState.AUTHENTICATED
         finally:
-            # Restore original state
             server.auth_state = original_auth_state
 
     @pytest.mark.asyncio
@@ -243,11 +230,10 @@ class TestAuthenticationRetry:
         assert not (tmp_path / ".mm").exists()
 
     def test_clear_session_removes_both_session_files(self):
-        """Test that clear_session removes both custom and monarchmoney session files."""
+        """Clearing the session removes the configured session file."""
         from server import clear_session
 
         with patch("server.session_file") as mock_custom_session, patch("server.session_dir") as mock_session_dir:
-            # Setup mock files
             mock_custom_session.exists.return_value = True
             mock_custom_session.unlink = MagicMock()
 
@@ -255,10 +241,8 @@ class TestAuthenticationRetry:
             mock_mm_session.exists.return_value = True
             mock_session_dir.__truediv__ = MagicMock(return_value=mock_mm_session)
 
-            # Call clear_session
             clear_session()
 
-            # Verify both files were attempted to be removed
             assert mock_custom_session.unlink.called
 
     @pytest.mark.asyncio
@@ -292,34 +276,24 @@ class TestAuthenticationRetry:
             ):
                 result = await api_call_with_retry("test_method")
 
-                # All these should trigger session clear
                 assert mock_clear.called, f"Failed to detect auth error: {error_msg}"
                 assert mock_auth.called, f"Failed to reinitialize after: {error_msg}"
                 assert result == {"success": True}
 
     @pytest.mark.asyncio
     async def test_stale_client_after_reauth(self):
-        """
-        Regression test: Verify api_call_with_retry uses NEW mm_client after re-auth.
-
-        Bug: Previously used stale method reference from old client instance.
-        Fix: Now calls getattr(mm_client, method_name) after re-authentication.
-        """
+        """Retry with the new client after reauthentication, not a stale method."""
         import server
 
-        # Create two different mock clients
         old_client = MagicMock()
         new_client = MagicMock()
 
-        # Old client fails with auth error
         old_method = AsyncMock(side_effect=Exception("401 Unauthorized"))
         old_client.get_accounts = old_method
 
-        # New client succeeds
         new_method = AsyncMock(return_value=[{"id": "account1", "name": "Test Account"}])
         new_client.get_accounts = new_method
 
-        # Track which client is current
         current_client = old_client
 
         async def mock_ensure_authenticated():
@@ -337,33 +311,23 @@ class TestAuthenticationRetry:
             patch("server.clear_session"),
             patch("server.ensure_authenticated", side_effect=mock_ensure_authenticated),
         ):
-            # Set initial client
             server.mm_client = old_client
 
             result = await server.api_call_with_retry("get_accounts")
 
-            # Verify old method was called once (and failed)
             assert old_method.call_count == 1
 
-            # Verify new method was called once (and succeeded)
             assert new_method.call_count == 1
 
-            # Verify result came from new client
             assert result == [{"id": "account1", "name": "Test Account"}]
 
     @pytest.mark.asyncio
     async def test_concurrent_ensure_authenticated_calls(self):
-        """
-        Test that concurrent ensure_authenticated() calls don't cause race conditions.
-
-        10 tasks call ensure_authenticated() simultaneously.
-        Only ONE should actually perform initialization.
-        """
+        """Concurrent authentication requests share one initialization."""
         import asyncio
 
         import server
 
-        # Reset auth state
         original_state = server.auth_state
         original_client = server.mm_client
         original_lock = server.auth_lock
@@ -373,7 +337,6 @@ class TestAuthenticationRetry:
         server.auth_lock = None  # Will be created on first call
 
         try:
-            # Track initialization attempts
             init_count = 0
 
             async def mock_initialize_client():
@@ -387,17 +350,13 @@ class TestAuthenticationRetry:
                 patch.dict("os.environ", {"MONARCH_EMAIL": "test@example.com", "MONARCH_PASSWORD": "test123"}),
                 patch("server.initialize_client", side_effect=mock_initialize_client),
             ):
-                # Launch 10 concurrent auth requests
                 tasks = [server.ensure_authenticated() for _ in range(10)]
                 await asyncio.gather(*tasks)
 
-                # Verify only ONE initialization occurred (lock prevented duplicates)
                 assert init_count == 1, f"Expected 1 init, got {init_count}"
 
-                # Verify all tasks completed successfully
                 assert server.auth_state == server.AuthState.AUTHENTICATED
         finally:
-            # Restore original state
             server.auth_state = original_state
             server.mm_client = original_client
             server.auth_lock = original_lock

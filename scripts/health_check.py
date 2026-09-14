@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Health check script to verify Monarch Money API connectivity.
+"""Check Monarch Money authentication and API connectivity.
 
 Run with: uv run scripts/health_check.py
 
-Requires environment variables:
-  MONARCH_EMAIL, MONARCH_PASSWORD, MONARCH_MFA_SECRET
+Requires MONARCH_EMAIL and MONARCH_PASSWORD; MONARCH_MFA_SECRET is optional.
+Loads the repository's .env file if present, overriding exported values.
+Uses the upstream client's default session handling.
 """
 
 import asyncio
@@ -12,7 +13,6 @@ import os
 import sys
 from pathlib import Path
 
-# Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from monarchmoney import MonarchMoney
@@ -34,7 +34,6 @@ async def health_check() -> bool:
 
     mm = MonarchMoney()
 
-    # Test 1: Login
     print("\n1. Testing authentication...")
     try:
         await mm.login(email, password, mfa_secret_key=mfa_secret)
@@ -43,7 +42,6 @@ async def health_check() -> bool:
         print(f"   ❌ Login failed: {type(e).__name__}: {e}")
         return False
 
-    # Test 2: Get accounts
     print("\n2. Testing get_accounts API...")
     try:
         accounts = await mm.get_accounts()
@@ -53,11 +51,9 @@ async def health_check() -> bool:
         print(f"   ❌ Get accounts failed: {type(e).__name__}: {e}")
         return False
 
-    # Test 3: Get transactions (small limit)
     print("\n3. Testing get_transactions API...")
     try:
         txns = await mm.get_transactions(limit=5)
-        # Handle both dict and list responses
         if isinstance(txns, dict):
             txn_list = txns.get("allTransactions", {}).get("results", [])
         else:
@@ -67,7 +63,6 @@ async def health_check() -> bool:
         print(f"   ❌ Get transactions failed: {type(e).__name__}: {e}")
         return False
 
-    # Test 4: Get budgets
     print("\n4. Testing get_budgets API...")
     try:
         budgets = await mm.get_budgets()
@@ -84,7 +79,7 @@ async def health_check() -> bool:
 
 def main() -> int:
     """Run health check and return exit code."""
-    # Load .env if present
+    # Unlike the server and integration tests, this script loads .env.
     env_file = Path(__file__).parent.parent / ".env"
     if env_file.exists():
         print(f"Loading credentials from {env_file}")
@@ -93,7 +88,6 @@ def main() -> int:
                 line = line.strip()
                 if line and not line.startswith("#") and "=" in line:
                     key, _, value = line.partition("=")
-                    # Strip quotes from value
                     value = value.strip().strip('"').strip("'")
                     os.environ[key.strip()] = value
 

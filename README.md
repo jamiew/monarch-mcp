@@ -1,31 +1,33 @@
 <!-- mcp-name: io.github.jamiew/monarch-mcp -->
 # Monarch Money MCP Server
 
-An [MCP](https://modelcontextprotocol.io/) server for [Monarch Money](https://www.monarchmoney.com/) — gives AI assistants like Claude access to your financial accounts, transactions, budgets, and more.
+An [MCP](https://modelcontextprotocol.io/) server that lets AI assistants query and update your [Monarch Money](https://www.monarchmoney.com/) accounts, transactions, and budgets.
 
-Originally forked from [@colvint/monarch-money-mcp](https://github.com/colvint/monarch-money-mcp) but has diverged into a full rewrite on a modern **FastMCP** architecture. It's grown from a handful of tools to a broad toolset — adding server-side transaction search, parallel **bulk transaction updates**, multi-month **spending-pattern analysis** with forecasting, and a single-call **financial overview** that fans out to five Monarch APIs at once. Responses are tuned hard for token efficiency: the default compact transaction format cuts payload size by **~80%**, categories return just `id`+`name` unless you ask for more, and every tool accepts a `verbose` flag when you want the full payload. It also ships MCP **resources** and guided **prompts**, natural-language date parsing ("last month", "30 days ago"), and proper read/write **tool annotations** so clients know what's safe to call.
+A **FastMCP** rewrite of [@colvint/monarch-money-mcp](https://github.com/colvint/monarch-money-mcp), with transaction search, bulk updates, spending analysis, and a combined financial overview.
 
-Built on the [`monarchmoneycommunity`](https://github.com/bradleyseanf/monarchmoneycommunity) library by [@bradleyseanf](https://github.com/bradleyseanf) — an actively-maintained community fork that tracks the latest Monarch Money API changes (the `api.monarch.com` domain move, gql 4.0, auth persistence) with full MFA support, pinned to a specific commit for reproducible builds. It descends from the original [`monarchmoney`](https://github.com/hammem/monarchmoney) library by [@hammem](https://github.com/hammem), which is no longer actively maintained.
+Built on [`monarchmoneycommunity`](https://github.com/bradleyseanf/monarchmoneycommunity) by [@bradleyseanf](https://github.com/bradleyseanf), a community fork of [`monarchmoney`](https://github.com/hammem/monarchmoney) by [@hammem](https://github.com/hammem). Source installs pin the client to a commit; PyPI installs use the published dependency.
 
 ## Features
 
 - **Tools** covering accounts, transactions, budgets, cashflow, investments, categories, recurring transactions, and spending analysis
-- **Structured output** — every tool returns a typed schema (`outputSchema` + machine-readable structured content) with a text fallback for older clients
+- **Structured output** with a typed schema (`outputSchema`), machine-readable content, and a text fallback for older clients
 - **MCP resources** for quick access to categories, accounts, and institutions, plus parameterized templates for per-account holdings and history (`accounts://{account_id}/holdings|history`)
 - **MCP prompts** for guided financial analysis workflows, with live argument autocompletion
-- **Smart output formatting** — compact transaction format reduces token usage by ~80%
-- **Natural language dates** — "last month", "30 days ago", "this year" all work
-- **Batch operations** — parallel multi-account queries, bulk transaction updates, with progress reporting
+- **Compact output** for transactions and categories, with optional full details
+- **Natural-language dates** such as "last month", "30 days ago", and "this year"
+- **Batch operations** for combined queries and parallel transaction updates, with progress reporting
 - **Spending analysis** — multi-month trend analysis with category/account breakdowns
-- **Tool annotations & titles** — read/write metadata and human-friendly titles for MCP clients
+- **Tool annotations and titles** to help clients distinguish reads from writes
 
 ## Setup
 
-**One-line install, no clone, no absolute-path wrangling.** The server is published to [PyPI](https://pypi.org/project/monarch-mcp-jamiew/), so [`uv`](https://docs.astral.sh/uv/) runs it on demand with `uvx monarch-mcp-jamiew`. You'll need `uv` installed and your Monarch credentials (see [Getting your MFA secret](#getting-your-mfa-secret) below).
+Install [`uv`](https://docs.astral.sh/uv/), then configure your client to run the [PyPI package](https://pypi.org/project/monarch-mcp-jamiew/) with `uvx monarch-mcp-jamiew`. You'll need your Monarch email and password, plus an [MFA secret](#getting-your-mfa-secret) if you use TOTP-based 2FA.
+
+**Release status:** This README describes the current source checkout. Recurring date filters, `update_recurring_transaction`, stricter bulk-input validation, and the latest authentication fixes are unreleased. Use the [source setup](#from-source-development) for these changes; `uvx` runs the latest published release.
 
 ### Standard config
 
-Every MCP client uses the same shape — command `uvx`, package `monarch-mcp-jamiew`, and your three credentials as env vars:
+For clients that use an `mcpServers` configuration, use the following. Other clients may use different keys or setup commands.
 
 ```json
 {
@@ -48,7 +50,7 @@ Pick your client below for the exact steps.
 <details>
 <summary><b>Claude Desktop</b></summary>
 
-Edit your config file (create it if it doesn't exist) and add the [standard config](#standard-config) above under `mcpServers`:
+Add the `monarch-money` entry from the [standard config](#standard-config) to your config file's `mcpServers` object (create the file if needed):
 
 - **macOS**: `~/Library/Application\ Support/Claude/claude_desktop_config.json`
 - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
@@ -97,7 +99,7 @@ env = { MONARCH_EMAIL = "your-email@example.com", MONARCH_PASSWORD = "your-passw
 <details>
 <summary><b><code>.mcp.json</code> (project-scoped)</b></summary>
 
-Drop the [standard config](#standard-config) into a `.mcp.json` file at your project root. Claude Code (project scope) and most clients auto-load it.
+For Claude Code's project scope, save the [standard config](#standard-config) as `.mcp.json` in your project root. Keep credential-bearing files out of version control.
 
 </details>
 
@@ -129,16 +131,16 @@ Add the [standard config](#standard-config) to `~/.openclaw/openclaw.json` under
 <details>
 <summary><b>Any other MCP client (Cursor, VS Code, Windsurf, Cline, Zed, …)</b></summary>
 
-Most accept the same [standard config](#standard-config) — drop it into the client's MCP config (e.g. Cursor's `~/.cursor/mcp.json`, or VS Code via `code --add-mcp`). Anything that speaks MCP over stdio works.
+Use your client's instructions for a local stdio MCP server. Set the command to `uvx`, the argument to `monarch-mcp-jamiew`, and the credential environment variables shown above. Config keys and file locations vary by client.
 
 Not sure how? Tell your agent:
 
-> Install the Monarch Money MCP server from https://github.com/jamiew/monarch-mcp — it's on PyPI as `monarch-mcp-jamiew`, runs via `uvx monarch-mcp-jamiew`, and needs env vars `MONARCH_EMAIL`, `MONARCH_PASSWORD`, and `MONARCH_MFA_SECRET`.
+> Install the Monarch Money MCP server from https://github.com/jamiew/monarch-mcp. The PyPI package is `monarch-mcp-jamiew`, run via `uvx monarch-mcp-jamiew`. It needs `MONARCH_EMAIL`, `MONARCH_PASSWORD`, and `MONARCH_MFA_SECRET` for TOTP-based 2FA.
 
 </details>
 
 <details>
-<summary><b>From source (development)</b></summary>
+<summary id="from-source-development"><b>From source (development)</b></summary>
 
 To run against a local checkout (and the git-pinned `monarchmoneycommunity` lib):
 
@@ -169,16 +171,18 @@ Then point your client at the local copy with absolute paths (find them with `wh
 </details>
 
 > [!NOTE]
-> The `claude mcp add` / `codex mcp add` one-liners put your credentials in shell history. If that bothers you, edit the client's config file directly (as shown for Claude Desktop / Codex above) instead.
+> The `claude mcp add` and `codex mcp add` commands can save credentials in shell history. Edit the client's config directly to avoid that, and protect the config file.
 
 ### Getting your MFA secret
 
 1. Go to Monarch Money settings and enable 2FA
 2. When shown the QR code, look for "Can't scan?" or "Enter manually"
-3. Copy the secret key (a string like `T5SPVJIBRNPNNINFSH5W7RFVF2XYADYX`)
+3. Copy the TOTP secret key, not the rotating six-digit code
 4. Use this as your `MONARCH_MFA_SECRET`
 
 ## Tools
+
+The source checkout exposes these 22 tools. See [release status](#setup) for unpublished changes.
 
 | Tool | Description |
 |------|-------------|
@@ -189,6 +193,8 @@ Then point your client at the local copy with absolute paths (find them with `wh
 | `create_transaction` | Create a manual transaction |
 | `update_transaction` | Update a single transaction |
 | `update_transactions_bulk` | Update multiple transactions in parallel |
+| `get_transaction_splits` | Read a transaction's splits |
+| `update_transaction_splits` | Replace all splits; an empty list removes them |
 | `get_budgets` | Budget data and spending analysis |
 | `get_cashflow` | Income and expense analysis |
 | `get_account_holdings` | Investment holdings for an account (requires `account_id`) |
@@ -197,15 +203,15 @@ Then point your client at the local copy with absolute paths (find them with `wh
 | `get_recurring_transactions` | Scheduled occurrences within a date range |
 | `update_recurring_transaction` | Change a merchant's recurring schedule |
 | `set_budget_amount` | Set a budget category amount |
-| `create_manual_account` | Create a manually-tracked account |
+| `create_manual_account` | Create a manually tracked account |
 | `refresh_accounts` | Trigger account data refresh |
 | `get_spending_summary` | Spending aggregated by category, account, or month |
-| `get_complete_financial_overview` | Combined 5-API call in parallel |
+| `get_complete_financial_overview` | Combine accounts, budgets, cashflow, transactions, and categories |
 | `analyze_spending_patterns` | Multi-month trend analysis |
 
 ### Recurring transactions
 
-`get_recurring_transactions(start_date, end_date)` returns scheduled occurrences.
+`get_recurring_transactions(start_date, end_date)` returns a schedule forecast, not posted transaction history.
 Dates accept ISO or natural-language input. No dates means the current calendar
 month; one date fills the missing bound from that date's month.
 
@@ -214,18 +220,19 @@ Each occurrence includes its stream, account, category, and matched
 transactions, use `get_transactions(is_recurring=True)` instead.
 
 `update_recurring_transaction` changes the merchant-wide schedule, not one
-occurrence. Use `stream.merchant.id` and the current merchant name from the read
-result. Pass only settings you want to change: `frequency`, `base_date`, `amount`,
-`is_recurring`, or `is_active`. Use Monarch's existing frequency and signed amount.
-This does not cancel subscriptions, move money, or create posted transactions.
+occurrence. Use `stream.merchant.id` (not `stream.id` or `transactionId`) and the current merchant name to avoid renaming it.
+Pass only settings you want to change: `frequency`, `base_date`, `amount`,
+`is_recurring`, or `is_active`. Omitted settings stay unchanged. Use Monarch's
+existing frequency and signed amount. This does not cancel subscriptions, move
+money, or create posted transactions.
 
 ### Transaction format
 
-By default, transactions return a compact format with the fields that matter:
+`get_transactions` and `search_transactions` return compact records by default:
 
 ```json
 {
-  "id": "123456789012345678",
+  "id": "txn_123",
   "date": "2025-03-15",
   "amount": -12.50,
   "merchant": "Corner Deli",
@@ -237,7 +244,7 @@ By default, transactions return a compact format with the fields that matter:
 }
 ```
 
-`pending` and `notes` are included only when present. Set `verbose=True` on any tool for the full API response with all metadata.
+`pending` appears only when true; `notes` appears only when nonempty. Set `verbose=True` on `get_transactions` or `search_transactions` for full transaction details, or on `get_transaction_categories` for full category details.
 
 ## Session management
 
@@ -264,7 +271,7 @@ MONARCH_MFA_SECRET="YOUR_TOTP_SECRET_KEY"
 ```bash
 uv run pytest tests/ -v                          # offline; live tests are skipped
 MONARCH_RUN_INTEGRATION=true uv run --env-file .env pytest tests/test_integration.py -v
-uv run scripts/health_check.py                   # live API connectivity check
+uv run --env-file .env scripts/health_check.py    # live API connectivity check
 ```
 
 Integration tests never load `.env` themselves or read/write saved sessions.
@@ -279,7 +286,7 @@ uv run python scripts/ci.py
 
 ### Releasing
 
-Cut a release with the `/release` flow (bump version in `pyproject.toml` → commit → tag `vX.Y.Z` → push → `gh release create`). Publishing the GitHub release triggers [`.github/workflows/publish.yml`](.github/workflows/publish.yml), which builds and pushes to **PyPI** and the **MCP Registry** via OIDC trusted publishing — no API tokens are stored anywhere. The workflow injects the tag version into `server.json` automatically, so `pyproject.toml` is the only version field you bump by hand.
+Use `/release` to bump `pyproject.toml`, commit, tag `vX.Y.Z`, push, and create a GitHub release. Publishing the release triggers [`.github/workflows/publish.yml`](.github/workflows/publish.yml), which publishes to PyPI and the MCP Registry through OIDC trusted publishing. The workflow sets `server.json` versions from the tag; only bump `pyproject.toml` by hand.
 
 ### Log analysis
 
@@ -295,14 +302,14 @@ uv run scripts/eval_session.py analyze            # analyze new entries
 
 ## Security
 
-> **Warning**: Monarch Money does not provide an official API. This server uses unofficial API access that requires your actual account credentials. Use with appropriate caution.
+> **Warning:** This server uses unofficial Monarch Money API access. Your credentials grant full account access, including writes.
 
-- The server runs locally on your machine — your credentials live in your MCP client config and **never pass through the LLM**. Only the financial data you actually query is returned to the assistant.
-- Your credentials have full account access — treat them like passwords
-- The MFA secret (TOTP key) provides ongoing access
-- Session files in `~/.monarch-mcp/` contain auth tokens — keep them secure
-- Never commit `.env` or `.mcp.json` files to version control
-- This is an unofficial API — Monarch Money could change or restrict access at any time
+- The server runs locally and returns requested financial data to your MCP client. Review the client's privacy settings and tool approvals.
+- Protect your password and MFA secret. The TOTP secret enables ongoing code generation.
+- Session files in `~/.monarch-mcp/` contain auth tokens. Protect them and any custom `MONARCH_SESSION_DIR`.
+- Logs can include financial input values and error details. Review them before sharing.
+- Never commit credential-bearing `.env`, `.mcp.json`, or client config files.
+- Monarch Money may change or restrict unofficial API access at any time.
 
 ## Credits
 

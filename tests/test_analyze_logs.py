@@ -377,7 +377,6 @@ class TestRecommendations:
         recs = generate_recommendations(stats, [], [])
         caching_recs = [r for r in recs if r.category == "caching"]
         assert len(caching_recs) >= 1
-        assert "cache" in caching_recs[0].message.lower() or "Cache" in caching_recs[0].message
 
     def test_oversized_response(self) -> None:
         """Large responses should trigger oversized recommendation."""

@@ -4,7 +4,6 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-# Import the new FastMCP server
 import server
 
 
@@ -17,7 +16,7 @@ class TestFastMCPServer:
         assert hasattr(server.mcp, "name")
 
     def test_date_conversion_same_as_old(self) -> None:
-        """Test that date conversion works the same as the old implementation."""
+        """Convert dates inside nested dictionaries and lists to ISO strings."""
         from datetime import date, datetime
 
         test_data = {
@@ -42,14 +41,12 @@ class TestFastMCPServer:
     @pytest.mark.asyncio
     async def test_get_accounts_no_client(self) -> None:
         """Test get_accounts triggers authentication when client not initialized."""
-        # Reset global client and auth state
         original_client = server.mm_client
         original_auth_state = server.auth_state
         server.mm_client = None
         server.auth_state = server.AuthState.NOT_INITIALIZED
 
         try:
-            # Mock ensure_authenticated to fail with credentials error
             with patch(
                 "server.ensure_authenticated",
                 side_effect=ValueError("MONARCH_EMAIL and MONARCH_PASSWORD environment variables are required"),
@@ -57,15 +54,13 @@ class TestFastMCPServer:
                 with pytest.raises(ValueError, match="MONARCH_EMAIL and MONARCH_PASSWORD"):
                     await server.get_accounts()
         finally:
-            # Restore original client and state
             server.mm_client = original_client
             server.auth_state = original_auth_state
 
     @pytest.mark.asyncio
     async def test_get_accounts_with_mock_client(self) -> None:
         """Test get_accounts with mocked client."""
-        # Setup mock client. The real client wraps accounts in a dict alongside
-        # householdPreferences, so the tool must unwrap the nested list.
+        # The client wraps accounts alongside householdPreferences.
         mock_client = AsyncMock()
         mock_accounts_list = [
             {"id": "1", "name": "Checking", "balance": 1000.0},
@@ -76,28 +71,23 @@ class TestFastMCPServer:
             "householdPreferences": {"id": "hp1"},
         }
 
-        # Set global client
         original_client = server.mm_client
         server.mm_client = mock_client
 
         try:
             result = await server.get_accounts()
 
-            # Verify structured result wraps the account list with a count
             assert isinstance(result, server.AccountsResult)
             assert result.accounts == mock_accounts_list
             assert result.count == len(mock_accounts_list)
 
-            # Verify mock was called
             mock_client.get_accounts.assert_called_once()
         finally:
-            # Restore original client
             server.mm_client = original_client
 
     @pytest.mark.asyncio
     async def test_get_transactions_with_filters(self) -> None:
         """Test get_transactions with date filtering."""
-        # Setup mock client
         mock_client = AsyncMock()
         mock_transactions = [
             {"id": "1", "amount": -50.0, "description": "Coffee"},
@@ -105,7 +95,6 @@ class TestFastMCPServer:
         ]
         mock_client.get_transactions.return_value = mock_transactions
 
-        # Set global client
         original_client = server.mm_client
         server.mm_client = mock_client
 
@@ -117,31 +106,26 @@ class TestFastMCPServer:
                 verbose=True,  # Get full transaction details for testing
             )
 
-            # Verify structured result wraps the transaction list
             assert isinstance(result, server.TransactionsResult)
             assert result.transactions == mock_transactions
             assert result.count == len(mock_transactions)
             assert result.verbose is True
 
-            # Verify mock was called with correct parameters
             mock_client.get_transactions.assert_called_once()
             call_args = mock_client.get_transactions.call_args
             assert call_args.kwargs["limit"] == 50
             assert "start_date" in call_args.kwargs
             assert "end_date" in call_args.kwargs
         finally:
-            # Restore original client
             server.mm_client = original_client
 
     @pytest.mark.asyncio
     async def test_create_transaction(self) -> None:
         """Test create_transaction functionality."""
-        # Setup mock client
         mock_client = AsyncMock()
         mock_result = {"id": "new123", "status": "created"}
         mock_client.create_transaction.return_value = mock_result
 
-        # Set global client
         original_client = server.mm_client
         server.mm_client = mock_client
 
@@ -155,49 +139,27 @@ class TestFastMCPServer:
                 notes="Test notes",
             )
 
-            # Verify structured result wraps the created transaction
             assert isinstance(result, server.TransactionResult)
             assert result.transaction == mock_result
 
-            # Verify mock was called with correct parameters
             mock_client.create_transaction.assert_called_once()
             call_args = mock_client.create_transaction.call_args
             assert call_args.kwargs["amount"] == -45.67
             assert call_args.kwargs["merchant_name"] == "Test transaction"
             assert call_args.kwargs["account_id"] == "acc123"
             assert call_args.kwargs["notes"] == "Test notes"
-            # Verify date was converted to string (API expects ISO string)
             assert call_args.kwargs["date"] == "2024-07-29"
 
-        # Restore original client
         server.mm_client = original_client
 
 
 class TestFastMCPComparisionWithOld:
-    """Compare FastMCP implementation with old server to ensure compatibility."""
-
-    def test_tool_count_matches(self) -> None:
-        """Verify we have the same number of tools in both implementations."""
-        # Count tools in FastMCP implementation
-        fastmcp_tools = [
-            "get_accounts",
-            "get_transactions",
-            "get_budgets",
-            "get_cashflow",
-            "get_transaction_categories",
-            "create_transaction",
-            "update_transaction",
-            "refresh_accounts",
-        ]
-
-        # This should match the original implementation
-        assert len(fastmcp_tools) == 8
+    """Check core tool availability and parameter names."""
 
     def test_function_signatures_correct(self) -> None:
         """Test that function signatures are properly defined."""
         import inspect
 
-        # Test a few key functions
         sig = inspect.signature(server.get_transactions)
         params = list(sig.parameters.keys())
         assert "limit" in params

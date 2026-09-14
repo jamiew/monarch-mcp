@@ -1,11 +1,10 @@
-"""Tests for schema fixes and new parameters."""
+"""Tests for transaction fields and filters."""
 
 import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-# Import the tools
 from server import (
     create_transaction,
     get_transactions,
@@ -16,7 +15,7 @@ from server import (
 
 
 class TestUpdateTransactionSchema:
-    """Test update_transaction with new merchant_name and other fields."""
+    """Test update_transaction fields."""
 
     @pytest.mark.asyncio
     async def test_merchant_name_parameter(self):
@@ -31,7 +30,6 @@ class TestUpdateTransactionSchema:
 
                 result = await update_transaction(transaction_id="txn_123", merchant_name="New Merchant Name")
 
-                # Verify API was called with merchant_name (not description)
                 mock_api.assert_called_once()
                 call_kwargs = mock_api.call_args[1]
                 assert "merchant_name" in call_kwargs
@@ -79,7 +77,7 @@ class TestUpdateTransactionSchema:
 
     @pytest.mark.asyncio
     async def test_all_new_parameters_together(self):
-        """Test all new parameters can be used together."""
+        """Combine merchant, goal, reporting, and review fields."""
         with patch("server.ensure_authenticated", new_callable=AsyncMock):
             with patch("server.api_call_with_retry", new_callable=AsyncMock) as mock_api:
                 mock_api.return_value = {"id": "txn_123"}
@@ -119,7 +117,6 @@ class TestCreateTransactionSchema:
                     category_id="cat_456",
                 )
 
-                # Verify API was called with merchant_name
                 call_kwargs = mock_api.call_args[1]
                 assert "merchant_name" in call_kwargs
                 assert call_kwargs["merchant_name"] == "Test Merchant"
@@ -127,7 +124,7 @@ class TestCreateTransactionSchema:
 
     @pytest.mark.asyncio
     async def test_update_balance_parameter(self):
-        """Test new update_balance parameter."""
+        """Test the update_balance parameter."""
         with patch("server.ensure_authenticated", new_callable=AsyncMock):
             with patch("server.api_call_with_retry", new_callable=AsyncMock) as mock_api:
                 mock_api.return_value = {"id": "txn_new"}
@@ -156,7 +153,7 @@ class TestCreateTransactionSchema:
 
 
 class TestGetTransactionsFilters:
-    """Test new filter parameters for get_transactions."""
+    """Test get_transactions filters."""
 
     @pytest.mark.asyncio
     async def test_has_attachments_filter(self):
@@ -225,7 +222,7 @@ class TestGetTransactionsFilters:
 
     @pytest.mark.asyncio
     async def test_multiple_filters_combined(self):
-        """Test combining multiple new filters."""
+        """Combine attachment, note, split, and reporting filters."""
         with patch("server.ensure_authenticated", new_callable=AsyncMock):
             with patch("server.api_call_with_retry", new_callable=AsyncMock) as mock_api:
                 mock_api.return_value = {"allTransactions": {"results": []}}
@@ -242,7 +239,7 @@ class TestGetTransactionsFilters:
 
 
 class TestSearchTransactionsFilters:
-    """Test new filter parameters for search_transactions (same as get_transactions)."""
+    """Test filters shared by search_transactions and get_transactions."""
 
     @pytest.mark.asyncio
     async def test_search_with_attachments_filter(self):
@@ -261,7 +258,7 @@ class TestSearchTransactionsFilters:
 
 
 class TestBulkUpdateTransactions:
-    """Test bulk updates with new fields."""
+    """Test bulk transaction fields."""
 
     @pytest.mark.asyncio
     async def test_bulk_update_with_merchant_name(self):
@@ -279,16 +276,14 @@ class TestBulkUpdateTransactions:
 
                 result = await update_transactions_bulk(updates=updates_json)
 
-                # Should have been called twice (once per transaction)
                 assert mock_api.call_count == 2
 
-                # Check both calls used merchant_name
                 for call in mock_api.call_args_list:
                     assert "merchant_name" in call[1]
 
     @pytest.mark.asyncio
     async def test_bulk_update_with_all_new_fields(self):
-        """Test bulk update with all new fields."""
+        """Combine merchant, goal, reporting, and review fields in bulk updates."""
         with patch("server.ensure_authenticated", new_callable=AsyncMock):
             with patch("server.api_call_with_retry", new_callable=AsyncMock) as mock_api:
                 mock_api.return_value = {"id": "txn_123"}
@@ -307,7 +302,6 @@ class TestBulkUpdateTransactions:
 
                 result = await update_transactions_bulk(updates=updates_json)
 
-                # Verify all fields were passed to API
                 call_kwargs = mock_api.call_args[1]
                 assert call_kwargs["merchant_name"] == "Updated Merchant"
                 assert call_kwargs["goal_id"] == "goal_123"

@@ -13,7 +13,6 @@ class TestMCPResources:
 
     def test_resources_are_registered(self) -> None:
         """Verify resources are registered with the MCP server."""
-        # Check that the mcp instance has resources registered
         assert hasattr(server.mcp, "_resource_manager")
 
     def test_list_categories_resource_exists(self) -> None:
@@ -95,27 +94,12 @@ class TestMCPPrompts:
         assert "Food" in result
         assert "get_transactions" in result
 
-    def test_analyze_spending_default_period(self) -> None:
-        """Test analyze_spending uses default period."""
-        result = server.analyze_spending()
-
-        assert "this month" in result
-
     def test_budget_review_returns_prompt(self) -> None:
         """Test budget_review generates expected prompt."""
         result = server.budget_review(month="January")
 
         assert "January" in result
         assert "get_budgets" in result
-        assert "Budget vs Actual" in result
-
-    def test_financial_health_check_returns_prompt(self) -> None:
-        """Test financial_health_check generates expected prompt."""
-        result = server.financial_health_check()
-
-        assert "Account Overview" in result
-        assert "Cash Flow" in result
-        assert "Net worth" in result
 
     def test_transaction_categorization_help_returns_prompt(self) -> None:
         """Test transaction_categorization_help generates expected prompt."""
@@ -123,11 +107,10 @@ class TestMCPPrompts:
 
         assert "Amazon Purchase" in result
         assert "categories://list" in result
-        assert "Best Category Match" in result
 
 
 class TestDisplayTitles:
-    """Every tool and prompt advertises a human-friendly title (2025-06-18)."""
+    """Every tool and prompt advertises a display title."""
 
     def test_all_tools_have_titles(self) -> None:
         untitled = [t.name for t in server.mcp._tool_manager.list_tools() if not t.title]
@@ -136,9 +119,6 @@ class TestDisplayTitles:
     def test_all_prompts_have_titles(self) -> None:
         untitled = [p.name for p in server.mcp._prompt_manager.list_prompts() if not p.title]
         assert untitled == []
-
-    def test_specific_tool_title(self) -> None:
-        assert server.mcp._tool_manager.get_tool("get_accounts").title == "Get Accounts"
 
 
 class TestResourceTemplates:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MCP Log Analyzer — parses Monarch Money MCP server logs and generates optimization reports.
+"""Analyze Monarch Money MCP logs and suggest ways to reduce data usage.
 
 Supports 3 log formats:
   1. Claude Desktop wrapper: `Message from client: {"method":"tools/call",...}`
@@ -23,10 +23,9 @@ from datetime import datetime
 from pathlib import Path
 from statistics import mean, stdev
 
-# Default log path for Claude Desktop MCP logs
 DEFAULT_LOG_PATH = Path.home() / "Library" / "Logs" / "Claude" / "mcp-server-monarch-money.log"
 
-# Token estimation: ~4 chars per token (conservative for JSON)
+# Rough token estimate; actual token counts depend on the content and tokenizer.
 CHARS_PER_TOKEN = 4
 
 # Thresholds for recommendations
@@ -51,7 +50,7 @@ class ToolCall:
 
 @dataclass
 class Session:
-    """A group of tool calls belonging to one session (gap-delimited)."""
+    """Tool calls grouped by gaps in activity."""
 
     session_id: str
     start_time: datetime
@@ -161,10 +160,8 @@ def parse_tool_call_line(line: str) -> ToolCall | None:
         return None
     ts_str, tool_name, args_str = m.group(1), m.group(2), m.group(3)
 
-    # args_str looks like Python dict repr: {'key': 'val', ...}
-    # Use a safe eval approach: convert to JSON-like
+    # Convert Python-style dict text to JSON; preserve unparseable input below.
     try:
-        # Replace Python None/True/False with JSON equivalents
         json_str = args_str.replace("None", "null").replace("True", "true").replace("False", "false")
         json_str = json_str.replace("'", '"')
         arguments = json.loads(json_str)
@@ -238,16 +235,15 @@ def parse_structlog_line(line: str) -> ToolCall | None:
 
 
 # ---------------------------------------------------------------------------
-# Log file parser — merges all formats
+# Log file parser
 # ---------------------------------------------------------------------------
 
 
 def parse_log_file(path: Path, since: datetime | None = None) -> list[ToolCall]:
-    """Parse a log file and return a list of ToolCall objects, merging all formats.
+    """Parse supported log formats and merge timing and size records.
 
-    Handles deduplication when both wrapper and legacy formats log the same call:
-    wrapper lines create the call, legacy [TOOL_CALL] lines within 2 seconds are
-    treated as duplicates and merged rather than creating new entries.
+    Merge legacy [TOOL_CALL] records into the latest call for that tool when
+    their timestamps differ by less than two seconds.
     """
     calls: list[ToolCall] = []
     # Most recent ToolCall per tool_name, for attaching analytics/size data
@@ -263,7 +259,6 @@ def parse_log_file(path: Path, since: datetime | None = None) -> list[ToolCall]:
 
     with open(path) as f:
         for line_num, line in enumerate(f, 1):
-            # Try wrapper format first (has tool name + args from JSON-RPC)
             call = parse_wrapper_line(line)
             if call:
                 call.line_number = line_num
@@ -273,15 +268,12 @@ def parse_log_file(path: Path, since: datetime | None = None) -> list[ToolCall]:
                 pending_calls[call.tool_name] = call
                 continue
 
-            # Try [TOOL_CALL] marker (has tool name + args)
             call = parse_tool_call_line(line)
             if call:
                 call.line_number = line_num
                 if since and call.timestamp < since:
                     continue
-                # Skip if this is a duplicate of a recent wrapper line
                 if _is_recent_dup(call.tool_name, call.timestamp):
-                    # Update pending with richer args from legacy format if available
                     prev = pending_calls[call.tool_name]
                     if not prev.arguments and call.arguments:
                         prev.arguments = call.arguments
@@ -290,7 +282,6 @@ def parse_log_file(path: Path, since: datetime | None = None) -> list[ToolCall]:
                 pending_calls[call.tool_name] = call
                 continue
 
-            # Try [ANALYTICS] marker (has timing + status)
             analytics = parse_analytics_line(line)
             if analytics:
                 ts_str, tool_name, time_s, status = analytics
@@ -299,7 +290,6 @@ def parse_log_file(path: Path, since: datetime | None = None) -> list[ToolCall]:
                     pending_calls[tool_name].status = status
                 continue
 
-            # Try [RESULT_SIZE] marker (has result size info)
             size_info = parse_result_size_line(line)
             if size_info:
                 ts_str, tool_name, chars, kb, items = size_info
@@ -308,7 +298,6 @@ def parse_log_file(path: Path, since: datetime | None = None) -> list[ToolCall]:
                     pending_calls[tool_name].result_items = items
                 continue
 
-            # Try structlog JSON
             call = parse_structlog_line(line)
             if call:
                 call.line_number = line_num
@@ -351,7 +340,6 @@ def detect_sessions(calls: list[ToolCall]) -> list[Session]:
         else:
             current_calls.append(call)
 
-    # last session
     sessions.append(
         Session(
             session_id=f"session_{len(sessions) + 1}",
@@ -391,7 +379,6 @@ def compute_tool_stats(calls: list[ToolCall]) -> dict[str, ToolStats]:
         if call.status == "error":
             s.error_count += 1
 
-        # Track argument patterns
         for key, value in call.arguments.items():
             s.arg_patterns[key][str(value)] += 1
 
@@ -476,7 +463,7 @@ def generate_recommendations(
     recs: list[Recommendation] = []
 
     for tool_name, s in stats.items():
-        # Rule 1: Caching candidates — high call count + low size variance
+        # Similar response sizes suggest a caching candidate, not identical data.
         if s.call_count >= 3 and len(s.sizes_kb) >= 2:
             avg_kb = mean(s.sizes_kb)
             if avg_kb > 0:
@@ -488,9 +475,9 @@ def generate_recommendations(
                             priority="high",
                             category="caching",
                             message=(
-                                f"`{tool_name}` called {s.call_count}x with nearly identical results "
+                                f"`{tool_name}` called {s.call_count}x with similar response sizes "
                                 f"(avg {avg_kb:.1f} KB, CV={cv:.2f}). "
-                                f"Cache this response to save ~{savings / 1024:.0f} KB / "
+                                f"If the data is unchanged, caching could save ~{savings / 1024:.0f} KB / "
                                 f"~{int(savings / CHARS_PER_TOKEN):,} tokens."
                             ),
                             estimated_savings_kb=savings / 1024,
@@ -515,7 +502,7 @@ def generate_recommendations(
                     )
                 )
 
-        # Rule 3: Missing limits — high item counts
+        # High item counts suggest reviewing limits.
         if s.total_items > 0:
             avg_items = s.total_items / s.call_count
             if avg_items >= HIGH_ITEM_COUNT:
@@ -572,7 +559,7 @@ def generate_recommendations(
                         category="redundant_lookup",
                         message=(
                             f"Pattern `{a}` → `{b}` seen {seq_pattern.count}x. "
-                            f"Categories are static data — cache the first response."
+                            f"Consider caching categories with invalidation when they change."
                         ),
                     )
                 )
@@ -592,9 +579,9 @@ def generate_recommendations(
                         priority="high",
                         category="response_bloat",
                         message=(
-                            f"`update_transactions_bulk` echoes full transaction objects "
+                            f"`update_transactions_bulk` returns large responses "
                             f"(~{per_item_kb:.1f} KB/item, avg {avg_items:.0f} items). "
-                            f"Compact responses ({'{'}id, status{'}'}) would save ~{savings:.0f} KB / "
+                            f"If these include redundant fields, compact responses could save ~{savings:.0f} KB / "
                             f"~{int(savings * 1024 / CHARS_PER_TOKEN):,} tokens."
                         ),
                         estimated_savings_kb=savings,
@@ -602,7 +589,6 @@ def generate_recommendations(
                     )
                 )
 
-    # Sort: high > medium > low
     priority_order = {"high": 0, "medium": 1, "low": 2}
     recs.sort(key=lambda r: (priority_order.get(r.priority, 3), -r.estimated_savings_tokens))
     return recs
@@ -637,7 +623,6 @@ def format_report(
     lines.append(f"Sessions detected: {len(sessions)}")
     lines.append(f"Errors: {total_errors}")
 
-    # Tool usage table
     lines.append("\n" + "-" * 70)
     lines.append("  TOOL USAGE STATS")
     lines.append("-" * 70)
@@ -653,7 +638,6 @@ def format_report(
             f"{s.tool_name:<35} {s.call_count:>6} {s.total_chars / 1024:>10.1f} {avg_kb:>8.1f} {max_kb:>8.1f} {avg_time:>9}"
         )
 
-    # Argument patterns
     lines.append("\n" + "-" * 70)
     lines.append("  ARGUMENT PATTERNS")
     lines.append("-" * 70)
@@ -667,7 +651,6 @@ def format_report(
             values_str = ", ".join(f"{v}({c})" for v, c in top_values)
             lines.append(f"    {param}: {values_str}")
 
-    # Consecutive repeats
     if repeats:
         lines.append("\n" + "-" * 70)
         lines.append("  CONSECUTIVE REPEAT PATTERNS")
@@ -675,7 +658,6 @@ def format_report(
         for tool_name, max_streak, run_count in repeats:
             lines.append(f"  {tool_name}: {run_count} runs, max streak {max_streak}")
 
-    # Common sequences
     if sequences:
         lines.append("\n" + "-" * 70)
         lines.append("  COMMON TOOL SEQUENCES (within 30s)")
@@ -684,7 +666,6 @@ def format_report(
             seq_str = " -> ".join(sp.tools)
             lines.append(f"  {seq_str}: {sp.count}x (avg {sp.avg_total_kb:.1f} KB)")
 
-    # Recommendations
     lines.append("\n" + "=" * 70)
     lines.append("  RECOMMENDATIONS")
     lines.append("=" * 70)
@@ -762,10 +743,10 @@ def format_json_report(
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Analyze Monarch MCP server logs for optimization opportunities")
+    parser = argparse.ArgumentParser(description="Analyze Monarch MCP log usage and response sizes")
     parser.add_argument("--log", type=Path, default=DEFAULT_LOG_PATH, help="Path to MCP log file")
-    parser.add_argument("--json", action="store_true", dest="json_output", help="Output in JSON format")
-    parser.add_argument("--since", type=str, default=None, help="Only analyze entries after this date (YYYY-MM-DD)")
+    parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON")
+    parser.add_argument("--since", type=str, default=None, help="Analyze entries on or after this date (YYYY-MM-DD)")
     args = parser.parse_args(argv)
 
     if not args.log.exists():

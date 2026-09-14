@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-# Import the server module
 import server
 
 
@@ -19,30 +18,24 @@ class TestDateConversion:
 
     def test_convert_dates_to_strings_basic_types(self) -> None:
         """Test conversion of basic non-date types."""
-        # Test strings
         assert server.convert_dates_to_strings("hello") == "hello"
 
-        # Test numbers
         assert server.convert_dates_to_strings(42) == 42
         assert server.convert_dates_to_strings(3.14) == 3.14
 
-        # Test booleans
         assert server.convert_dates_to_strings(True) is True
         assert server.convert_dates_to_strings(False) is False
 
-        # Test None
         assert server.convert_dates_to_strings(None) is None
 
     def test_convert_dates_to_strings_with_dates(self) -> None:
         """Test conversion of date and datetime objects."""
         from datetime import date, datetime
 
-        # Test date conversion
         test_date = date(2024, 1, 15)
         result = server.convert_dates_to_strings(test_date)
         assert result == "2024-01-15"
 
-        # Test datetime conversion
         test_datetime = datetime(2024, 1, 15, 10, 30, 45)
         result = server.convert_dates_to_strings(test_datetime)
         assert result == "2024-01-15T10:30:45"
@@ -53,13 +46,11 @@ class TestDateConversion:
 
         test_date = date(2024, 1, 15)
 
-        # Test dictionary
         input_dict = {"name": "test", "created_date": test_date, "count": 5}
         result = server.convert_dates_to_strings(input_dict)
         expected = {"name": "test", "created_date": "2024-01-15", "count": 5}
         assert result == expected
 
-        # Test list
         input_list = ["hello", test_date, 42]
         result = server.convert_dates_to_strings(input_list)
         expected = ["hello", "2024-01-15", 42]
@@ -91,16 +82,13 @@ class TestServerInitialization:
         self, mock_monarch_class: Mock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Test successful client initialization."""
-        # Setup mock
         mock_client = Mock()
         mock_client.login = AsyncMock()
         mock_monarch_class.return_value = mock_client
         monkeypatch.setattr(server, "session_file", tmp_path / "session.pickle")
 
-        # Reset global client
         server.mm_client = None
 
-        # Test initialization
         await server.initialize_client()
 
         assert server.auth_state == server.AuthState.AUTHENTICATED
@@ -157,9 +145,7 @@ class TestBasicFunctionality:
         """Test that environment variable access works."""
         import os
 
-        # This should not raise an exception
         email = os.getenv("MONARCH_EMAIL")
         password = os.getenv("MONARCH_PASSWORD")
-        # Values might be None, but the calls should work
         assert email is None or isinstance(email, str)
         assert password is None or isinstance(password, str)

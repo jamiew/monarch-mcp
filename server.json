@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.jamiew/monarch-mcp",
   "title": "Monarch MCP Server",
-  "description": "Access Monarch financial data — accounts, transactions, budgets, and more",
+  "description": "Query and update Monarch Money accounts, transactions, and budgets",
   "version": "0.3.2",
   "repository": {
     "url": "https://github.com/jamiew/monarch-mcp",
@@ -19,25 +19,25 @@
       "environmentVariables": [
         {
           "name": "MONARCH_EMAIL",
-          "description": "Your Monarch Money account email",
+          "description": "Monarch Money account email",
           "isRequired": true,
           "isSecret": false
         },
         {
           "name": "MONARCH_PASSWORD",
-          "description": "Your Monarch Money account password",
+          "description": "Monarch Money account password",
           "isRequired": true,
           "isSecret": true
         },
         {
           "name": "MONARCH_MFA_SECRET",
-          "description": "Your TOTP secret key for 2FA",
+          "description": "TOTP secret for 2FA, not a rotating code",
           "isRequired": false,
           "isSecret": true
         },
         {
           "name": "MONARCH_FORCE_LOGIN",
-          "description": "Set to 'true' to bypass session cache",
+          "description": "Set to 'true' to skip the cached session",
           "isRequired": false,
           "isSecret": false
         }
@@ -45,25 +45,28 @@
     }
   ],
   "tools": [
-    { "name": "get_accounts", "description": "List all financial accounts with balances" },
-    { "name": "get_transactions", "description": "Get transactions with date/account/category filtering" },
-    { "name": "search_transactions", "description": "Search transactions by merchant name or keyword" },
-    { "name": "get_budgets", "description": "Get budget data and spending limits" },
-    { "name": "get_cashflow", "description": "Get income and expense cashflow data" },
+    { "name": "get_accounts", "description": "List accounts with balances" },
+    { "name": "get_transactions", "description": "Filter transactions by date, account, or category" },
+    { "name": "search_transactions", "description": "Search by merchant or keyword" },
+    { "name": "get_budgets", "description": "Get budgets and spending limits" },
+    { "name": "get_cashflow", "description": "Get income and expense totals" },
     { "name": "get_transaction_categories", "description": "List transaction categories" },
     { "name": "create_transaction", "description": "Create a manual transaction" },
-    { "name": "update_transaction", "description": "Update an existing transaction" },
+    { "name": "update_transaction", "description": "Update a transaction" },
     { "name": "update_transactions_bulk", "description": "Update multiple transactions in parallel" },
-    { "name": "get_account_holdings", "description": "Get investment holdings for an account" },
-    { "name": "get_account_history", "description": "Get historical balance data for an account" },
-    { "name": "get_institutions", "description": "List connected financial institutions" },
-    { "name": "get_recurring_transactions", "description": "Get recurring/subscription transactions" },
-    { "name": "set_budget_amount", "description": "Set budget amount for a category" },
-    { "name": "create_manual_account", "description": "Create a manual tracking account" },
-    { "name": "refresh_accounts", "description": "Trigger refresh of account data" },
-    { "name": "get_spending_summary", "description": "Get spending summary by category/account/month" },
-    { "name": "get_complete_financial_overview", "description": "Get comprehensive financial snapshot in one call" },
-    { "name": "analyze_spending_patterns", "description": "Analyze spending trends with optional forecasting" }
+    { "name": "get_transaction_splits", "description": "Read transaction splits" },
+    { "name": "update_transaction_splits", "description": "Replace all splits; an empty list removes them" },
+    { "name": "get_account_holdings", "description": "Get account investment holdings" },
+    { "name": "get_account_history", "description": "Get account balance history" },
+    { "name": "get_institutions", "description": "List linked financial institutions" },
+    { "name": "get_recurring_transactions", "description": "Read scheduled occurrences, not payment status; date filters unreleased" },
+    { "name": "update_recurring_transaction", "description": "Unreleased: edit merchant-wide recurrence, not posted transactions" },
+    { "name": "set_budget_amount", "description": "Set a category budget" },
+    { "name": "create_manual_account", "description": "Create a manually tracked account" },
+    { "name": "refresh_accounts", "description": "Request account refresh" },
+    { "name": "get_spending_summary", "description": "Group spending by category, account, or month" },
+    { "name": "get_complete_financial_overview", "description": "Combine accounts, transactions, budgets, cashflow, and categories" },
+    { "name": "analyze_spending_patterns", "description": "Summarize trends with optional average-based forecasts" }
   ],
-  "securityConsiderations": "Monarch Money does not provide OAuth or official API access. This server requires your actual account credentials (email, password, MFA secret) which have full access to view and modify your financial data. Use with appropriate caution."
+  "securityConsiderations": "Unofficial API access requires Monarch credentials with full read/write access. Protect credentials, session tokens, and logs, which may contain financial inputs and error details."
 }

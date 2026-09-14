@@ -1,9 +1,6 @@
-"""Tests for MCP structured tool output (outputSchema + structured content).
+"""Check tool output schemas, structured payloads, and text fallbacks.
 
-Every tool returns a Pydantic model so FastMCP advertises an ``outputSchema`` and
-emits machine-readable structured content alongside a text fallback. These tests
-assert the schema is present for all tools and that a representative call produces
-both content forms, with the structured payload validating against the tool's model.
+Validate representative payloads against their Pydantic models.
 """
 
 from unittest.mock import AsyncMock
@@ -39,13 +36,11 @@ def test_output_schema_declares_expected_properties(tool_name: str, schema_props
 
 @pytest.mark.asyncio
 async def test_call_tool_returns_text_and_structured_content(mock_api: AsyncMock) -> None:
-    """A converted tool yields both a text fallback and structured content."""
+    """Tool calls yield structured content and a text fallback for older clients."""
     mock_api.return_value = [{"id": "acc_1", "displayName": "Checking"}]
     content, structured = await mgr.call_tool("get_accounts", {}, convert_result=True)
 
-    # Text fallback present for older clients.
     assert content and content[0].type == "text"
-    # Structured content matches the AccountsResult shape and re-validates.
     assert structured == {"accounts": [{"id": "acc_1", "displayName": "Checking"}], "count": 1}
     server.AccountsResult.model_validate(structured)
 

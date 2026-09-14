@@ -48,12 +48,10 @@ class TestSearchTransactions:
 
             result_data = json.loads(result.model_dump_json())
 
-            # Should receive 2 Apple transactions from the API
             assert result_data["search_metadata"]["result_count"] == 2
             assert result_data["search_metadata"]["query"] == "Apple"
             assert len(result_data["transactions"]) == 2
 
-            # Verify the API was called with search parameter
             mock_client.get_transactions.assert_called_once()
             call_kwargs = mock_client.get_transactions.call_args[1]
             assert call_kwargs["search"] == "Apple"
@@ -77,12 +75,10 @@ class TestSearchTransactions:
         with patch.object(server, "mm_client") as mock_client:
             mock_client.get_transactions = AsyncMock(return_value=mock_transactions)
 
-            # Test lowercase query
             await server.search_transactions(query="apple")
             call_kwargs = mock_client.get_transactions.call_args[1]
             assert call_kwargs["search"] == "apple"
 
-            # Test uppercase query
             await server.search_transactions(query="APPLE")
             call_kwargs = mock_client.get_transactions.call_args[1]
             assert call_kwargs["search"] == "APPLE"
@@ -136,7 +132,6 @@ class TestSearchTransactions:
             result_data = json.loads(result.model_dump_json())
             assert result_data["search_metadata"]["result_count"] == 1
 
-            # Verify filters were applied to API call
             call_kwargs = mock_client.get_transactions.call_args[1]
             assert "start_date" in call_kwargs
             assert "end_date" in call_kwargs
@@ -184,22 +179,18 @@ class TestSearchTransactions:
         with patch.object(server, "mm_client") as mock_client:
             mock_client.get_transactions = AsyncMock(return_value=mock_transactions)
 
-            # Test verbose=True (full details)
             result = await server.search_transactions(query="Apple", verbose=True)
             result_data = json.loads(result.model_dump_json())
             txn = result_data["transactions"][0]
 
-            # Should have all fields including nested objects
             assert "extraField" in txn
             assert isinstance(txn["merchant"], dict)
             assert "id" in txn["merchant"]
 
-            # Test verbose=False (compact)
             result = await server.search_transactions(query="Apple", verbose=False)
             result_data = json.loads(result.model_dump_json())
             txn = result_data["transactions"][0]
 
-            # Should be compact format (merchant name as string)
             assert "extraField" not in txn
             assert isinstance(txn["merchant"], str)
 
@@ -227,7 +218,6 @@ class TestSearchTransactions:
             result_data = json.loads(result.model_dump_json())
             assert result_data["search_metadata"]["result_count"] == 1
 
-            # Verify search parameter was passed
             call_kwargs = mock_client.get_transactions.call_args[1]
             assert call_kwargs["search"] == "Apple"
 
@@ -255,7 +245,6 @@ class TestSearchTransactions:
             result_data = json.loads(result.model_dump_json())
             assert result_data["search_metadata"]["result_count"] == 1
 
-            # Verify the API was called with the account filter as a list
             mock_client.get_transactions.assert_called_once()
             call_kwargs = mock_client.get_transactions.call_args[1]
             assert call_kwargs["account_ids"] == ["acc123"]
@@ -285,14 +274,11 @@ class TestSearchTransactionsIntegration:
         with patch.object(server, "mm_client") as mock_client:
             mock_client.get_transactions = AsyncMock(return_value=mock_transactions)
 
-            # Get search results
             search_result = await server.search_transactions(query="Apple", verbose=False)
             search_txns = json.loads(search_result.model_dump_json())["transactions"]
 
-            # Get regular transactions with compact format
             get_result = await server.get_transactions(limit=100, verbose=False)
             get_txns = json.loads(get_result.model_dump_json())["transactions"]
 
-            # Both should have same compact format
             assert search_txns and get_txns, "both queries should return the mocked transaction"
             assert set(search_txns[0].keys()) == set(get_txns[0].keys())
