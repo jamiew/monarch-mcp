@@ -1,5 +1,6 @@
 """Tests for authentication error handling and retry logic."""
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -156,7 +157,11 @@ class TestAuthenticationRetry:
         try:
             # Mock environment variables
             with (
-                patch.dict(os.environ, {"MONARCH_EMAIL": "test@example.com", "MONARCH_PASSWORD": "testpass"}),
+                patch.dict(
+                    os.environ,
+                    {"MONARCH_EMAIL": "test@example.com", "MONARCH_PASSWORD": "testpass"},
+                    clear=True,
+                ),
                 patch("server.session_file") as mock_session_file,
                 patch("server.MonarchMoney") as mock_mm_class,
             ):
@@ -164,7 +169,8 @@ class TestAuthenticationRetry:
                 mock_session_file.exists.return_value = True
 
                 # Mock the client
-                mock_client = AsyncMock()
+                mock_client = MagicMock()
+                mock_client.login = AsyncMock()
                 mock_mm_class.return_value = mock_client
 
                 # Call initialize_client
@@ -179,6 +185,62 @@ class TestAuthenticationRetry:
         finally:
             # Restore original state
             server.auth_state = original_auth_state
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("reset_during", ["forced_login", "session_load", "login_retry"])
+    async def test_initialization_recovers_client_after_session_reset(self, reset_during: str, tmp_path: Path) -> None:
+        import server
+
+        initial_client = MagicMock()
+        initial_client.login = AsyncMock(side_effect=ValueError("invalid credentials"))
+        initial_client.load_session.side_effect = ValueError("session expired")
+        fresh_client = MagicMock()
+        fresh_client.login = AsyncMock()
+        session_file = tmp_path / "session.pickle"
+        if reset_during == "session_load":
+            session_file.touch()
+
+        with (
+            patch.dict(
+                "os.environ",
+                {
+                    "MONARCH_EMAIL": "test@example.com",
+                    "MONARCH_PASSWORD": "testpass",
+                    "MONARCH_FORCE_LOGIN": "true" if reset_during == "forced_login" else "false",
+                },
+                clear=True,
+            ),
+            patch("server.session_file", session_file),
+            patch("server.session_dir", tmp_path),
+            patch("server.MonarchMoney", side_effect=[initial_client, fresh_client]),
+            patch("server.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            await server.initialize_client()
+
+        assert server.auth_state == server.AuthState.AUTHENTICATED
+        assert server.mm_client is fresh_client
+        fresh_client.login.assert_awaited_once()
+
+    async def test_login_saves_only_the_private_session(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        import server
+
+        client = server.MonarchMoney(token="synthetic-session-token")
+        monkeypatch.setattr(client, "_login_user", AsyncMock())
+        monkeypatch.setattr(server, "MonarchMoney", lambda: client)
+        monkeypatch.chdir(tmp_path)
+        private_dir = tmp_path / "private"
+        session_file = private_dir / "session.pickle"
+        monkeypatch.setattr(server, "session_dir", private_dir)
+        monkeypatch.setattr(server, "session_file", session_file)
+        monkeypatch.setenv("MONARCH_EMAIL", "example@example.invalid")
+        monkeypatch.setenv("MONARCH_PASSWORD", "synthetic-password")
+        monkeypatch.setenv("MONARCH_FORCE_LOGIN", "false")
+
+        await server.initialize_client()
+
+        assert session_file.is_file()
+        assert session_file.stat().st_mode & 0o777 == 0o600
+        assert not (tmp_path / ".mm").exists()
 
     def test_clear_session_removes_both_session_files(self):
         """Test that clear_session removes both custom and monarchmoney session files."""

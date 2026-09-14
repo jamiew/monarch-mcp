@@ -1,5 +1,11 @@
 """Basic unit tests for the Monarch Money MCP server."""
 
+import os
+import select
+import signal
+import subprocess
+import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -75,14 +81,21 @@ class TestServerInitialization:
         with pytest.raises(ValueError, match="MONARCH_EMAIL and MONARCH_PASSWORD"):
             await server.initialize_client()
 
-    @patch.dict("os.environ", {"MONARCH_EMAIL": "test@example.com", "MONARCH_PASSWORD": "testpass"})
+    @patch.dict(
+        "os.environ",
+        {"MONARCH_EMAIL": "test@example.com", "MONARCH_PASSWORD": "testpass", "MONARCH_FORCE_LOGIN": "false"},
+    )
     @patch("server.MonarchMoney")
     @pytest.mark.asyncio
-    async def test_initialize_client_success(self, mock_monarch_class: Mock) -> None:
+    async def test_initialize_client_success(
+        self, mock_monarch_class: Mock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Test successful client initialization."""
         # Setup mock
-        mock_client = AsyncMock()
+        mock_client = Mock()
+        mock_client.login = AsyncMock()
         mock_monarch_class.return_value = mock_client
+        monkeypatch.setattr(server, "session_file", tmp_path / "session.pickle")
 
         # Reset global client
         server.mm_client = None
@@ -90,9 +103,42 @@ class TestServerInitialization:
         # Test initialization
         await server.initialize_client()
 
-        # Verify client was created and login was called
-        mock_monarch_class.assert_called_once()
-        assert server.mm_client is not None
+        assert server.auth_state == server.AuthState.AUTHENTICATED
+        mock_client.login.assert_awaited_once()
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX signal semantics")
+    @pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGINT])
+    def test_console_entrypoint_terminates_on_signal(self, signum: int, tmp_path: Path) -> None:
+        code = (
+            "import asyncio\n"
+            "import server\n"
+            "async def wait_for_signal():\n"
+            "    print('ready', flush=True)\n"
+            "    await asyncio.Event().wait()\n"
+            "server.main = wait_for_signal\n"
+            "server.run()\n"
+        )
+        process = subprocess.Popen(
+            [sys.executable, "-c", code],
+            cwd=Path(server.__file__).parent,
+            env={"MONARCH_SESSION_DIR": str(tmp_path)},
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        try:
+            assert process.stdout is not None
+            assert select.select([process.stdout], [], [], 15)[0], "Child did not become ready"
+            assert process.stdout.readline().strip() == "ready"
+            process.send_signal(signum)
+            assert process.wait(timeout=5) in (0, -signum)
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=5)
+            if process.stdout is not None:
+                process.stdout.close()
 
 
 class TestBasicFunctionality:

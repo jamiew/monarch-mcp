@@ -1,5 +1,6 @@
 # Environment variables
 .env*
+.mcp.json
 
 # Python
 __pycache__/
@@ -45,9 +46,7 @@ coverage.xml
 .mypy_cache/
 .dmypy.json
 dmypy.json
-
-# UV
-uv.lock
+.ruff_cache/
 
 # Logs
 *.log

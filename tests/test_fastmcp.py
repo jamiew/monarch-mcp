@@ -39,25 +39,6 @@ class TestFastMCPServer:
         with pytest.raises(ValueError, match="MONARCH_EMAIL and MONARCH_PASSWORD"):
             await server.initialize_client()
 
-    @patch.dict("os.environ", {"MONARCH_EMAIL": "test@example.com", "MONARCH_PASSWORD": "testpass"})
-    @patch("server.MonarchMoney")
-    @pytest.mark.asyncio
-    async def test_initialize_client_success(self, mock_monarch_class: AsyncMock) -> None:
-        """Test successful client initialization."""
-        # Setup mock
-        mock_client = AsyncMock()
-        mock_monarch_class.return_value = mock_client
-
-        # Reset global client
-        server.mm_client = None
-
-        # Test initialization
-        await server.initialize_client()
-
-        # Verify client was created and login was called
-        mock_monarch_class.assert_called_once()
-        assert server.mm_client is not None
-
     @pytest.mark.asyncio
     async def test_get_accounts_no_client(self) -> None:
         """Test get_accounts triggers authentication when client not initialized."""

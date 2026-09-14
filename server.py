@@ -9,7 +9,6 @@ import json
 import logging
 import os
 import re
-import signal
 import sys
 import time
 import uuid
@@ -33,7 +32,7 @@ from mcp.types import (
     ToolAnnotations,
 )
 from monarchmoney import MonarchMoney, RequireMFAException
-from pydantic import BaseModel, ConfigDict, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, JsonValue
 
 # Type definitions for Monarch Money API responses
 JsonSerializable = str | int | float | bool | None | list["JsonSerializable"] | dict[str, "JsonSerializable"]
@@ -375,7 +374,7 @@ def _build_transaction_filters(
 
 
 # Configure logger to output to stderr only with error handling
-class SafeStreamHandler(logging.StreamHandler[Any]):
+class SafeStreamHandler(logging.StreamHandler):
     """Stream handler that gracefully handles broken pipes."""
 
     def emit(self, record: logging.LogRecord) -> None:
@@ -468,24 +467,6 @@ def track_usage(func: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
                 payload = str(result) if result else ""
             result_chars = len(payload)
             result_kb = result_chars / 1024
-
-            # Try to extract additional stats from JSON results
-            extra_stats = ""
-            try:
-                if payload.strip().startswith("{"):
-                    parsed = json.loads(payload)
-                    if isinstance(parsed, dict):
-                        # Look for common list fields to count items
-                        for key in ["transactions", "accounts", "budgets", "categories", "results"]:
-                            if key in parsed and isinstance(parsed[key], list):
-                                extra_stats += f" | {key}: {len(parsed[key])} items"
-                        # Check for batch summaries
-                        if "batch_summary" in parsed:
-                            summary = parsed["batch_summary"]
-                            if isinstance(summary, dict):
-                                extra_stats += f" | batch: {summary}"
-            except (json.JSONDecodeError, KeyError, TypeError):
-                pass
 
             call_info.update({"status": "success", "execution_time": execution_time, "result_size": result_chars})
 
@@ -603,6 +584,22 @@ class UpdateSplitsResult(MMModel):
     message: str
 
 
+class BulkTransactionUpdate(BaseModel):
+    """Validate each bulk item before allowing any transaction mutation."""
+
+    model_config = ConfigDict(strict=True, extra="forbid", hide_input_in_errors=True)
+
+    transaction_id: str = Field(min_length=1)
+    amount: FiniteFloat | None = None
+    merchant_name: str | None = None
+    category_id: str | None = None
+    date: str | None = None
+    notes: str | None = None
+    goal_id: str | None = None
+    hide_from_reports: bool | None = None
+    needs_review: bool | None = None
+
+
 class BulkSummary(BaseModel):
     total: int
     succeeded: int
@@ -638,6 +635,16 @@ class InstitutionsResult(MMModel):
 
 class RecurringResult(MMModel):
     recurring: JsonValue
+
+
+class RecurringMerchant(BaseModel):
+    id: str
+    name: str
+    recurringTransactionStream: dict[str, JsonValue] | None
+
+
+class UpdateRecurringResult(MMModel):
+    merchant: RecurringMerchant
 
 
 class SetBudgetResult(MMModel):
@@ -1132,7 +1139,7 @@ async def initialize_client() -> None:
         auth_error = error_msg
         raise ValueError(error_msg)
 
-    log.info("auth_init", email=email)
+    log.info("auth_init")
     mm_client = MonarchMoney()
 
     # Try to load existing session first (unless forced to skip)
@@ -1164,11 +1171,15 @@ async def initialize_client() -> None:
 
     for attempt in range(max_retries):
         try:
+            if mm_client is None:
+                mm_client = MonarchMoney()
             log.info("auth_login_attempt", attempt=attempt + 1, max_retries=max_retries, mfa=bool(mfa_secret))
             if mfa_secret:
-                await mm_client.login(email, password, mfa_secret_key=mfa_secret, use_saved_session=False)
+                await mm_client.login(
+                    email, password, mfa_secret_key=mfa_secret, use_saved_session=False, save_session=False
+                )
             else:
-                await mm_client.login(email, password, use_saved_session=False)
+                await mm_client.login(email, password, use_saved_session=False, save_session=False)
 
             # Save session with stdout/stderr suppression
             stdout_capture = io.StringIO()
@@ -1840,37 +1851,16 @@ async def update_transactions_bulk(updates: str) -> BulkUpdateResult:
         log.info("bulk_update_start", count=len(updates_list))
 
         # Build list of update tasks
-        async def update_single(update_data: dict[str, Any]) -> BulkItemResult:
-            """Update a single transaction and return result with transaction_id."""
-            try:
-                if not isinstance(update_data, dict):
-                    return BulkItemResult(transaction_id=None, status="error", error="Update must be a dictionary")
-
-                if "transaction_id" not in update_data:
-                    return BulkItemResult(transaction_id=None, status="error", error="transaction_id is required")
-
+        async def update_single(update_data: object) -> BulkItemResult:
+            """Update a single transaction without letting malformed items break the batch."""
+            txn_id: str | None = None
+            if isinstance(update_data, dict) and isinstance(update_data.get("transaction_id"), str):
                 txn_id = update_data["transaction_id"]
-
-                # Build update parameters
-                update_params: dict[str, Any] = {"transaction_id": txn_id}
-
-                if "amount" in update_data:
-                    update_params["amount"] = float(update_data["amount"])
-                if "merchant_name" in update_data:
-                    update_params["merchant_name"] = str(update_data["merchant_name"])
-                if "category_id" in update_data:
-                    update_params["category_id"] = str(update_data["category_id"])
-                if "date" in update_data:
-                    date_str = str(update_data["date"])
-                    update_params["date"] = datetime.strptime(date_str, "%Y-%m-%d").date()
-                if "notes" in update_data:
-                    update_params["notes"] = str(update_data["notes"])
-                if "goal_id" in update_data:
-                    update_params["goal_id"] = str(update_data["goal_id"])
-                if "hide_from_reports" in update_data:
-                    update_params["hide_from_reports"] = bool(update_data["hide_from_reports"])
-                if "needs_review" in update_data:
-                    update_params["needs_review"] = bool(update_data["needs_review"])
+            try:
+                update = BulkTransactionUpdate.model_validate(update_data)
+                update_params = update.model_dump(exclude_none=True)
+                if update.date is not None:
+                    update_params["date"] = datetime.strptime(update.date, "%Y-%m-%d").date()
 
                 # Execute update with timeout
                 await asyncio.wait_for(api_call_with_retry("update_transaction", **update_params), timeout=30.0)
@@ -1880,12 +1870,12 @@ async def update_transactions_bulk(updates: str) -> BulkUpdateResult:
 
             except asyncio.TimeoutError:
                 return BulkItemResult(
-                    transaction_id=update_data.get("transaction_id"),
+                    transaction_id=txn_id,
                     status="error",
                     error="Update timed out after 30 seconds",
                 )
             except Exception as e:
-                return BulkItemResult(transaction_id=update_data.get("transaction_id"), status="error", error=str(e))
+                return BulkItemResult(transaction_id=txn_id, status="error", error=str(e))
 
         # Execute all updates in parallel
         results = await asyncio.gather(
@@ -2085,17 +2075,81 @@ async def get_institutions() -> InstitutionsResult:
 
 @mcp.tool(annotations=READONLY, title="Get Recurring Transactions")
 @track_usage
-async def get_recurring_transactions() -> RecurringResult:
-    """Get scheduled recurring transactions."""
-    await ensure_authenticated()
+async def get_recurring_transactions(start_date: str | None = None, end_date: str | None = None) -> RecurringResult:
+    """Get scheduled recurring occurrences, not the posted transaction history.
 
-    try:
-        recurring = await api_call_with_retry("get_recurring_transactions")
-        recurring = convert_dates_to_strings(recurring)
-        return RecurringResult(recurring=recurring)
-    except Exception as e:
-        log.error("Failed to fetch recurring transactions", error=str(e))
-        raise
+    Dates accept ISO dates or natural language such as "today" or "last month".
+    With neither date, fetch the current calendar month. With only one date,
+    use the beginning or end of that date's month for the missing bound.
+
+    The recurring.recurringTransactionItems list includes each occurrence's date,
+    amount, account, category, transactionId (when matched), and stream containing
+    the merchant ID, frequency, and expected amount. isPast describes the date,
+    not whether a bill was paid. Use get_transactions(is_recurring=True) for
+    recorded transactions instead.
+    """
+    start = parse_flexible_date(start_date) if start_date is not None else None
+    end = parse_flexible_date(end_date) if end_date is not None else None
+    if start is None:
+        start = (end or date.today()).replace(day=1)
+    if end is None:
+        end = start.replace(day=1) + relativedelta(months=1) - timedelta(days=1)
+    filters = build_date_filter(start.isoformat(), end.isoformat())
+    await ensure_authenticated()
+    recurring = await api_call_with_retry(
+        "get_recurring_transactions", start_date=filters["start_date"], end_date=filters["end_date"]
+    )
+    return RecurringResult(recurring=convert_dates_to_strings(recurring))
+
+
+@mcp.tool(annotations=WRITE_IDEMPOTENT, title="Update Recurring Transaction")
+@track_usage
+async def update_recurring_transaction(
+    merchant_id: str,
+    merchant_name: str,
+    is_recurring: bool | None = None,
+    frequency: str | None = None,
+    base_date: str | None = None,
+    amount: FiniteFloat | None = None,
+    is_active: bool | None = None,
+) -> UpdateRecurringResult:
+    """Change a merchant's recurring schedule, not an individual transaction.
+
+    This affects the merchant-wide recurrence. Get merchant_id from an
+    occurrence's stream.merchant.id, not stream.id or transactionId.
+    Pass the current merchant_name to avoid renaming the merchant.
+
+    Omitted settings stay unchanged. is_recurring enables or removes recurrence;
+    is_active pauses or resumes a schedule. frequency is Monarch's frequency
+    string (for example, "monthly"). base_date is the schedule's anchor date and
+    accepts the same date formats as get_recurring_transactions.
+    amount uses Monarch's signed amount, as returned by the existing stream.
+    This does not create posted transactions or move money.
+    """
+    if not merchant_id.strip() or not merchant_name.strip():
+        raise ValueError("merchant_id and merchant_name must not be blank")
+    if all(value is None for value in (is_recurring, frequency, base_date, amount, is_active)):
+        raise ValueError("Provide at least one recurring setting to change")
+    if frequency is not None and not frequency.strip():
+        raise ValueError("frequency must not be blank")
+    normalized_date = parse_flexible_date(base_date).isoformat() if base_date is not None else None
+    await ensure_authenticated()
+    result = await api_call_with_retry(
+        "update_reoccuring",
+        merchant_id=merchant_id,
+        name=merchant_name,
+        is_recurring=is_recurring,
+        frequency=frequency,
+        base_date=normalized_date,
+        amount=amount,
+        is_active=is_active,
+    )
+    payload = result.get("updateMerchant") if isinstance(result, dict) else None
+    if not isinstance(payload, dict):
+        raise ValueError("Monarch returned an invalid recurring update response")
+    if payload.get("errors"):
+        raise ValueError(f"Monarch rejected the recurring update: {payload['errors']}")
+    return UpdateRecurringResult(merchant=RecurringMerchant.model_validate(payload.get("merchant")))
 
 
 @mcp.tool(annotations=WRITE_IDEMPOTENT, title="Set Budget Amount")
@@ -2548,13 +2602,6 @@ def run() -> None:
 
     Wraps the async `main()` so the published entry point actually awaits it.
     """
-
-    def signal_handler(signum: int, frame: Any) -> None:
-        log.info("signal_received", signum=signum)
-        # Let asyncio handle the shutdown
-
-    signal.signal(signal.SIGTERM, signal_handler)
-    signal.signal(signal.SIGINT, signal_handler)
 
     try:
         asyncio.run(main())

@@ -3,7 +3,6 @@ name: Publish to PyPI & MCP Registry
 on:
   release:
     types: [published]
-  workflow_dispatch:
 
 permissions:
   id-token: write
@@ -12,26 +11,51 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: "3.12"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v10.1.0
 
       - name: Set up Python
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --all-groups
+        run: uv sync --locked --all-groups
+
+      - name: Validate release version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          uv run --locked python - <<'PY'
+          import os
+          import re
+          import tomllib
+          from pathlib import Path
+
+          tag = os.environ["RELEASE_TAG"]
+          if not re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", tag):
+              raise SystemExit("Release tag must have the form vMAJOR.MINOR.PATCH")
+          version = tag[1:]
+          project_version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+          if version != project_version:
+              raise SystemExit("Release tag does not match pyproject.toml version")
+          with open(os.environ["GITHUB_ENV"], "a") as env_file:
+              env_file.write(f"RELEASE_VERSION={version}\n")
+          PY
 
       - name: Run tests
-        run: uv run pytest tests/ -v --tb=short --ignore=tests/test_integration.py
+        run: uv run --locked pytest tests/ -v --tb=short --ignore=tests/test_integration.py
 
       - name: Build package
         run: uv build
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@v1.14.2
 
       - name: Install mcp-publisher
         run: |
@@ -42,8 +66,7 @@ jobs:
 
       - name: Set version in server.json
         run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
-          jq --arg v "$VERSION" '.version = $v | .packages[0].version = $v' server.json > server.tmp && mv server.tmp server.json
+          jq --arg v "$RELEASE_VERSION" '.version = $v | .packages[0].version = $v' server.json > server.tmp && mv server.tmp server.json
 
       - name: Publish to MCP Registry
         run: ./mcp-publisher publish

@@ -1,78 +1,52 @@
-"""Integration tests that verify actual Monarch Money API connectivity.
+"""Live Monarch Money response-contract tests, disabled by default.
 
-These tests require valid credentials and are skipped by default.
+Supply MONARCH_EMAIL, MONARCH_PASSWORD, and optional MONARCH_MFA_SECRET in the
+process environment, then explicitly opt in:
+    MONARCH_RUN_INTEGRATION=true uv run pytest tests/test_integration.py -v
 
-To run integration tests:
-    # Set up .env file with credentials, then:
-    uv run pytest tests/test_integration.py -v
-
-Or set environment variables directly:
-    MONARCH_EMAIL=... MONARCH_PASSWORD=... MONARCH_MFA_SECRET=... uv run pytest tests/test_integration.py -v
+These tests never load .env files or read/write saved sessions.
 """
 
 import os
-from pathlib import Path
 
 import pytest
 import pytest_asyncio
-
-# Load .env file if it exists (for local development)
-env_file = Path(__file__).parent.parent / ".env"
-if env_file.exists():
-    with open(env_file) as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, _, value = line.partition("=")
-                value = value.strip().strip('"').strip("'")
-                if key.strip() not in os.environ:  # Don't override existing env vars
-                    os.environ[key.strip()] = value
-
 from monarchmoney import MonarchMoney
 
-# Skip all tests in this module if credentials aren't available
-CREDENTIALS_AVAILABLE = all(
-    [
-        os.environ.get("MONARCH_EMAIL"),
-        os.environ.get("MONARCH_PASSWORD"),
-    ]
-)
-
-pytestmark = pytest.mark.skipif(
-    not CREDENTIALS_AVAILABLE, reason="Monarch Money credentials not available (set MONARCH_EMAIL and MONARCH_PASSWORD)"
-)
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        os.environ.get("MONARCH_RUN_INTEGRATION") != "true",
+        reason="Live Monarch calls require MONARCH_RUN_INTEGRATION=true",
+    ),
+]
 
 
 @pytest_asyncio.fixture
 async def authenticated_client() -> MonarchMoney:
-    """Create and authenticate a MonarchMoney client."""
+    """Authenticate using only credentials supplied in the environment."""
+    email = os.environ.get("MONARCH_EMAIL")
+    password = os.environ.get("MONARCH_PASSWORD")
+    if not email or not password:
+        pytest.skip("Live Monarch calls require MONARCH_EMAIL and MONARCH_PASSWORD")
+
     mm = MonarchMoney()
     await mm.login(
-        os.environ["MONARCH_EMAIL"],
-        os.environ["MONARCH_PASSWORD"],
+        email,
+        password,
         mfa_secret_key=os.environ.get("MONARCH_MFA_SECRET"),
+        use_saved_session=False,
+        save_session=False,
     )
     return mm
 
 
 class TestMonarchAPIConnectivity:
-    """Integration tests for Monarch Money API connectivity."""
-
-    @pytest.mark.asyncio
-    async def test_authentication(self) -> None:
-        """Test that we can authenticate with Monarch Money."""
-        mm = MonarchMoney()
-        await mm.login(
-            os.environ["MONARCH_EMAIL"],
-            os.environ["MONARCH_PASSWORD"],
-            mfa_secret_key=os.environ.get("MONARCH_MFA_SECRET"),
-        )
-        # If we get here without exception, auth worked
-        assert mm is not None
+    """Verify response envelopes without requiring a populated account."""
 
     @pytest.mark.asyncio
     async def test_get_accounts(self, authenticated_client: MonarchMoney) -> None:
-        """Test that we can fetch accounts."""
+        """Accounts are returned as a list inside an object."""
         accounts = await authenticated_client.get_accounts()
         assert isinstance(accounts, dict)
         assert "accounts" in accounts
@@ -80,34 +54,22 @@ class TestMonarchAPIConnectivity:
 
     @pytest.mark.asyncio
     async def test_get_transactions(self, authenticated_client: MonarchMoney) -> None:
-        """Test that we can fetch transactions."""
+        """Transactions expose a results list and total count."""
         transactions = await authenticated_client.get_transactions(limit=5)
-        assert transactions is not None
+        assert isinstance(transactions, dict)
+        assert "allTransactions" in transactions
+        result = transactions["allTransactions"]
+        assert isinstance(result, dict)
+        assert isinstance(result.get("results"), list)
+        assert isinstance(result.get("totalCount"), int)
 
     @pytest.mark.asyncio
     async def test_get_budgets(self, authenticated_client: MonarchMoney) -> None:
-        """Test that we can fetch budgets."""
+        """Budgets expose category and category-group monthly amounts."""
         budgets = await authenticated_client.get_budgets()
-        assert budgets is not None
-
-
-class TestHealthCheck:
-    """Quick health check to verify API is working."""
-
-    @pytest.mark.asyncio
-    async def test_api_health(self, authenticated_client: MonarchMoney) -> None:
-        """Comprehensive health check - tests auth, accounts, transactions, budgets."""
-        # Test accounts
-        accounts = await authenticated_client.get_accounts()
-        account_count = len(accounts.get("accounts", []))
-        assert account_count > 0, "Expected at least one account"
-
-        # Test transactions
-        transactions = await authenticated_client.get_transactions(limit=5)
-        assert transactions is not None, "Expected transactions response"
-
-        # Test budgets
-        budgets = await authenticated_client.get_budgets()
-        assert budgets is not None, "Expected budgets response"
-
-        print(f"\n✅ Health check passed: {account_count} accounts found")
+        assert isinstance(budgets, dict)
+        assert "budgetData" in budgets
+        budget_data = budgets["budgetData"]
+        assert isinstance(budget_data, dict)
+        assert isinstance(budget_data.get("monthlyAmountsByCategory"), list)
+        assert isinstance(budget_data.get("monthlyAmountsByCategoryGroup"), list)
