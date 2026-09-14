@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local CI check — same steps as .github/workflows/ci.yml"""
+"""Run the checks in .github/workflows/ci.yml."""
 
 import subprocess
 import sys

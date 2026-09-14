@@ -1,13 +1,6 @@
-"""Success + failure coverage matrix for every MCP tool and resource.
+"""Test tool and resource responses, error propagation, and batch degradation.
 
-Goal: each tool and resource has at least one success test (asserting real output
-shape) and one failure test (an upstream error propagates, or a batch tool degrades
-gracefully). Some success cases already live in topic-specific files; this file fills
-the gaps and guarantees a failure case for every tool via one parametrized test.
-
-All tests use the ``mock_api`` fixture (see conftest.py), which patches
-``ensure_authenticated`` and ``api_call_with_retry`` so tests are offline and
-independent of global auth state.
+The offline ``mock_api`` fixture isolates API calls and authentication.
 """
 
 from collections.abc import Awaitable, Callable
@@ -20,10 +13,9 @@ import server
 
 
 def dispatch(by_method: dict[str, Any]) -> Callable[..., Any]:
-    """Build an api_call_with_retry side_effect that returns/raises per method name.
+    """Return or raise the value mapped to each API method name.
 
-    Values that are exceptions are raised, simulating a single failing API call
-    among several that a batch tool makes.
+    Use exceptions to simulate individual failures within a batch call.
     """
 
     def _side_effect(method_name: str, *args: Any, **kwargs: Any) -> Any:
@@ -245,7 +237,6 @@ class TestBatchToolDegradation:
             }
         )
         result = await server.analyze_spending_patterns(lookback_months=3, include_forecasting=False)
-        # Tool returns a valid analysis with empty trends rather than raising.
         assert result.monthly_trends == {}
         assert result.category_analysis == {}
         assert result.analysis_period["months_analyzed"] == 3

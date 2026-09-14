@@ -80,10 +80,7 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 show_error_codes = true
 ignore_missing_imports = true
-# Disable specific errors:
-# - misc: Various untyped external library issues
-# - unreachable: Defensive runtime type checks are intentional
-# - untyped-decorator: MCP library decorators (@mcp.tool, @mcp.resource, @mcp.prompt) lack type stubs
+# Untyped SDK decorators and defensive runtime checks need these exceptions.
 disable_error_code = ["misc", "unreachable", "untyped-decorator"]
 
 [tool.pytest.ini_options]
@@ -116,9 +113,9 @@ select = [
 ]
 ignore = [
     "E501",   # line too long (handled by formatter)
-    "B008",   # do not perform function calls in argument defaults
+    "B008",   # allow framework defaults
     "SIM108", # use ternary operator instead of if-else
-    "E402",   # module import not at top (needed for conditional imports)
+    "E402",   # allow conditional imports
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -150,6 +147,5 @@ exclude_lines = [
 ]
 
 [tool.uv.sources]
-# Pinned to a specific commit (not a moving branch) for reproducible builds.
-# This is the fork's `dev` HEAD as of 2026-09-14 — see "Upstream library" in CLAUDE.md.
+# Exact dev HEAD, checked 2026-09-14. See the fork assessment in CLAUDE.md.
 monarchmoneycommunity = { git = "https://github.com/bradleyseanf/monarchmoneycommunity", rev = "c2f91f14f3d962d36275cb934dd3594b8aa1dcad" }

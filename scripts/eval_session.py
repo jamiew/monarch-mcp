@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""MCP Session Evaluator — snapshot/analyze individual sessions for optimization insights.
+"""Analyze MCP tool usage since a log snapshot.
 
 Modes:
   snapshot   Mark current log position for later analysis
   analyze    Analyze only new log entries since last snapshot
-  run        Run a prompt via `claude` CLI, snapshot before + analyze after
+  run        Run a prompt with the `claude` CLI and analyze new log entries
 
 Usage:
   uv run scripts/eval_session.py snapshot              # mark current position
@@ -43,7 +43,7 @@ SNAPSHOT_FILE = Path(__file__).parent / ".eval_snapshot"
 
 
 def _get_line_count(log_path: Path) -> int:
-    """Count lines in a file efficiently."""
+    """Count lines in a file."""
     with open(log_path) as f:
         return sum(1 for _ in f)
 
@@ -115,27 +115,24 @@ def cmd_analyze(log_path: Path, json_output: bool = False) -> None:
     else:
         _print_session_report(calls, stats, sessions, sequences, repeats, recommendations)
 
-    # Clean up snapshot
     SNAPSHOT_FILE.unlink(missing_ok=True)
 
 
 def cmd_run(prompt: str, log_path: Path, json_output: bool = False) -> None:
-    """Run a prompt via `claude` CLI, snapshot before + analyze after.
+    """Run a prompt and analyze the log entries it adds.
 
-    Requires `claude` CLI to be installed and configured.
+    Requires an installed, configured `claude` CLI.
     """
     if not log_path.exists():
         print(f"Error: Log file not found: {log_path}", file=sys.stderr)
         print("Make sure the MCP server has been started at least once.", file=sys.stderr)
         sys.exit(1)
 
-    # Snapshot before
     prev_lines = _get_line_count(log_path)
     print(f"Snapshot: {prev_lines} lines")
     print(f"Running prompt: {prompt}")
     print("-" * 60)
 
-    # Run claude CLI with the prompt (non-interactive mode)
     try:
         result = subprocess.run(
             ["claude", "--print", prompt],
@@ -151,7 +148,6 @@ def cmd_run(prompt: str, log_path: Path, json_output: bool = False) -> None:
         print("Error: claude CLI timed out after 5 minutes", file=sys.stderr)
         sys.exit(1)
 
-    # Print claude's response
     if result.stdout:
         print(result.stdout)
     if result.returncode != 0 and result.stderr:
@@ -159,7 +155,6 @@ def cmd_run(prompt: str, log_path: Path, json_output: bool = False) -> None:
 
     print("-" * 60)
 
-    # Analyze new log entries
     calls = _parse_new_lines(log_path, prev_lines)
 
     if not calls:
@@ -198,20 +193,17 @@ def _print_session_report(
     print(f"Total data: {total_kb:.1f} KB (~{total_tokens:,} tokens)")
     print(f"Duration: {(calls[-1].timestamp - calls[0].timestamp).total_seconds():.0f}s")
 
-    # Call sequence
     print("\n  CALL SEQUENCE:")
     for i, call in enumerate(calls, 1):
         size_str = f"{call.result_chars / 1024:.1f} KB" if call.result_chars else "n/a"
         time_str = f"{call.execution_time_s:.2f}s" if call.execution_time_s else "n/a"
         print(f"  {i:3}. {call.tool_name:<35} {size_str:>10}  {time_str:>8}")
 
-    # Per-tool summary
     print("\n  PER-TOOL SUMMARY:")
     for name, s in sorted(stats.items(), key=lambda x: -x[1].total_chars):
         avg_kb = s.total_chars / s.call_count / 1024 if s.call_count else 0
         print(f"    {name}: {s.call_count} calls, {s.total_chars / 1024:.1f} KB total, {avg_kb:.1f} KB avg")
 
-    # Recommendations
     if recommendations:
         print("\n  RECOMMENDATIONS:")
         for rec in recommendations:
@@ -264,7 +256,7 @@ def main(argv: list[str] | None = None) -> None:
     analyze.add_argument("--log", type=Path, default=DEFAULT_LOG_PATH)
     analyze.add_argument("--json", action="store_true", dest="json_output")
 
-    run = sub.add_parser("run", help="Run prompt via claude CLI + analyze")
+    run = sub.add_parser("run", help="Run a prompt with claude and analyze new log entries")
     run.add_argument("prompt", help="The prompt to send to claude")
     run.add_argument("--log", type=Path, default=DEFAULT_LOG_PATH)
     run.add_argument("--json", action="store_true", dest="json_output")
