@@ -1,444 +1,139 @@
-# CLAUDE.md
+# Repository guidance
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+## Financial data and secrets
 
-## PII & Data Privacy
+Never put real financial data in code, tests, docs, or commits. This includes account and merchant names from a user's history, transaction/category/account IDs, amounts, and spending patterns. Use synthetic examples such as `Corner Deli`, `cat_001`, and `txn_123`. A generic brand example is fine; data copied from an account is not.
 
-**CRITICAL**: Never commit or include personally identifiable financial data in code, docs, tests, or commit messages. This includes:
-- Real account names (e.g., specific credit card names like "Main Credit Card")
-- Real merchant names from the user's transaction history
-- Real transaction IDs, category IDs, or account IDs from Monarch Money
-- Real dollar amounts tied to specific transactions
-- Any data that could identify the user's financial institutions or spending habits
+Do not read or commit credentials, `.env`, `.mcp.json`, saved sessions, or financial logs. Logs can contain tool arguments and API error details. Review and redact them before sharing.
 
-Use generic, obviously-fake examples instead: "Main Credit Card", "Corner Deli", "cat_001", "txn_123". Brand names like "Starbucks" are fine as generic illustrative examples in docstrings — the distinction is between "examples of merchants" vs "data from the user's actual account."
+## Development
 
-## Development Commands
+Use Python 3.10+ and `uv`. Dependency constraints live in `pyproject.toml`; commit `uv.lock` for reproducible source installs.
 
-### Basic Operations
-- `uv sync` - Install dependencies and create/update virtual environment
-- `uv run python server.py` - Run the MCP server directly for testing
-- `uv add <package>` - Add new dependencies to the project
-- `uv remove <package>` - Remove dependencies from the project
-
-### Testing & Validation
-- `uv run pytest tests/ -v --tb=short` - Run all tests
-- `uv run mypy server.py` - Type checking
-- `uv run ruff check .` - Lint
-- `uv run ruff format --check .` - Format check (use `ruff format .` to auto-fix)
-- `uv run python server.py` - Test server directly (all logs to stderr)
-- `MONARCH_FORCE_LOGIN=true uv run python server.py` - Force fresh login (if session expires)
-
-### Debugging Startup Issues (Updated July 2025)
-- **Session expired**: Delete `~/.monarch-mcp/session.pickle` or set `MONARCH_FORCE_LOGIN=true`
-- **JSON parse errors**: Fixed - all stdout output suppressed with `contextlib.redirect_stdout()`
-- **MCP protocol compliance**: All logging/warnings redirected to stderr, third-party lib output suppressed
-- **AsyncIO errors**: Fixed - uses `run_stdio_async()` in async context
-- **SSL warnings**: Suppressed from gql.transport.aiohttp to prevent stdout contamination
-- **Date serialization errors**: Fixed - `build_date_filter()` returns ISO strings for JSON safety
-- **Broken pipe errors**: Fixed - comprehensive graceful shutdown and error recovery implemented
-- **Date parsing failures**: Enhanced with multi-format fallbacks and helpful error messages
-
-### Usage Analytics & Optimization Monitoring
-
-**View usage analytics in Claude's MCP log:**
 ```bash
-# Monitor all analytics (tool calls, performance, errors)
-tail -f /Users/jamie/Library/Logs/Claude/mcp-server-monarch-money.log | grep "\[ANALYTICS\]"
-
-# Watch for optimization suggestions
-tail -f /Users/jamie/Library/Logs/Claude/mcp-server-monarch-money.log | grep "\[OPTIMIZATION\]"
-
-# Monitor performance (slow operations > 1 second)
-tail -f /Users/jamie/Library/Logs/Claude/mcp-server-monarch-money.log | grep "\[ANALYTICS\]" | grep -E "time: [1-9][0-9]*\.[0-9]+s"
-
-# View session summaries and top tools
-tail -f /Users/jamie/Library/Logs/Claude/mcp-server-monarch-money.log | grep "session_summary"
-
-# NEW: Debug tool calls with arguments (for optimization)
-tail -f /Users/jamie/Library/Logs/Claude/mcp-server-monarch-money.log | grep "\[TOOL_CALL\]"
-
-# NEW: Monitor result sizes for context usage optimization
-tail -f /Users/jamie/Library/Logs/Claude/mcp-server-monarch-money.log | grep "\[RESULT_SIZE\]"
-
-# NEW: Watch for large results (> 50KB) that may need optimization
-tail -f /Users/jamie/Library/Logs/Claude/mcp-server-monarch-money.log | grep "\[RESULT_SIZE\]" | grep -E "[5-9][0-9]\.[0-9]+ KB|[0-9]{3,}\.[0-9]+ KB"
-```
-
-**Log Format Examples:**
-- `[TOOL_CALL] get_transactions | args: {'limit': 100, 'start_date': 'last month', 'verbose': False}`
-- `[ANALYTICS] tool_called: get_transactions | time: 0.234s | status: success`
-- `[RESULT_SIZE] get_transactions | chars: 12,543 | size: 12.25 KB | transactions: 42 items`
-- `[OPTIMIZATION] Consider using get_complete_financial_overview instead of separate get_accounts + get_transactions calls`
-- `[ANALYTICS] session_summary: 15 calls | top_tool: get_transactions`
-
-## Development Workflow & Git Guidelines
-
-### Automated Development Process
-**When no specific instructions are provided, follow this workflow:**
-
-1. **Read Current Status**: Always start by reading the latest TODO items and status in this CLAUDE.md file
-2. **Select Next Task**: Choose the highest priority pending task from the current status section
-3. **Implement & Test**: Work on the task following the quality standards below
-4. **Validate Before Commit**: Always run type checks and tests before committing
-5. **Commit Each Feature**: Make atomic commits for individual features, fixes, or optimizations
-6. **Update Status**: Periodically update CLAUDE.md status section (not every commit)
-
-### Git Commit Standards
-
-**Pre-push check (mirrors CI):**
-```bash
+uv sync --locked
+uv run python server.py
 uv run python scripts/ci.py
 ```
 
-This runs ruff check, ruff format, mypy, and pytest — the same checks as `.github/workflows/ci.yml`. CI runs these on Python 3.10–3.13 against every PR to main.
+The CI script runs ruff lint/format checks, mypy, and pytest. Individual checks:
 
-**Commit Message Format:**
-```
-<type>: <concise description>
-
-<optional body explaining why/what changed>
-```
-
-**Commit Types:**
-- **feat**: New feature implementation
-- **fix**: Bug fix or error resolution  
-- **perf**: Performance optimization
-- **refactor**: Code restructuring without behavior change
-- **test**: Test additions or improvements
-- **docs**: Documentation updates (including CLAUDE.md)
-- **chore**: Maintenance tasks, dependency updates
-
-**Examples:**
 ```bash
-feat: add intelligent caching for frequently accessed accounts data
-
-fix: resolve date serialization errors in get_transactions tool
-- Convert build_date_filter() to return ISO strings instead of date objects
-- Update tests to expect string dates for JSON serialization safety
-
-perf: implement connection pooling for Monarch Money API requests
-
-refactor: split server.py into modular components (auth, tools, models)
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy server.py
+uv run pytest tests/ -v --tb=short
 ```
 
-### CLAUDE.md Maintenance Schedule
+Use `uv run ruff format .` to format and `uv add` / `uv remove` to change dependencies. CI selects Python 3.10 through 3.13 explicitly and uses locked installs.
 
-**Update CLAUDE.md in these situations:**
-- ✅ **Major milestones completed** (Phase completion, significant features)
-- ✅ **Architecture changes** (New dependencies, structural changes)
-- ✅ **Status changes** (Moving between development phases)
-- ✅ **New TODO items discovered** during implementation
-- ❌ **NOT every commit** - only for significant progress or new findings
+Live integration tests are opt-in and never load `.env` or saved sessions themselves:
 
-**What to update:**
-- Move completed tasks from "REMAINING" to "COMPLETED" sections
-- Add newly discovered tasks to appropriate priority sections  
-- Update "Current Status" metrics (test counts, error counts, etc.)
-- Note any breaking changes or migration requirements
+```bash
+MONARCH_RUN_INTEGRATION=true uv run --env-file .env pytest tests/test_integration.py -v
+```
 
-## Code Philosophy & Standards
+That command contacts Monarch. Ordinary tests use synthetic data and skip live calls. `scripts/health_check.py` is a separate live diagnostic that loads `.env` and uses the client's session defaults.
 
-### Human-Centric Design Principles
-- **Simplicity over complexity** - Choose the most straightforward solution
-- **Clean, self-documenting code** - Well-named functions/variables tell the story
-- **Human-readable over clever** - Code should be immediately understandable
-- **Minimal comments** - Code itself should explain what and why
+### Workflow
 
-### Type Safety (Zero Tolerance)
-- **NO `Any` types** - Every value must have explicit, specific types
-- **NO `as` assertions** - Use runtime validation with Pydantic instead
-- **Explicit annotations** - Every function parameter and return value typed
-- **Union types** with proper type guards for multiple valid types
+- Follow the user's task before the backlog. Make small changes and reuse existing patterns.
+- Validate behavior, types, and formatting before committing.
+- Commit only with explicit permission. Keep commits atomic, titles short and plain, and use the configured Git identity with `--no-gpg-sign`.
+- Update this file for architecture changes, milestones, or new findings, not every commit. Put release history in `CHANGELOG.md` and user setup in `README.md`.
 
-### Error Handling
-- **Specific exceptions** - Never catch generic `Exception`
-- **Structured logging** - Context-rich logs for debugging
-- **Fail fast** - Validate early, fail clearly
-- **Graceful degradation** - Handle expected failures elegantly
+### Code standards
 
-## Current Architecture (FastMCP + Structured Logging)
+- Prefer straightforward code and comments that explain constraints, not statements.
+- Type function parameters and returns. Do not add `Any` or type assertions; validate external input with Pydantic and narrow unions at runtime. Existing untyped library boundaries are not a reason to spread `Any`.
+- Catch specific exceptions rather than adding broad `Exception` handlers. Validate before mutation and preserve useful errors.
+- Test observable behavior and failure boundaries. Avoid assertions about wording, implementation details, or hardcoded tool counts.
 
-**Modern FastMCP Implementation**
-- Uses `FastMCP` from `mcp.server.fastmcp` (latest MCP protocol)
-- Individual `@mcp.tool()` decorated functions (clean separation)
-- JSON-RPC 2.0 over stdio transport
-- Automatic capability negotiation and tool discovery
+## Architecture and contracts
 
-**Secure Authentication & Session Management**
-- Sessions stored in `~/.monarch-mcp/` directory (override via `MONARCH_SESSION_DIR`) with 0700 permissions  
-- Proper `RequireMFAException` handling
-- Structured logging with `structlog` for debugging
-- Environment variables: `MONARCH_EMAIL`, `MONARCH_PASSWORD`, `MONARCH_MFA_SECRET`
+`server.py` contains the FastMCP server, response models, authentication, tools, resources, and prompts. It uses `mcp.server.fastmcp.FastMCP`, JSON-RPC over stdio, and structlog on stderr. Reserve stdout for the protocol.
 
-**Complete Monarch Money API Coverage (21 Tools)**
-- **Core**: `get_accounts`, `get_transactions`, `get_budgets`, `get_cashflow`
-- **Categories**: `get_transaction_categories`
-- **Transactions**: `create_transaction`, `update_transaction`, `update_transactions_bulk`, `search_transactions`
-- **Splits**: `get_transaction_splits`, `update_transaction_splits` (full-replace; empty list removes all splits)
-- **Investments**: `get_account_holdings` (requires `account_id`), `get_account_history`
-- **Banking**: `get_institutions`, `refresh_accounts`
-- **Planning**: `get_recurring_transactions`, `set_budget_amount`
-- **Manual**: `create_manual_account`
-- **Batch Operations**: `get_spending_summary`, `update_transactions_bulk`
-- **Intelligent Analysis**: `get_complete_financial_overview`, `analyze_spending_patterns`
+- Tools use `@mcp.tool()` and `@track_usage`, return Pydantic models, and advertise read/write annotations and titles. FastMCP emits structured content with a text fallback.
+- Monarch responses are GraphQL envelopes, not usually bare lists. Use `extract_list(response, key)` or `extract_transactions_list()` before counting or processing rows.
+- Use `JsonValue` for evolving upstream payloads and explicit models for shapes constructed here. Convert dates to ISO strings before serialization.
+- Authentication uses one `mm_client` and a lock. It starts lazily on the first data call; loading a session does not validate it immediately.
+- `api_call_with_retry()` retries recognized authentication failures with reauthentication. It is not a general network retry or rate-limit policy.
+- Three static resources expose accounts, categories, and institutions. Two resource templates expose account holdings/history. Four prompts support completions; batch analysis reports progress through `Context`.
 
-Also exposes 5 MCP resources (3 static lists + 2 parameterized templates: `accounts://{account_id}/holdings|history`) and 4 prompt templates.
+See README for the tool catalog. Keep these less-obvious contracts intact:
 
-**Type-Safe Structured Output**
-- Every tool returns a typed Pydantic model, so FastMCP advertises an `outputSchema` and emits structured content (plus a text fallback for older clients). See the "Structured output models" block in `server.py`.
-- Monarch's GraphQL responses are dicts (e.g. `{"accounts": [...]}`), not bare lists. Use `extract_list(response, key)` (next to `extract_transactions_list`) to unwrap the inner list before counting it — passing the dict straight into a `list[...]` model field silently yields an empty list.
-- `convert_dates_to_strings()` ensures JSON compatibility.
+- `get_account_holdings` requires an account ID.
+- Transaction splits are full-replace; an empty list removes all splits.
+- Bulk updates validate each item independently. Invalid types and unknown fields fail that item; omitted/null fields stay unchanged, while valid false and empty-string updates are preserved.
+- Recurring reads return scheduled occurrences for a date range, not a complete stream inventory. Missing date bounds use the supplied date's month; no dates means the current month.
+- `update_recurring_transaction` changes a merchant-wide schedule through upstream `update_reoccuring`. Use the merchant ID and current name, not a stream or transaction ID. Check nested mutation errors before reporting success.
+- Recurring `isPast` is not proof of payment. Forecasts and posted transactions must not be double-counted.
 
-### Monarch Money API Integration
+### Sessions and troubleshooting
 
-**Available API Methods** (from monarchmoney library):
-- **Authentication**: `login()`, `interactive_login()`, `save_session()`, `load_session()`
-- **Account Data**: `get_accounts()`, `get_account_holdings()`, `get_account_history()`, `get_institutions()`
-- **Transaction Operations**: `get_transactions()`, `create_transaction()`, `update_transaction()`, `delete_transaction()`
-- **Budget & Analysis**: `get_budgets()`, `set_budget_amount()`, `get_cashflow()`, `get_recurring_transactions()`
-- **Categories**: `get_transaction_categories()`, `create_transaction_category()`
-- **Account Management**: `create_manual_account()`, `request_accounts_refresh()`
+Credentials are `MONARCH_EMAIL`, `MONARCH_PASSWORD`, and optional `MONARCH_MFA_SECRET`. Sessions default to `~/.monarch-mcp/session.pickle`; `MONARCH_SESSION_DIR` overrides the directory. New directories use mode 0700 and saved files are chmodded to 0600. Keep an existing or custom directory private too.
 
-**Error Handling**
-- Handle `RequireMFAException` for multi-factor authentication scenarios
-- Implement graceful fallback for invalid sessions and missing budget data
-- All API responses must be validated before use
+`MONARCH_FORCE_LOGIN=true` bypasses the cache on authentication. `clear_session()` also sets `mm_client=None`, so recreate the client before login after any reset. Pass both `use_saved_session=False` and `save_session=False` to upstream login, then save only to the server's configured path. Otherwise the library writes an additional `.mm/mm_session.pickle`.
 
-### Key Design Patterns
+For expired sessions, force a fresh login or remove the configured cached session. TOTP requires an accurate system clock. Preserve third-party output suppression and normal SIGTERM/SIGINT handling when changing startup.
 
-1. **Single Client Instance**: Global `mm_client` variable maintains one MonarchMoney connection
-2. **Session Persistence**: Authentication state cached to avoid repeated logins
-3. **Type-Safe Error Handling**: All exceptions properly typed and handled
-4. **Runtime Validation**: All external data validated before processing
-5. **MCP Protocol Compliance**: Strict adherence to JSON-RPC 2.0 and MCP specifications
+`@track_usage` records tool calls, elapsed time, and result sizes. Use `scripts/analyze_logs.py` or `scripts/eval_session.py` for reports. There is no analytics MCP tool. Current logs use structured `tool_call`, `tool_success`, and `tool_error` events; the analyzer also accepts older marker formats.
 
-### Dependencies (Latest Versions - Updated July 2025)
+### Releases
 
-- **mcp[cli]**: Latest MCP protocol with FastMCP support (≥1.12.2)  
-- **monarchmoneycommunity**: Python client for Monarch Money API — a maintained community fork, pinned to a commit SHA in `[tool.uv.sources]`. See "Upstream Library & Fork Landscape" below.
-- **pydantic**: Runtime type validation and data models (≥2.11.7)
-- **python-dateutil**: Enhanced date parsing support (≥2.9.0.post0)
-- **structlog**: Structured logging for debugging (≥25.4.0)
-- **types-python-dateutil**: Type stubs for proper dateutil typing (≥2.9.0.20250708)
-- **pytest + mypy**: Testing and type checking (dev dependencies)
-- Built with Python 3.10+ using modern async/await patterns
+PyPI package: `monarch-mcp-jamiew`. MCP Registry name: `io.github.jamiew/monarch-mcp`.
 
-### Configuration
+The console entry point must remain `server:run`, a synchronous wrapper around async `main()`. Pointing it directly at `main()` breaks `uvx` startup.
 
-Server runs as MCP server configured in `.mcp.json` with:
-- Command: `uv run python server.py` 
-- Environment variables for Monarch Money credentials
-- Absolute paths required for proper MCP integration
-- Implements MCP capability negotiation for feature discovery
+After approval, bump `pyproject.toml`, commit, tag `vX.Y.Z`, push, and publish a GitHub release. The release workflow checks that the stable tag matches the project version, builds the package, and publishes through OIDC. It fills `server.json` versions from the validated tag. Do not run publishing steps as local validation.
 
-### Releasing & Publishing
+Source changes marked **Unreleased** are not available through PyPI until published. `[tool.uv.sources]` is also source-install-only; exported wheels use the declared PyPI dependency floor.
 
-Published to PyPI as `monarch-mcp-jamiew` and to the MCP Registry as `io.github.jamiew/monarch-mcp`. Users install via `uvx monarch-mcp-jamiew` (no clone) — so the `[project.scripts]` `monarch-mcp-jamiew = "server:run"` entry point must stay a *synchronous* wrapper (`run()`), never the async `main()` directly, or `uvx` launches a coroutine that's never awaited. Release flow: `/release` bumps `pyproject.toml`, tags `vX.Y.Z`, and `gh release create`s; the `release: published` event triggers `.github/workflows/publish.yml`, which publishes to both PyPI and the registry via **OIDC trusted publishing — no tokens stored**. The workflow sets `server.json`'s version from the tag, so `pyproject.toml` is the only manual version bump. Note: `[tool.uv.sources]`'s git pin of `monarchmoneycommunity` is dev-only and is *not* in the published wheel — PyPI installs resolve the `>=1.3.2` floor from `pyproject.toml` dependencies.
+## Upstream library and forks
 
-### Session Management
+**Checked 2026-09-14.** Keep `monarchmoneycommunity`; no inspected sibling is a safer replacement.
 
-- Session files stored in `~/.monarch-mcp/` directory (created automatically; override via `MONARCH_SESSION_DIR`)
-- Session invalidation handled gracefully with automatic re-authentication
-- Use `MONARCH_FORCE_LOGIN=true` to bypass session cache for debugging
-- Sessions follow Monarch Money API session management patterns
-
-## Status & Achievements
-
-### ✅ COMPLETED (Production Ready)
-
-#### Phase 1 Critical Fixes (All Complete)
-- **✅ Type Safety**: Eliminated `Any` types, added Pydantic models, strict typing
-- **✅ FastMCP Migration**: Modern MCP protocol with `@mcp.tool()` decorators
-- **✅ Authentication Security**: `~/.monarch-mcp/` directory, 0600 permissions, `RequireMFAException` handling
-- **✅ Structured Logging**: Context-rich logs with `structlog`
-- **✅ Complete API Coverage**: All 14 Monarch Money API methods as tools
-
-#### Quality Metrics (Updated May 2026)
-- **206 passing tests** with comprehensive coverage including analytics, search, bulk operations, splits, structured output, completions, resource templates, and progress
-- **21 tools** (all returning typed Pydantic models / structured output), 3 static resources + 2 resource templates, 4 prompts
-- **MyPy clean** under the repo's strict config (no `Any` at non-boundaries, no `as`)
-- **Security**: Proper session handling and MFA support
-- **Modern stack**: FastMCP 1.12.2, Pydantic, structlog, pytest
-- **Usage analytics**: Real-time performance tracking and optimization suggestions
-- **Codebase**: 1,447 lines in server.py, 7 test files with comprehensive coverage
-
-### ✅ ADVANCED FEATURES (Recently Completed)
-
-#### Smart Tool Design & UX
-- **✅ Bulk updates**: `update_transactions_bulk()` for updating multiple transactions in one call
-  - Parallel execution for maximum performance
-  - Individual error handling per transaction
-  - Summary statistics (succeeded/failed counts)
-  - Significantly reduces round-trips for batch updates
-- **✅ Enhanced Date Parsing** (Updated July 2025): Comprehensive natural language support
-  - Natural language: "last month", "yesterday", "this year", "last week", "this week"
-  - Relative dates: "30 days ago", "6 months ago", "1 year ago"
-  - Multiple formats: ISO, US, European, named months with comprehensive fallbacks
-  - Range validation: Prevents invalid date ranges and provides helpful error messages
-- **✅ Smart aggregations**: `get_spending_summary()` with category/account/month grouping
-- **✅ AsyncIO Runtime Fix**: Server now uses `mcp.run_stdio()` for proper MCP protocol compliance
-
-#### Usage Analytics & Optimization
-- **✅ Usage tracking**: `@track_usage` decorator on every tool for comprehensive analytics (logs tool calls, timing, and result sizes to stderr — there is no `get_usage_analytics` tool; analytics are observed via Claude's MCP log)
-- **✅ Performance monitoring**: Execution time, error rates, and pattern detection
-- **✅ Analytics logging**: Special markers in Claude's MCP log for easy filtering and optimization insights
-- **✅ Session-based tracking**: UUID-based session tracking with in-memory pattern analysis
-
-#### Advanced Financial Analysis Tools (NEW)
-- **✅ Complete Overview**: `get_complete_financial_overview(period)` - Single call combining 5 APIs:
-  - Parallel execution: accounts, budgets, cashflow, transactions, categories
-  - Intelligent summaries: transaction counts, income/expense totals, unique categories/accounts
-  - Graceful error handling: Individual API failures don't break entire operation
-  - Natural language periods: "this month", "last quarter", "this year"
-  
-- **✅ Pattern Analysis**: `analyze_spending_patterns(lookback_months, include_forecasting)` - Deep insights:
-  - Multi-month trend analysis by category, account, and time period
-  - Predictive forecasting based on 3-month rolling averages
-  - Smart aggregations with confidence indicators
-  - Account usage patterns and category performance metrics
-  - Reports progress through an injected `Context` (`ctx.report_progress`)
-
-#### Production Stability & Reliability Fixes (NEW)
-- **✅ JSON-RPC Protocol Compliance**: All logging redirected to stderr to prevent stdout contamination
-- **✅ Third-party Library Logging**: Configured aiohttp and monarchmoney to use stderr only
-- **✅ Session Expiration Handling**: Clear error messages and recovery instructions for expired sessions
-- **✅ Startup Error Prevention**: Eliminated all sources of stdout output during initialization
-- **✅ Date Serialization Fix** (July 2025): Resolved critical JSON serialization errors in date handling
-- **✅ Broken Pipe Error Handling** (July 2025): Comprehensive graceful shutdown and I/O error recovery
-- **✅ Enhanced Date Parsing** (July 2025): Robust natural language parsing with multi-format fallbacks
-- **✅ Dependency Updates** (July 2025): Updated to latest stable versions with security patches
-
-### 🔄 REMAINING HIGH PRIORITY TASKS
-
-#### 1. Enhanced Error Handling & Resilience
-**Current State**: Basic error handling implemented, but can be improved
-**Remaining Work:**
-- Add retry logic with exponential backoff for network failures
-- Implement circuit breaker pattern for API rate limiting
-- Add specific exception types for different Monarch Money API errors
-- Create MCP-compliant error response formatting with error codes
-
-#### 2. Advanced Session Management
-**Current State**: Basic session persistence with expiration handling
-**Remaining Work:**
-- Implement per-request session validation (currently only startup)
-- Add automatic session refresh before expiration (proactive)
-- Implement atomic file operations for session management
-- Add session health monitoring and automatic recovery
-
-#### 3. Real-time Data Caching & Performance
-**Current State**: No caching implemented
-**Remaining Work:**
-- Add in-memory caching for frequently accessed data (accounts, categories)
-- Implement Redis-based caching for multi-instance deployments: `uv add redis`
-- Add cache invalidation strategies and TTL management
-- Implement connection pooling for Monarch Money API requests
-
-### 🔄 REMAINING MEDIUM PRIORITY TASKS
-
-#### 4. Advanced Observability & Monitoring
-**Current State**: Basic usage analytics and structured logging implemented
-**Remaining Work:**
-- Add OpenTelemetry metrics integration: `uv add opentelemetry-api`
-- Implement health check tool for MCP clients
-- Add correlation IDs for request tracing across tools
-- Create performance dashboards and alerting
-
-#### 5. Enhanced Financial Intelligence
-**Current State**: Basic analysis tools implemented
-**Remaining Work:**
-- Add ML-based spending predictions and anomaly detection
-- Implement category auto-classification for transactions
-- Create budget vs. actual variance analysis with alerts
-- Add investment performance tracking and portfolio analysis
-
-#### 6. Advanced Tool Features
-**Current State**: 19 core tools implemented
-**Remaining Work:**
-- Add bulk transaction operations (import/export)
-- Implement transaction search with fuzzy matching
-- Create automated bill detection and categorization
-- Add goal tracking and savings recommendations
-
-### 🔄 REMAINING LOW PRIORITY TASKS
-
-#### 7. Code Architecture & Organization
-**Current State**: Single file with 21 tools, comprehensive tests
-**Remaining Work:**
-- Split into modules: `auth.py`, `tools.py`, `models.py`, `config.py` (optional - current structure works well)
-- Implement Pydantic Settings for configuration management
-- Add plugin system for custom financial tools
-- Create tool auto-discovery and registration system
-
-#### 8. Developer Experience Enhancements
-**Current State**: 42 comprehensive tests, type checking, structured logging
-**Remaining Work:**
-- Add integration tests with live Monarch Money API (optional)
-- Create API documentation auto-generation from tool schemas
-- Add development server mode with hot reloading
-- Implement debugging tools and performance profilers
-
-#### 9. Advanced MCP Features
-**Current State**: Full MCP protocol compliance with FastMCP
-**Remaining Work:**
-- Add MCP resource endpoints for financial data exports
-- Implement MCP prompts for guided financial workflows
-- Create MCP sampling for transaction data exploration
-- Add multi-server coordination for complex financial operations
-
-## Updated Implementation Priority Order
-
-### ✅ **COMPLETED PHASES**
-1. **✅ Phase 1 (Critical)**: Type safety migration, MCP protocol compliance, security fixes - DONE
-2. **✅ Phase 2 (Advanced Features)**: Smart batching, usage analytics, financial intelligence - DONE  
-3. **✅ Phase 3 (Production Stability)**: JSON-RPC fixes, session handling, comprehensive testing - DONE
-4. **✅ Phase 4a (Critical Resilience)** (July 2025): Date serialization fixes, broken pipe handling, dependency updates - DONE
-
-### 🔄 **REMAINING PHASES**
-4. **Phase 4b (Advanced Resilience)**: Retry logic, circuit breakers, connection pooling, caching
-5. **Phase 5 (Intelligence)**: ML features, advanced analytics, financial insights
-6. **Phase 6 (Ecosystem)**: MCP extensions, developer tools, architectural improvements
-
-**Current Status** (Updated June 2026): Production-ready with 206 passing tests, 21 intelligent tools (including transaction splitting via `get_transaction_splits` / `update_transaction_splits`), comprehensive analytics, robust error handling, and enhanced reliability. Recent MCP modernization: every tool returns structured output (outputSchema + structured content with a text fallback), tools/resources/prompts carry human-friendly `title`s, parameterized resource templates (`accounts://{account_id}/holdings|history`), argument completions for prompts/templates, and Context-based progress reporting on the batch tools. Earlier features: `update_transactions_bulk()` for parallel batch updates, `search_transactions`, result-size tracking; fixes for the auth retry bug, date serialization, broken pipes, and date parsing. Note: `get_account_holdings` now requires an `account_id` (the underlying library always did).
-
-## Upstream Library & Fork Landscape
-
-**Last checked: 2026-09-14.** Keep `monarchmoneycommunity`; no inspected sibling is a safer replacement.
-
-| Repository | Latest verified activity | Assessment |
+| Repository | Verified revision/activity | Assessment |
 |---|---|---|
 | [hammem/monarchmoney](https://github.com/hammem/monarchmoney) | `98a6e0d`, 2025-11-03 | No new merged fixes. Domain and cookie-auth PRs remain open. |
-| [bradleyseanf/monarchmoneycommunity](https://github.com/bradleyseanf/monarchmoneycommunity) | `dev` `c2f91f14`, 2026-09-09; PyPI 1.5.2, 2026-08-02 | Active dependency. Stable adds liability/ownership fields, pending-transaction filtering, and an MFA error fix. |
-| [keithah/monarchmoney-enhanced](https://github.com/keithah/monarchmoney-enhanced) | `3c7d442`, 2026-08-13; PyPI 0.11.0 | Recent dependency maintenance, but feature-stale. Still uses the old API domain; service queries differ from public methods. |
-| [tommyzed/monarchmoney-i18n-transactions](https://github.com/tommyzed/monarchmoney-i18n-transactions) | `9b5acb9`, 2026-09-14 | Active currency/import application, not a replacement general-purpose client. No differentiated recurring getter found. |
-| [jribnik/monarchmoney-enhanced](https://github.com/jribnik/monarchmoney-enhanced) | PR branches updated 2026-07-28 | Useful proposed schema fixes for enhanced's rules and transactions, not a maintained release. |
-| [amaten69/monarchmoney-maten](https://github.com/amaten69/monarchmoney-maten) | `09bae1e`, 2026-08-17 | Recent transaction changes; no new recurring capability established. |
+| [bradleyseanf/monarchmoneycommunity](https://github.com/bradleyseanf/monarchmoneycommunity) | `dev` `c2f91f14`, 2026-09-09; PyPI 1.5.2, 2026-08-02 | Active dependency. Stable adds liability/ownership fields, pending filtering, and an MFA error fix. |
+| [keithah/monarchmoney-enhanced](https://github.com/keithah/monarchmoney-enhanced) | `3c7d442`, 2026-08-13; PyPI 0.11.0 | Dependency maintenance, but feature-stale. Old API domain and divergent service/public queries. |
+| [tommyzed/monarchmoney-i18n-transactions](https://github.com/tommyzed/monarchmoney-i18n-transactions) | `9b5acb9`, 2026-09-14 | Active currency/import app, not a replacement client. Ordinary recurring getter. |
+| [jribnik/monarchmoney-enhanced](https://github.com/jribnik/monarchmoney-enhanced) | PR branches, 2026-07-28 | Proposed rules/transaction schema fixes, not a maintained release. |
+| [amaten69/monarchmoney-maten](https://github.com/amaten69/monarchmoney-maten) | `09bae1e`, 2026-08-17 | Transaction changes; no new recurring capability established. |
 
-Discovery covered the parent's 15 most-starred and 15 newest forks, 30 community children, and nine enhanced children. Push timestamps alone can reflect inherited commits.
+Discovery covered the parent's 15 most-starred and 15 newest forks, 30 community children, and nine enhanced children. Push dates alone can reflect inherited commits.
 
-**Pin policy:** `[tool.uv.sources]` tracks a verified `dev` HEAD by exact SHA. The pin is now `c2f91f14f3d962d36275cb934dd3594b8aa1dcad`; update its comment date when changing it. Published wheels ignore this source override, so the dependency floor is `>=1.5.2` and MCP tools must use APIs available in that release. Dev-only proxy support, date normalization, all-holdings aggregation, rules, and household ownership APIs are not guaranteed for PyPI installs.
+**Pin policy:** track a verified community `dev` HEAD by exact SHA. Current pin: `c2f91f14f3d962d36275cb934dd3594b8aa1dcad`. Update its comment date when changing it. The published floor is `>=1.5.2`; tools must work with that release. Dev-only proxy support, date normalization, all-holdings aggregation, rules, and household APIs are not guaranteed for PyPI installs.
 
-**Recurring support:** the stable client already has date-bounded occurrences and the misspelled `update_reoccuring` merchant mutation. The MCP exposes these as `get_recurring_transactions` and `update_recurring_transaction`. Preserve the distinction between forecasts, recorded transactions, and payment status. `isPast` is not proof of payment. Check nested mutation errors before reporting success.
+**Recurring candidates:** [parent PR #165](https://github.com/hammem/monarchmoney/pull/165) and enhanced's service implement `recurringTransactionStreams` with liability forecasts. These queries were not live-validated. Enhanced's paid/late summaries and review/disable mutations also need validation before adoption. A larger method list is not evidence of working coverage.
 
-**Potential additions, not verified features:** [parent PR #165](https://github.com/hammem/monarchmoney/pull/165) and enhanced's service implement `recurringTransactionStreams`, including liability forecasts. Neither query was live-validated in this review. Enhanced also has paid/late summaries and review/disable mutations, but its open schema-fix PRs argue against copying these without validation. Do not add unverified mutations or switch clients for method count alone.
+Other stable candidates include transaction details/tags, duplicate detection, cashflow summaries, and receipt uploads. Add them for a user need, not coverage alone.
 
-Other stable capabilities worth considering: transaction details/tags, duplicate detection, cashflow summaries, and receipt uploads. Keep additions tied to a user need.
+To refresh this assessment:
 
-### Refresh procedure
+1. Compare the pinned SHA with community `dev` and PyPI. Inspect changes, not only version strings.
+2. Check parent issues/PRs and popular/recent forks for concrete fixes.
+3. Verify signatures, response shapes, nested errors, and release availability.
+4. Update the pin, lockfile, dependency floor if needed, and this dated assessment.
 
-1. Compare the pinned SHA with community `dev` and the latest PyPI release. Inspect changes, not just version strings.
-2. Check parent issues/PRs and both popular and recent forks for concrete fixes.
-3. Verify signatures, GraphQL response shapes, nested errors, and published-package availability.
-4. Update the pin, lockfile, release floor when needed, and this dated assessment.
+## Backlog
 
-## Documentation References
+These are candidates, not promised features. Verify the current implementation before starting.
 
-**Keep These Updated Regularly:**
-- **MCP Protocol**: https://modelcontextprotocol.io/llms-full.txt
-- **MCP Python SDK**: https://github.com/modelcontextprotocol/python-sdk
-- **Monarch Money API**: https://github.com/hammem/monarchmoney
-- **MCP Server Examples**: https://github.com/modelcontextprotocol/servers
-- Current stable MCP Protocol Version: "2025-11-25" (a newer draft exists that goes stateless and deprecates Sampling/Roots/MCP-logging — this server already logs to stderr, so it's well-positioned)
-- This server uses structured tool output (outputSchema), tool/resource/prompt titles, resource templates, completions, and Context progress reporting (all 2025-06-18 features)
-- Re-read all resources regularly to ensure compliance with any API or protocol changes
+- **Resilience:** network backoff, rate-limit handling, specific API errors, and clearer MCP errors.
+- **Sessions:** atomic persistence, safer session serialization, expiry-aware refresh, and recovery monitoring.
+- **Performance:** account/category caching with TTL and invalidation; connection reuse. Consider Redis only if multiple instances need shared state.
+- **Observability:** request correlation, health reporting, optional metrics/alerts, and reducing sensitive log content.
+- **Analysis:** anomaly detection, categorization, budget variance, investment performance, and goals/savings.
+- **Tools:** import/export, fuzzy search, and bill detection.
+- **Organization:** split modules or add settings/plugin discovery only when the current layout becomes limiting.
+- **Developer workflow:** schema-generated docs, optional reload mode, and focused profiling/debugging tools.
+- **MCP:** financial exports, sampling, and multi-server workflows when a concrete client use case needs them. Resources and guided prompts already exist.
+
+## References
+
+- [MCP specification](https://modelcontextprotocol.io/llms-full.txt)
+- [Python SDK](https://github.com/modelcontextprotocol/python-sdk)
+- [Community client](https://github.com/bradleyseanf/monarchmoneycommunity)
+- [MCP server examples](https://github.com/modelcontextprotocol/servers)

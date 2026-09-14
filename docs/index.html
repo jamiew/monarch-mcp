@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Monarch Money MCP Server</title>
-    <meta name="description" content="An MCP server that provides AI assistants access to Monarch Money financial data — accounts, transactions, budgets, cashflow, investments, and spending analysis.">
+    <meta name="description" content="An MCP server for querying and updating Monarch Money accounts, transactions, and budgets, with spending analysis.">
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%91%91%3C/text%3E%3C/svg%3E">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -912,9 +912,8 @@
                     <div class="eyebrow">Self-hosted · Model Context Protocol</div>
                     <h1>Your money, fluent in <em>Claude</em>.</h1>
                     <p class="hero-lede">
-                        An MCP server that gives Claude — or any MCP client — a window into your finances:
-                        query accounts, search transactions, track budgets and investments, and run
-                        multi-month spending analysis, all from plain-language prompts.
+                        Query accounts, search and edit transactions, track budgets and investments,
+                        and analyze spending through Claude or another local stdio MCP client.
                     </p>
                     <div class="hero-capabilities">
                         <span class="chip">Accounts &amp; balances</span>
@@ -926,16 +925,13 @@
                     </div>
                     <div class="hero-brags">
                         <p class="hero-brag">
-                            Token-efficient by design: <strong>compact output is ~80% smaller</strong>,
-                            and batch tools pull <strong>five Monarch APIs in a single call</strong>.
-                        </p>
-                        <p class="hero-brag">
-                            <strong>One-line install</strong> — no clone, no path wrangling:
+                            <strong>Run the PyPI release</strong> without cloning:
                             <code class="hero-cmd">uvx monarch-mcp-jamiew</code>
                         </p>
                         <p class="hero-brag">
-                            Runs locally; your credentials stay in your client config and
-                            <strong>never pass through the LLM</strong>.
+                            Runs locally using unofficial API access. Your credentials grant
+                            <strong>full account access, including writes</strong>. Protect config files,
+                            session tokens, and logs, which can contain financial inputs and error details.
                         </p>
                     </div>
                     <div class="hero-cta">
@@ -945,7 +941,7 @@
                         <a href="#tools" class="btn-primary btn-ghost btn-lg">Browse the tools</a>
                     </div>
                     <p class="hero-techline">
-                        <strong>19</strong> tools<span class="dot">·</span><strong>~8K</strong> tokens of definitions<span class="dot">·</span><strong>202</strong> tests<span class="dot">·</span><strong>100%</strong> type-safe
+                        <strong>22</strong> tools in the source checkout<span class="dot">·</span>Structured output<span class="dot">·</span>Read and write access
                     </p>
                 </div>
             </div>
@@ -955,15 +951,15 @@
             <div class="container">
                 <div class="section-head">
                     <div class="eyebrow">Capabilities</div>
-                    <h2 class="section-title">Built on modern MCP</h2>
+                    <h2 class="section-title">MCP features</h2>
                     <p class="section-subtitle">
-                        Designed for token efficiency and the latest protocol features
+                        Structured data and guided workflows for your assistant
                     </p>
                 </div>
                 <div class="feature-grid">
                     <div class="feature-card">
                         <h3>Structured output</h3>
-                        <p>Every tool returns a typed <code>outputSchema</code> with machine-readable content and a text fallback for older clients.</p>
+                        <p>Each tool declares an <code>outputSchema</code> and returns machine-readable content, with a text fallback for older clients.</p>
                     </div>
                     <div class="feature-card">
                         <h3>Resources &amp; templates</h3>
@@ -971,15 +967,15 @@
                     </div>
                     <div class="feature-card">
                         <h3>Guided prompts</h3>
-                        <p>Prompt workflows for financial analysis, with live argument autocompletion.</p>
+                        <p>Financial analysis workflows with argument autocompletion.</p>
                     </div>
                     <div class="feature-card">
                         <h3>Natural-language dates</h3>
-                        <p>Filters understand "last month", "30 days ago", and "this year" out of the box.</p>
+                        <p>Use dates such as "last month", "30 days ago", and "this year".</p>
                     </div>
                     <div class="feature-card">
                         <h3>Tool annotations</h3>
-                        <p>Read/write metadata and human-friendly titles so clients know what's safe to call.</p>
+                        <p>Titles and read/write metadata help clients distinguish queries from changes. They do not enforce access controls.</p>
                     </div>
                 </div>
             </div>
@@ -991,21 +987,17 @@
                     <div class="eyebrow">Performance</div>
                     <h2 class="section-title">Token &amp; request efficiency</h2>
                     <p class="section-subtitle">
-                        Built to spend as few tokens and round-trips as possible
+                        Compact records and combined queries
                     </p>
                 </div>
                 <div class="feature-grid">
                     <div class="feature-card">
-                        <h3>~80% smaller responses</h3>
-                        <p>Compact transaction format by default; categories return just <code>id</code> + <code>name</code>. Pass <code>verbose=True</code> for the full API payload when you need it.</p>
+                        <h3>Compact output</h3>
+                        <p>Transactions return essential fields; categories return <code>id</code> and <code>name</code>. Use <code>verbose=True</code> on transaction reads, search, or category reads for full details.</p>
                     </div>
                     <div class="feature-card">
                         <h3>5 APIs in 1 call</h3>
-                        <p><code>get_complete_financial_overview</code> fans out to five Monarch APIs at once, <code>update_transactions_bulk</code> edits many transactions in one parallel call, and the summary tools aggregate server-side instead of dumping raw rows on the model.</p>
-                    </div>
-                    <div class="feature-card">
-                        <h3>~8K-token tool surface</h3>
-                        <p>All 19 tool schemas cost ~8K tokens of context up front in clients without deferred loading. Descriptions and schemas are kept tight to hold that fixed cost down.</p>
+                        <p><code>get_complete_financial_overview</code> queries five Monarch APIs in parallel. Bulk updates edit multiple transactions, while summary tools aggregate data on the server.</p>
                     </div>
                 </div>
             </div>
@@ -1017,7 +1009,10 @@
                     <div class="eyebrow">Reference</div>
                     <h2 class="section-title">Available tools</h2>
                     <p class="section-subtitle">
-                        Broad coverage of the Monarch Money API
+                        This catalog describes the source checkout. Recurring date filters, the recurring updater,
+                        stricter bulk-input validation, and the latest authentication fixes are unreleased.
+                        Use the <a href="https://github.com/jamiew/monarch-mcp#from-source-development">source setup</a>
+                        for these changes; PyPI installs use the latest published release.
                     </p>
                 </div>
 
@@ -1027,32 +1022,31 @@
                         <div class="tool-grid">
                             <div class="tool-item">
                                 <div class="tool-name">get_accounts</div>
-                                <div class="tool-desc">Retrieve all linked financial accounts with balances and details.</div>
+                                <div class="tool-desc">List financial accounts with balances.</div>
                             </div>
                             <div class="tool-item">
                                 <div class="tool-name">get_transactions</div>
-                                <div class="tool-desc">Fetch transactions with flexible filtering by date, account, and category.</div>
+                                <div class="tool-desc">Get transactions filtered by date, account, or category.</div>
                                 <div class="tool-params">
                                     <div class="tool-params-title">Key features</div>
                                     <ul>
                                         <li>Natural language dates: "last month", "30 days ago", "this year"</li>
-                                        <li>Compact format reduces data size by ~80% (verbose mode available)</li>
-                                        <li>Filter by account, category, date range</li>
+                                        <li>Compact records by default; verbose mode for full details</li>
                                         <li>Pagination with limit and offset</li>
                                     </ul>
                                 </div>
                             </div>
                             <div class="tool-item">
                                 <div class="tool-name">get_budgets</div>
-                                <div class="tool-desc">Retrieve budget information and spending analysis.</div>
+                                <div class="tool-desc">Get budget data and spending limits.</div>
                             </div>
                             <div class="tool-item">
                                 <div class="tool-name">get_cashflow</div>
-                                <div class="tool-desc">Analyze income and expense cashflow data.</div>
+                                <div class="tool-desc">Get income and expense totals.</div>
                             </div>
                             <div class="tool-item">
                                 <div class="tool-name">get_transaction_categories</div>
-                                <div class="tool-desc">List all available transaction categories.</div>
+                                <div class="tool-desc">List transaction categories.</div>
                             </div>
                         </div>
                     </div>
@@ -1066,7 +1060,7 @@
                             </div>
                             <div class="tool-item">
                                 <div class="tool-name">create_transaction</div>
-                                <div class="tool-desc">Create a new transaction with amount, description, category, and date.</div>
+                                <div class="tool-desc">Create a manual transaction.</div>
                             </div>
                             <div class="tool-item">
                                 <div class="tool-name">update_transaction</div>
@@ -1074,7 +1068,15 @@
                             </div>
                             <div class="tool-item">
                                 <div class="tool-name">update_transactions_bulk</div>
-                                <div class="tool-desc">Update multiple transactions in parallel in a single call.</div>
+                                <div class="tool-desc">Update multiple transactions in parallel.</div>
+                            </div>
+                            <div class="tool-item">
+                                <div class="tool-name">get_transaction_splits</div>
+                                <div class="tool-desc">Read a transaction's splits.</div>
+                            </div>
+                            <div class="tool-item">
+                                <div class="tool-name">update_transaction_splits</div>
+                                <div class="tool-desc">Replace all splits on a transaction. An empty list removes them.</div>
                             </div>
                         </div>
                     </div>
@@ -1084,15 +1086,15 @@
                         <div class="tool-grid">
                             <div class="tool-item">
                                 <div class="tool-name">get_account_holdings</div>
-                                <div class="tool-desc">View investment portfolio holdings for a brokerage account (requires <code>account_id</code>).</div>
+                                <div class="tool-desc">Get investment holdings for an account (requires <code>account_id</code>).</div>
                             </div>
                             <div class="tool-item">
                                 <div class="tool-name">get_account_history</div>
-                                <div class="tool-desc">Track historical account balance data over time.</div>
+                                <div class="tool-desc">Get account balance history.</div>
                             </div>
                             <div class="tool-item">
                                 <div class="tool-name">get_institutions</div>
-                                <div class="tool-desc">List all linked financial institutions.</div>
+                                <div class="tool-desc">List linked financial institutions.</div>
                             </div>
                             <div class="tool-item">
                                 <div class="tool-name">refresh_accounts</div>
@@ -1106,11 +1108,15 @@
                         <div class="tool-grid">
                             <div class="tool-item">
                                 <div class="tool-name">get_recurring_transactions</div>
-                                <div class="tool-desc">View scheduled recurring transactions and bills.</div>
+                                <div class="tool-desc">Get scheduled occurrences, not posted history or payment status. Source date filters accept ISO or natural-language dates; no dates selects this month, and one date fills the missing bound from that month. A matched <code>transactionId</code> links a recorded transaction; <code>isPast</code> does not mean paid. Use <code>get_transactions(is_recurring=True)</code> for recorded transactions.</div>
+                            </div>
+                            <div class="tool-item">
+                                <div class="tool-name">update_recurring_transaction</div>
+                                <div class="tool-desc">Unreleased: change a merchant-wide schedule, not one occurrence. Use <code>stream.merchant.id</code> and the current merchant name to avoid renaming it. Omitted settings stay unchanged; preserve Monarch's frequency and signed amount. This does not cancel subscriptions, move money, or create posted transactions.</div>
                             </div>
                             <div class="tool-item">
                                 <div class="tool-name">set_budget_amount</div>
-                                <div class="tool-desc">Set or update budget amount for a specific category.</div>
+                                <div class="tool-desc">Set a budget category amount.</div>
                             </div>
                             <div class="tool-item">
                                 <div class="tool-name">create_manual_account</div>
@@ -1120,7 +1126,7 @@
                     </div>
 
                     <div class="tool-group">
-                        <h3>Intelligent Analysis</h3>
+                        <h3>Spending Analysis</h3>
                         <div class="tool-grid">
                             <div class="tool-item">
                                 <div class="tool-name">get_spending_summary</div>
@@ -1128,7 +1134,7 @@
                             </div>
                             <div class="tool-item">
                                 <div class="tool-name">get_complete_financial_overview</div>
-                                <div class="tool-desc">Get a comprehensive financial snapshot combining accounts, transactions, budgets, and cashflow in a single call.</div>
+                                <div class="tool-desc">Combine account, transaction, budget, cashflow, and category data in one call.</div>
                                 <div class="tool-params">
                                     <div class="tool-params-title">Combines 5 API calls</div>
                                     <ul>
@@ -1142,14 +1148,14 @@
                             </div>
                             <div class="tool-item">
                                 <div class="tool-name">analyze_spending_patterns</div>
-                                <div class="tool-desc">Analyze spending trends with multi-month analysis and optional predictive forecasting.</div>
+                                <div class="tool-desc">Summarize spending across months, with optional average-based forecasts.</div>
                                 <div class="tool-params">
-                                    <div class="tool-params-title">Provides insights on</div>
+                                    <div class="tool-params-title">Includes</div>
                                     <ul>
                                         <li>Monthly spending trends by category</li>
                                         <li>Account usage patterns</li>
-                                        <li>Budget performance over time</li>
-                                        <li>Predictive spending forecasts (optional)</li>
+                                        <li>Budget data for the period</li>
+                                        <li>Average-based spending forecasts (optional)</li>
                                     </ul>
                                 </div>
                             </div>
@@ -1163,24 +1169,24 @@
             <div class="container">
                 <div class="section-head">
                     <div class="eyebrow">Setup</div>
-                    <h2 class="section-title">Installed in a few minutes</h2>
+                    <h2 class="section-title">Install the server</h2>
                     <p class="section-subtitle">
-                        Same shape everywhere: command <code>uvx</code>, package <code>monarch-mcp-jamiew</code>, three env vars
+                        Run <code>uvx monarch-mcp-jamiew</code> through your local stdio MCP client
                     </p>
                 </div>
 
                 <div class="install-body">
                     <p class="install-lede">
-                        Published to PyPI &mdash; no clone needed. With
-                        <a href="https://docs.astral.sh/uv/" target="_blank">uv</a> installed, every MCP client
-                        runs it on demand with <code>uvx</code>.
+                        Install <a href="https://docs.astral.sh/uv/" target="_blank">uv</a> to run the PyPI release
+                        without cloning. Provide your Monarch email and password, plus
+                        <code>MONARCH_MFA_SECRET</code> for TOTP-based 2FA. Client configuration formats vary.
                     </p>
 
                     <div class="install-step"><span class="num">01</span> Claude Desktop</div>
                     <p class="install-note">
-                        Add this to <code>claude_desktop_config.json</code>
-                        (<code>~/Library/Application Support/Claude/</code> on macOS,
-                        <code>%APPDATA%\Claude\</code> on Windows), then restart Claude:
+                        Add the <code>monarch-money</code> entry below to <code>mcpServers</code> in
+                        <code>claude_desktop_config.json</code> (<code>~/Library/Application Support/Claude/</code>
+                        on macOS, <code>%APPDATA%\Claude\</code> on Windows), then restart Claude:
                     </p>
                     <div class="code-block">
                         <pre>{
@@ -1217,17 +1223,17 @@
                     </div>
 
                     <div class="install-step"><span class="num">04</span> Everything else</div>
-                    <p class="install-note">Same standard config, different file:</p>
+                    <p class="install-note">Use your client's local stdio setup. The CLI examples above can save credentials in shell history; edit a protected config file directly to avoid that.</p>
                     <ul class="client-list">
-                        <li><strong><code>.mcp.json</code></strong> — drop the standard config in your project root; Claude Code (project scope) and most clients auto-load it.</li>
-                        <li><strong>OpenClaw</strong> — add it to <code>~/.openclaw/openclaw.json</code> under <code>mcpServers</code>, then restart the gateway.</li>
-                        <li><strong>Hermes</strong> — add it to <code>~/.hermes/config.yaml</code> under <code>mcp_servers:</code> (YAML), then <code>/reload-mcp</code>.</li>
-                        <li><strong>Cursor · VS Code · Windsurf · Cline · Zed</strong> — same standard config; anything that speaks MCP over stdio works.</li>
+                        <li><strong><code>.mcp.json</code></strong>: save the standard config in your project root for Claude Code's project scope. Do not commit credentials.</li>
+                        <li><strong>OpenClaw</strong>: add the server to <code>~/.openclaw/openclaw.json</code> under <code>mcpServers</code>, then restart the gateway.</li>
+                        <li><strong>Hermes</strong>: configure <code>~/.hermes/config.yaml</code> under <code>mcp_servers:</code> in YAML, then run <code>/reload-mcp</code>. See the <a href="https://github.com/jamiew/monarch-mcp#setup">README example</a>.</li>
+                        <li><strong>Cursor · VS Code · Windsurf · Cline · Zed</strong>: follow the client's instructions for the command, arguments, and environment variables. Config keys and file locations differ.</li>
                     </ul>
 
                     <div class="prompt-box">
                         <span class="label">Stuck? Ask your agent</span>
-                        <p>"Install the Monarch Money MCP server from github.com/jamiew/monarch-mcp — it's on PyPI as monarch-mcp-jamiew, runs via <code>uvx monarch-mcp-jamiew</code>, and needs env vars MONARCH_EMAIL, MONARCH_PASSWORD, and MONARCH_MFA_SECRET."</p>
+                        <p>"Install the Monarch Money MCP server from github.com/jamiew/monarch-mcp. The PyPI package runs via <code>uvx monarch-mcp-jamiew</code> and needs MONARCH_EMAIL, MONARCH_PASSWORD, and MONARCH_MFA_SECRET for TOTP-based 2FA."</p>
                     </div>
 
                     <div class="info-box">
@@ -1235,13 +1241,13 @@
                         <p>
                             1. Enable 2FA in Monarch Money settings<br>
                             2. Click "Can't scan?" when shown the QR code<br>
-                            3. Copy the secret key (format: <code>T5SPVJIBRNPNNINFSH5W7RFVF2XYADYX</code>)<br>
+                            3. Copy the TOTP secret key, not the rotating six-digit code<br>
                             4. Use this as your <code>MONARCH_MFA_SECRET</code>
                         </p>
                     </div>
 
                     <div class="install-step"><span class="num">05</span> Talk to your assistant</div>
-                    <p class="install-note">Example prompts once it's wired up:</p>
+                    <p class="install-note">Example prompts after setup:</p>
                     <div class="code-block">
                         <pre>"Show me my account balances"
 "Get all transactions from last month"
@@ -1266,7 +1272,7 @@
                         <h3>MCP Server</h3>
                         <p><strong>Author:</strong> Jamie Dubs &nbsp;·&nbsp; <a href="https://github.com/jamiew" target="_blank">@jamiew</a></p>
                         <p>
-                            A FastMCP rewrite with structured output, type safety, and comprehensive testing.
+                            A FastMCP server with structured output.
                             Originally forked from <a href="https://github.com/colvint" target="_blank">@colvint</a>'s implementation.
                         </p>
                         <a class="credit-link" href="https://github.com/jamiew/monarch-mcp" target="_blank">View repository →</a>

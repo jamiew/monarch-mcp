@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MonarchMoney MCP Server - Provides access to Monarch Money financial data via MCP protocol."""
+"""Expose Monarch Money financial data and account updates through MCP."""
 
 import asyncio
 import contextlib
@@ -34,10 +34,9 @@ from mcp.types import (
 from monarchmoney import MonarchMoney, RequireMFAException
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, JsonValue
 
-# Type definitions for Monarch Money API responses
 JsonSerializable = str | int | float | bool | None | list["JsonSerializable"] | dict[str, "JsonSerializable"]
 
-# Reusable tool annotations — all tools are closed-world (only talk to Monarch Money API)
+# Tools communicate only with the Monarch Money API.
 READONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
 WRITE_IDEMPOTENT = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
 WRITE_CREATE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False)
@@ -47,24 +46,10 @@ WRITE_SIDE_EFFECT = ToolAnnotations(
 
 
 def parse_flexible_date(date_input: str) -> date:
-    """
-    Parse flexible date inputs including natural language with comprehensive error handling.
-
-    Supports:
-    - "today", "now"
-    - "yesterday"
-    - "this month", "current month"
-    - "last month", "previous month"
-    - "this year", "current year"
-    - "last year", "previous year"
-    - "last week", "this week"
-    - "30 days ago", "6 months ago"
-    - Any date format supported by dateutil.parser
-    """
+    """Parse named periods, relative dates, and dateutil-supported date strings."""
     if not date_input:
         raise ValueError("Date input cannot be empty")
 
-    # Handle common natural language patterns
     date_input = date_input.lower().strip()
     today = date.today()
 
@@ -75,7 +60,6 @@ def parse_flexible_date(date_input: str) -> date:
     elif date_input in ["this month", "current month"]:
         return date(today.year, today.month, 1)
     elif date_input in ["last month", "previous month"]:
-        # Handle month rollover correctly
         if today.month == 1:
             return date(today.year - 1, 12, 1)
         else:
@@ -91,11 +75,10 @@ def parse_flexible_date(date_input: str) -> date:
         days_since_monday = today.weekday()
         return today - timedelta(days=days_since_monday)
 
-    # Handle relative patterns like "30 days ago", "6 months ago"
     relative_pattern = re.match(r"(\d+)\s+(days?|weeks?|months?|years?)\s+ago", date_input)
     if relative_pattern:
         amount = int(relative_pattern.group(1))
-        unit = relative_pattern.group(2).rstrip("s")  # Remove plural 's'
+        unit = relative_pattern.group(2).rstrip("s")
 
         try:
             if unit == "day":
@@ -112,12 +95,10 @@ def parse_flexible_date(date_input: str) -> date:
             log.warning("Invalid relative date calculation", input=date_input, amount=amount, unit=unit, error=str(e))
             raise ValueError(f"Invalid relative date: {date_input}") from e
 
-    # Try parsing with dateutil for standard date formats
     try:
         parsed_datetime = date_parser.parse(date_input)
         parsed_date = parsed_datetime.date()
 
-        # Validate reasonable date range (1900 to 50 years in future)
         min_date = date(1900, 1, 1)
         max_date = date(today.year + 50, 12, 31)
 
@@ -130,7 +111,6 @@ def parse_flexible_date(date_input: str) -> date:
     except (ValueError, TypeError, OverflowError) as e:
         log.warning("Failed to parse date with dateutil", input=date_input, error=str(e))
 
-        # Provide helpful error message with suggestions
         suggestions = [
             "Try formats like: 2024-01-15, Jan 15 2024, 15/01/2024",
             "Or natural language: today, yesterday, last month, this year",
@@ -141,42 +121,22 @@ def parse_flexible_date(date_input: str) -> date:
 
 
 def build_date_filter(start_date: str | None, end_date: str | None) -> dict[str, str]:
-    """
-    Build date filter dictionary with flexible parsing and comprehensive error recovery.
+    """Build ISO date filters; reject unparseable or reversed ranges.
 
-    Args:
-        start_date: Start date string (flexible format supported)
-        end_date: End date string (flexible format supported)
-
-    Returns:
-        Dictionary with ISO format date strings
-
-    Raises:
-        ValueError: If date parsing fails completely after all fallback attempts
-
-    Note:
-        Monarch Money API requires BOTH start_date AND end_date when filtering by date.
-        If only one is provided, the other will be auto-filled with a sensible default:
-        - Missing end_date: defaults to today
-        - Missing start_date: defaults to start of current month
+    Monarch requires both dates or neither. A missing end defaults to today;
+    a missing start defaults to the first day of the end date's month.
     """
     filters: dict[str, str] = {}
 
-    # Auto-fill missing dates for better UX (Monarch API requires both or neither)
     if start_date and not end_date:
-        # User provided start but not end - default end to today
         end_date = "today"
         log.info("Auto-filling missing end_date with 'today'", start_date=start_date)
     elif end_date and not start_date:
-        # User provided end but not start - need to parse end_date first to choose smart default
-        # If end_date is in the past, use beginning of that month; otherwise use this month
         try:
             parsed_end = parse_flexible_date(end_date)
             today = date.today()
 
-            # If end date is in the past or in a different month, use first of that month
             if parsed_end < today or parsed_end.month != today.month or parsed_end.year != today.year:
-                # Use first day of the end_date's month
                 start_date = date(parsed_end.year, parsed_end.month, 1).isoformat()
                 log.info(
                     "Auto-filling missing start_date with first of end_date's month",
@@ -184,15 +144,13 @@ def build_date_filter(start_date: str | None, end_date: str | None) -> dict[str,
                     calculated_start=start_date,
                 )
             else:
-                # End date is this month, use "this month"
                 start_date = "this month"
                 log.info("Auto-filling missing start_date with 'this month'", end_date=end_date)
         except ValueError:
-            # If we can't parse end_date yet, just use "this month" and let validation catch issues later
+            # Let the parsing below report the invalid end date.
             start_date = "this month"
             log.info("Auto-filling missing start_date with 'this month' (end_date parse pending)", end_date=end_date)
 
-    # parse_flexible_date already handles all formats (natural language, ISO, dateutil)
     if start_date:
         parsed_date = parse_flexible_date(start_date)
         filters["start_date"] = parsed_date.isoformat()
@@ -203,7 +161,6 @@ def build_date_filter(start_date: str | None, end_date: str | None) -> dict[str,
         filters["end_date"] = parsed_date.isoformat()
         log.info("Parsed end_date", input=end_date, parsed=parsed_date.isoformat())
 
-    # Validate date range logic
     if "start_date" in filters and "end_date" in filters:
         start = date.fromisoformat(filters["start_date"])
         end = date.fromisoformat(filters["end_date"])
@@ -216,13 +173,7 @@ def build_date_filter(start_date: str | None, end_date: str | None) -> dict[str,
 
 
 def convert_dates_to_strings(obj: Any) -> Any:
-    """
-    Recursively convert all date/datetime objects to ISO format strings.
-
-    This ensures that the data can be serialized by any JSON encoder,
-    not just our custom one. This is necessary because the MCP framework
-    may attempt to serialize the response before we can use our custom encoder.
-    """
+    """Convert nested dates to ISO strings before MCP serializes the response."""
     if isinstance(obj, (date, datetime)):
         return obj.isoformat()
     elif isinstance(obj, dict):
@@ -236,32 +187,16 @@ def convert_dates_to_strings(obj: Any) -> Any:
 
 
 def extract_transactions_list(response: Any) -> list[dict[str, Any]]:
-    """
-    Extract the transactions list from monarchmoney API response.
-
-    The monarchmoney library returns:
-    {
-        "allTransactions": {
-            "totalCount": 123,
-            "results": [...]  # <-- actual transactions
-        },
-        "transactionRules": ...
-    }
-
-    This function extracts the results list from the nested structure.
-    """
+    """Extract allTransactions.results, accepting a bare list as well."""
     if isinstance(response, list):
-        # Already a list (shouldn't happen with current API)
         return response
     elif isinstance(response, dict):
-        # Check for the nested structure
         if "allTransactions" in response:
             all_txns = response["allTransactions"]
             if isinstance(all_txns, dict) and "results" in all_txns:
                 results = all_txns["results"]
                 if isinstance(results, list):
                     return results
-        # Fallback: maybe it's a different structure
         log.warning("Unexpected transaction response structure", keys=list(response.keys()))
         return []
     else:
@@ -270,12 +205,7 @@ def extract_transactions_list(response: Any) -> list[dict[str, Any]]:
 
 
 def extract_list(response: Any, key: str) -> list[Any]:
-    """Pull a named list out of a Monarch API response.
-
-    Most Monarch GraphQL queries return a dict like ``{"accounts": [...]}`` rather
-    than a bare list, so the inner list has to be unwrapped before counting it.
-    Tolerates an already-flat list and unexpected shapes (returns []).
-    """
+    """Unwrap a named API list, accept a bare list, or return [] for other shapes."""
     if isinstance(response, list):
         return response
     if isinstance(response, dict):
@@ -286,19 +216,8 @@ def extract_list(response: Any, key: str) -> list[Any]:
 
 
 def format_transactions_compact(transactions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """
-    Format transactions in a compact format with only essential fields.
-
-    Returns simplified transaction objects with only:
-    - id, date, amount
-    - merchant name, plaidName (original statement name)
-    - category id + name (id needed for updates)
-    - account display name
-    - needsReview flag
-    - pending flag (only if True)
-    - notes (only if present)
-
-    Use verbose=True to get full transaction details when needed.
+    """Keep IDs, date, amount, merchant, statement name, category, account, and review
+    status, plus pending and notes when present. Public tools document these fields.
     """
     compact: list[dict[str, Any]] = []
 
@@ -319,11 +238,9 @@ def format_transactions_compact(transactions: list[dict[str, Any]]) -> list[dict
             "needsReview": txn.get("needsReview", False),
         }
 
-        # Only include pending if actually pending (saves bytes on the common case)
         if txn.get("pending"):
             compact_txn["pending"] = True
 
-        # Include notes if present
         if txn.get("notes"):
             compact_txn["notes"] = txn.get("notes")
 
@@ -344,13 +261,9 @@ def _build_transaction_filters(
     is_split: bool | None = None,
     is_recurring: bool | None = None,
 ) -> dict[str, Any]:
-    """Build filters dict for get_transactions API calls.
-
-    Shared by get_transactions and search_transactions to avoid duplication.
-    """
+    """Build shared filters for transaction retrieval and search."""
     filters: dict[str, Any] = build_date_filter(start_date, end_date)
 
-    # monarchmoney expects account_ids and category_ids as LISTS
     if account_id:
         filters["account_ids"] = [account_id]
     if category_id:
@@ -358,7 +271,6 @@ def _build_transaction_filters(
     if tag_ids:
         filters["tag_ids"] = [t.strip() for t in tag_ids.split(",")]
 
-    # Boolean filters (only include if explicitly set)
     if has_attachments is not None:
         filters["has_attachments"] = has_attachments
     if has_notes is not None:
@@ -373,18 +285,16 @@ def _build_transaction_filters(
     return filters
 
 
-# Configure logger to output to stderr only with error handling
+# Keep logs off stdout, which carries the MCP protocol.
 class SafeStreamHandler(logging.StreamHandler):
-    """Stream handler that gracefully handles broken pipes."""
+    """Ignore broken pipes when the MCP client disconnects."""
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
             super().emit(record)
         except (BrokenPipeError, ConnectionResetError):
-            # Silently ignore broken pipe errors during logging
             pass
         except Exception:
-            # Let other logging errors bubble up
             self.handleError(record)
 
 
@@ -394,7 +304,6 @@ logging.basicConfig(
     handlers=[SafeStreamHandler(sys.stderr)],
 )
 
-# Configure structured logging
 structlog.configure(
     processors=[
         structlog.stdlib.filter_by_level,
@@ -412,7 +321,6 @@ structlog.configure(
     cache_logger_on_first_use=True,
 )
 
-# Get structured logger for this module
 log = structlog.get_logger(__name__)
 
 # Suppress third-party library logging to reduce noise
@@ -423,7 +331,6 @@ logging.getLogger("gql.transport").setLevel(logging.ERROR)
 
 warnings.filterwarnings("ignore", category=UserWarning, module="gql.transport.aiohttp")
 
-# Session tracking for usage analytics
 current_session_id = str(uuid.uuid4())
 usage_patterns: dict[str, list[dict[str, Any]]] = {}
 
@@ -432,19 +339,18 @@ R = TypeVar("R")
 
 
 def track_usage(func: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
-    """Decorator to track tool usage patterns for analytics with detailed debugging."""
+    """Log tool arguments, timing, errors, and result sizes."""
 
     @functools.wraps(func)
     async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
         start_time = time.time()
         tool_name = func.__name__
 
-        # Format args for logging (exclude sensitive data)
+        # Exclude credential keywords; financial inputs may still appear in logs.
         safe_kwargs = {k: v for k, v in kwargs.items() if k not in ["password", "mfa_secret"]}
 
         log.info("tool_call", tool=tool_name, args=safe_kwargs)
 
-        # Track this call
         call_info = {
             "session_id": current_session_id,
             "tool_name": tool_name,
@@ -457,8 +363,7 @@ def track_usage(func: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
             result = await func(*args, **kwargs)
             execution_time = time.time() - start_time
 
-            # Calculate result size and stats. Tools now return Pydantic models;
-            # serialize to JSON for an accurate wire-size measurement.
+            # Measure serialized character count, not transport bytes.
             if isinstance(result, BaseModel):
                 payload = result.model_dump_json()
             elif isinstance(result, str):
@@ -478,7 +383,6 @@ def track_usage(func: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
                 result_kb=round(result_kb, 2),
             )
 
-            # Track usage patterns in memory for batching analysis
             if tool_name not in usage_patterns:
                 usage_patterns[tool_name] = []
             usage_patterns[tool_name].append(call_info)
@@ -495,23 +399,15 @@ def track_usage(func: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
     return wrapper
 
 
-# Initialize the FastMCP server
 mcp = FastMCP("monarch-money")
 
 
-# =============================================================================
-# Structured output models
-#
-# Each tool returns a typed model so FastMCP emits an ``outputSchema`` and
-# machine-readable structured content (plus a text fallback for older clients).
-# Monarch's GraphQL payloads are deep and evolve, so passthrough fields are typed
-# as ``JsonValue`` (recursive JSON, not ``Any``) and ``MMModel`` allows unknown
-# extra keys to flow through. Shapes we construct ourselves are modeled precisely.
-# =============================================================================
+# Structured output models give MCP clients schemas and machine-readable content.
+# JsonValue and extra fields preserve evolving upstream payloads.
 
 
 class MMModel(BaseModel):
-    """Base for response models — tolerates extra upstream fields."""
+    """Preserve extra upstream response fields."""
 
     model_config = ConfigDict(extra="allow")
 
@@ -560,9 +456,8 @@ class TransactionResult(MMModel):
 class TransactionSplit(BaseModel):
     """One leg of a split transaction.
 
-    The split amounts must sum to the parent transaction's amount (Monarch
-    validates this and rejects the update otherwise). Amounts keep the parent's
-    sign convention — expenses are negative, income positive.
+    Monarch requires split amounts to sum to the parent amount, using the parent's
+    sign convention: negative expenses, positive income.
     """
 
     amount: float
@@ -585,7 +480,7 @@ class UpdateSplitsResult(MMModel):
 
 
 class BulkTransactionUpdate(BaseModel):
-    """Validate each bulk item before allowing any transaction mutation."""
+    """Validate a bulk item before mutating its transaction."""
 
     model_config = ConfigDict(strict=True, extra="forbid", hide_input_in_errors=True)
 
@@ -628,8 +523,7 @@ class AccountHistoryResult(MMModel):
 
 
 class InstitutionsResult(MMModel):
-    # Monarch's institution-settings query returns a dict (credentials, accounts,
-    # subscription), not a flat list, so the full payload is passed through.
+    # The upstream payload groups institution credentials, accounts, and subscription.
     institutions: JsonValue
 
 
@@ -707,20 +601,12 @@ class SpendingPatterns(MMModel):
     metadata: JsonValue = None
 
 
-# =============================================================================
-# MCP Resources - Read-only data endpoints for reference data
-# =============================================================================
+# MCP resources
 
 
 @mcp.resource("categories://list", title="Transaction Categories")
 async def list_categories_resource() -> str:
-    """
-    List all transaction categories available in Monarch Money.
-
-    Returns a JSON array of category objects with id, name, group, and icon.
-    This is read-only reference data useful for understanding available categories
-    before creating or updating transactions.
-    """
+    """Return Monarch's category JSON, including IDs for transaction updates."""
     await ensure_authenticated()
     categories = await api_call_with_retry("get_transaction_categories")
     return json.dumps(convert_dates_to_strings(categories), indent=2)
@@ -728,13 +614,7 @@ async def list_categories_resource() -> str:
 
 @mcp.resource("accounts://list", title="Linked Accounts")
 async def list_accounts_resource() -> str:
-    """
-    List all linked financial accounts in Monarch Money.
-
-    Returns a JSON array of account objects including checking, savings,
-    credit cards, investments, and other account types with their balances
-    and institution information.
-    """
+    """Return Monarch's linked-account JSON with balances and institution details."""
     await ensure_authenticated()
     accounts = await api_call_with_retry("get_accounts")
     return json.dumps(convert_dates_to_strings(accounts), indent=2)
@@ -742,12 +622,7 @@ async def list_accounts_resource() -> str:
 
 @mcp.resource("institutions://list", title="Linked Institutions")
 async def list_institutions_resource() -> str:
-    """
-    List all connected financial institutions in Monarch Money.
-
-    Returns a JSON array of institution objects showing which banks,
-    brokerages, and other financial institutions are connected to the account.
-    """
+    """Return Monarch's connected-institution JSON."""
     await ensure_authenticated()
     institutions = await api_call_with_retry("get_institutions")
     return json.dumps(convert_dates_to_strings(institutions), indent=2)
@@ -755,12 +630,7 @@ async def list_institutions_resource() -> str:
 
 @mcp.resource("accounts://{account_id}/holdings", title="Account Holdings")
 async def account_holdings_resource(account_id: str) -> str:
-    """
-    Investment holdings for a specific account (resource template).
-
-    The ``account_id`` path segment selects which account's portfolio to return.
-    Mirrors the ``get_account_holdings`` tool but as an addressable resource.
-    """
+    """Return investment holdings for the account_id in the resource path."""
     await ensure_authenticated()
     holdings = await api_call_with_retry("get_account_holdings", account_id=account_id)
     return json.dumps(convert_dates_to_strings(holdings), indent=2)
@@ -768,26 +638,18 @@ async def account_holdings_resource(account_id: str) -> str:
 
 @mcp.resource("accounts://{account_id}/history", title="Account Balance History")
 async def account_history_resource(account_id: str) -> str:
-    """
-    Historical balance data for a specific account (resource template).
-
-    The ``account_id`` path segment selects which account's balance history to
-    return. Mirrors the ``get_account_history`` tool but as an addressable resource.
-    """
+    """Return balance history for the account_id in the resource path."""
     await ensure_authenticated()
     history = await api_call_with_retry("get_account_history", account_id=account_id)
     return json.dumps(convert_dates_to_strings(history), indent=2)
 
 
-# =============================================================================
-# MCP Prompts - Reusable prompt templates for common financial analyses
-# =============================================================================
+# MCP prompts
 
 
 @mcp.prompt(title="Analyze Spending")
 def analyze_spending(period: str = "this month", category: str | None = None) -> str:
-    """
-    Generate a prompt template for analyzing spending patterns.
+    """Request a spending analysis.
 
     Args:
         period: Time period to analyze (e.g., "this month", "last 3 months", "2024")
@@ -796,104 +658,59 @@ def analyze_spending(period: str = "this month", category: str | None = None) ->
     category_focus = f" specifically for {category}" if category else ""
     return f"""Please analyze my spending{category_focus} for {period}.
 
-Use the get_transactions tool to fetch transaction data for the specified period, then provide:
-
-1. **Total Spending**: Sum of all expenses
-2. **Top Categories**: Which categories had the most spending
-3. **Trends**: Any notable patterns or changes
-4. **Insights**: Specific observations about spending habits
-5. **Recommendations**: Actionable suggestions to optimize spending
-
-Focus on practical insights rather than just listing numbers."""
+Use get_transactions to fetch the period's transactions, then summarize total
+expenses, top categories, notable patterns, and practical spending recommendations."""
 
 
 @mcp.prompt(title="Budget Review")
 def budget_review(month: str = "current") -> str:
-    """
-    Generate a prompt template for reviewing budget performance.
+    """Request a budget review.
 
     Args:
         month: Which month to review ("current", "last", or "YYYY-MM" format)
     """
     return f"""Please review my budget performance for {month}.
 
-Use get_budgets and get_transactions tools to compare budgeted amounts vs actual spending:
-
-1. **Budget vs Actual**: For each category, show budgeted amount, actual spending, and variance
-2. **Over Budget**: Highlight categories where spending exceeded budget
-3. **Under Budget**: Show categories with unused budget
-4. **Overall Status**: Am I on track for the month?
-5. **Adjustments**: Suggest any budget adjustments based on actual patterns
-
-Present the data in a clear, easy-to-scan format."""
+Use get_budgets and get_transactions to show each category's budget, actual spending,
+and variance. Highlight over- and under-budget categories, assess progress for the
+month, and suggest adjustments based on spending patterns."""
 
 
 @mcp.prompt(title="Financial Health Check")
 def financial_health_check() -> str:
-    """
-    Generate a comprehensive financial health assessment prompt.
+    """Request a review of accounts, cash flow, spending, and budgets."""
+    return """Please review my financial health using the available tools.
 
-    This prompt guides a thorough review of accounts, spending, and budgets.
-    """
-    return """Please perform a comprehensive financial health check.
+1. **Accounts**: Summarize balances, assets, liabilities, and net worth.
+2. **Cash Flow**: Compare monthly income and expenses, calculate savings rate,
+   and review recurring transactions.
+3. **Spending**: Show top categories and unusual or large transactions for the
+   last 30 days; compare with the previous month.
+4. **Budgets**: Identify categories on and off track and project month-end status.
+5. **Actions**: Recommend changes and highlight positive trends to maintain.
 
-Use the available tools to gather data and provide:
-
-1. **Account Overview**:
-   - Total assets and liabilities
-   - Net worth calculation
-   - Account balances summary
-
-2. **Cash Flow Analysis**:
-   - Monthly income vs expenses
-   - Savings rate
-   - Recurring transactions review
-
-3. **Spending Analysis**:
-   - Top spending categories (last 30 days)
-   - Unusual or large transactions
-   - Comparison to previous month
-
-4. **Budget Status**:
-   - Categories on track vs off track
-   - Projected month-end status
-
-5. **Action Items**:
-   - Specific recommendations
-   - Areas needing attention
-   - Positive trends to maintain
-
-Be concise but thorough. Highlight the most important insights first."""
+Lead with the most important findings."""
 
 
 @mcp.prompt(title="Categorize a Transaction")
 def transaction_categorization_help(description: str) -> str:
-    """
-    Generate a prompt to help categorize a transaction.
+    """Request a category recommendation.
 
     Args:
         description: The transaction description or merchant name
     """
     return f"""Help me categorize this transaction: "{description}"
 
-First, use the categories://list resource to see all available categories.
-
-Then suggest:
-1. **Best Category Match**: The most appropriate category for this transaction
-2. **Alternative Options**: Other categories that might fit
-3. **Reasoning**: Why you recommend this categorization
-
-If this is a merchant I transact with frequently, also note if the categorization
-should be applied to future transactions from the same merchant."""
+Use categories://list to suggest the best category, alternatives, and your reasoning.
+If I use this merchant frequently, note whether the recommendation also fits future
+transactions."""
 
 
-# =============================================================================
-# MCP Completions - Argument autocompletion for prompts and resource templates
-# =============================================================================
+# MCP argument completions
 
 
 async def _category_name_completions(partial: str) -> list[str]:
-    """Live category names for autocompletion. Best-effort: never raises."""
+    """Suggest live category names; return [] if the lookup fails."""
     try:
         await ensure_authenticated()
         categories = extract_list(await api_call_with_retry("get_transaction_categories"), "categories")
@@ -906,7 +723,7 @@ async def _category_name_completions(partial: str) -> list[str]:
 
 
 async def _account_id_completions(partial: str) -> list[str]:
-    """Live account IDs for autocompletion. Best-effort: never raises."""
+    """Suggest live account IDs; return [] if the lookup fails."""
     try:
         await ensure_authenticated()
         accounts = extract_list(await api_call_with_retry("get_accounts"), "accounts")
@@ -947,19 +764,15 @@ class AuthState(Enum):
     FAILED = "failed"
 
 
-# Global variables for authentication
 mm_client: MonarchMoney | None = None
 auth_state: AuthState = AuthState.NOT_INITIALIZED
 auth_lock: asyncio.Lock | None = None  # Created in async context
-auth_error: str | None = None  # Store last auth error for debugging
-auth_failed_at: float | None = None  # Timestamp of last auth failure for cooldown
-AUTH_RETRY_COOLDOWN_SECONDS = 60  # Wait 60 seconds before retrying after FAILED state
+auth_error: str | None = None
+auth_failed_at: float | None = None
+AUTH_RETRY_COOLDOWN_SECONDS = 60
 
-# Secure session directory with proper permissions.
-# Resolve to an absolute, writable path: many MCP clients (e.g. Claude Desktop)
-# launch the server with a read-only working directory like "/", so a relative
-# ".mm" would fail with "Read-only file system". Honor MONARCH_SESSION_DIR if set,
-# otherwise default to ~/.monarch-mcp which is always writable.
+# Default to the home directory because MCP clients may launch from read-only "/".
+# MONARCH_SESSION_DIR overrides this location.
 _session_dir_env = os.getenv("MONARCH_SESSION_DIR")
 session_dir = Path(_session_dir_env).expanduser() if _session_dir_env else Path.home() / ".monarch-mcp"
 session_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -967,28 +780,21 @@ session_file = session_dir / "session.pickle"
 
 
 def is_auth_error(error: Exception) -> bool:
-    """Determine if an error is a genuine authentication/authorization failure.
-
-    Only returns True for actual auth failures like 401, 403, invalid credentials.
-    Does NOT treat library errors, connection issues, or other problems as auth failures.
-    """
+    """Match auth-error text, excluding known network and library error patterns."""
     error_str = str(error).lower()
 
-    # Exclude false positives first - these are NOT auth errors
     false_positives = [
-        "connector",  # Library compatibility issue
-        "aiohttp",  # Library issue
-        "transport",  # Library issue
-        "connection refused",  # Network issue, not auth
-        "connection reset",  # Network issue, not auth
-        "timeout",  # Network issue, not auth
+        "connector",
+        "aiohttp",
+        "transport",
+        "connection refused",
+        "connection reset",
+        "timeout",
     ]
 
-    # Check for false positives first
     if any(fp in error_str for fp in false_positives):
         return False
 
-    # Genuine authentication/authorization error indicators
     auth_indicators = [
         "401",
         "403",
@@ -997,7 +803,7 @@ def is_auth_error(error: Exception) -> bool:
         "invalid credentials",
         "bad credentials",
         "authentication failed",
-        "auth failed",  # Match "auth failed" messages
+        "auth failed",
         "not authenticated",
         "invalid token",
         "token expired",
@@ -1005,23 +811,13 @@ def is_auth_error(error: Exception) -> bool:
         "session has expired",
     ]
 
-    # Check for genuine auth errors
     return any(indicator in error_str for indicator in auth_indicators)
 
 
 def clear_session(reason: str = "unknown") -> None:
-    """Clear session files and reset authentication state to allow fresh re-authentication.
+    """Reset the client and auth state, and remove session files.
 
-    This function performs a complete authentication reset:
-    - Clears session files from disk (.mm/session.pickle, .mm/mm_session.pickle)
-    - Resets the client instance (mm_client = None)
-    - Resets auth state to NOT_INITIALIZED
-    - Clears auth errors and failure timestamps
-
-    Only call when genuinely needed (e.g., after auth errors, on forced re-login).
-
-    Args:
-        reason: Why the session is being cleared (for logging/debugging)
+    Use after auth failures or forced login. Log the supplied reason.
     """
     global mm_client, auth_state, auth_error, auth_failed_at
 
@@ -1034,7 +830,6 @@ def clear_session(reason: str = "unknown") -> None:
     auth_error = None
     auth_failed_at = None
 
-    # Clear session files
     for path in [session_file, session_dir / "mm_session.pickle"]:
         if path.exists():
             try:
@@ -1045,31 +840,16 @@ def clear_session(reason: str = "unknown") -> None:
 
 
 async def api_call_with_retry(method_name: str, *args: Any, max_retries: int = 3, **kwargs: Any) -> Any:
-    """Wrapper for API calls that handles session expiration and retries.
+    """Call a client method, retrying recognized auth failures after reauthentication.
 
-    Only clears sessions and re-authenticates for genuine auth errors.
-    Other errors (network, library issues, etc.) are raised immediately.
-
-    Args:
-        method_name: Name of the method to call on mm_client (e.g., "get_accounts")
-        *args: Positional arguments to pass to the method
-        max_retries: Maximum number of retry attempts for auth failures (default: 3)
-        **kwargs: Keyword arguments to pass to the method
-
-    Returns:
-        Result from the API method call
-
-    Raises:
-        ValueError: If mm_client is not initialized
-        Exception: Re-raises any non-auth errors or auth errors after max_retries
+    max_retries excludes the initial attempt. Other errors propagate immediately.
     """
     global auth_state, mm_client
 
     last_error: Exception | None = None
 
-    for attempt in range(max_retries + 1):  # +1 for initial attempt
+    for attempt in range(max_retries + 1):
         try:
-            # Get the method from the current mm_client instance
             if mm_client is None:
                 raise ValueError("mm_client is not initialized")
 
@@ -1079,10 +859,8 @@ async def api_call_with_retry(method_name: str, *args: Any, max_retries: int = 3
         except Exception as e:
             last_error = e
 
-            # Check if this is an auth error that should trigger retry
             if is_auth_error(e):
                 if attempt < max_retries:
-                    # Calculate exponential backoff delay (1s, 2s, 4s, ...)
                     backoff_delay = 2**attempt
                     log.warning(
                         "api_auth_error",
@@ -1092,40 +870,28 @@ async def api_call_with_retry(method_name: str, *args: Any, max_retries: int = 3
                         backoff_s=backoff_delay,
                     )
 
-                    # clear_session() will reset auth state and error automatically
                     clear_session(reason=f"authentication failure during API call (attempt {attempt + 1})")
 
-                    # Wait before retry (exponential backoff)
                     if backoff_delay > 0:
                         await asyncio.sleep(backoff_delay)
 
-                    # Re-authenticate
                     await ensure_authenticated()
                     log.info("api_retry_after_reauth", attempt=attempt + 2, max_attempts=max_retries + 1)
 
-                    # Continue to next iteration to retry with NEW mm_client
                     continue
                 else:
-                    # Max retries exhausted for auth error
                     log.error("api_auth_retries_exhausted", max_retries=max_retries, error=str(e))
                     raise
             else:
-                # Not an auth error - raise immediately without retry
                 raise
 
-    # Should never reach here, but handle it defensively
     if last_error:
         raise last_error
     raise RuntimeError("api_call_with_retry completed without result or error")
 
 
 async def initialize_client() -> None:
-    """Initialize the MonarchMoney client with authentication.
-
-    This function attempts to use cached sessions when possible and only
-    performs fresh authentication when necessary. It does NOT validate
-    sessions immediately - validation happens on first API call.
-    """
+    """Load a cached session or log in. The first API call detects expired sessions."""
     global mm_client, auth_state, auth_error, auth_failed_at
 
     email = os.getenv("MONARCH_EMAIL")
@@ -1142,7 +908,6 @@ async def initialize_client() -> None:
     log.info("auth_init")
     mm_client = MonarchMoney()
 
-    # Try to load existing session first (unless forced to skip)
     force_login = os.getenv("MONARCH_FORCE_LOGIN") == "true"
     if session_file.exists() and not force_login:
         try:
@@ -1165,15 +930,16 @@ async def initialize_client() -> None:
             log.info("auth_force_login")
             clear_session(reason="forced login requested")
 
-    # Perform fresh authentication
     max_retries = 2
     retry_delay = 3
 
     for attempt in range(max_retries):
         try:
+            # clear_session() discards the client, including between login attempts.
             if mm_client is None:
                 mm_client = MonarchMoney()
             log.info("auth_login_attempt", attempt=attempt + 1, max_retries=max_retries, mfa=bool(mfa_secret))
+            # Disable the library's default .mm session storage; save to our path only.
             if mfa_secret:
                 await mm_client.login(
                     email, password, mfa_secret_key=mfa_secret, use_saved_session=False, save_session=False
@@ -1181,7 +947,7 @@ async def initialize_client() -> None:
             else:
                 await mm_client.login(email, password, use_saved_session=False, save_session=False)
 
-            # Save session with stdout/stderr suppression
+            # Suppress library output so it cannot corrupt the stdio protocol.
             stdout_capture = io.StringIO()
             stderr_capture = io.StringIO()
             with contextlib.redirect_stdout(stdout_capture), contextlib.redirect_stderr(stderr_capture):
@@ -1218,23 +984,13 @@ async def initialize_client() -> None:
 
 
 async def ensure_authenticated() -> None:
-    """Ensure the client is authenticated, initializing on-demand if needed.
-
-    This function uses a lock to prevent concurrent initialization attempts
-    and returns immediately if already authenticated.
-
-    Implements cooldown-based recovery from FAILED state: After a failure,
-    waits AUTH_RETRY_COOLDOWN_SECONDS before allowing retry attempts.
-
-    Call this at the start of every tool that needs the mm_client.
-    """
+    """Initialize once under a lock, respecting the cooldown after timed failures."""
     global mm_client, auth_state, auth_lock, auth_error, auth_failed_at
 
     # Initialize lock on first call (must be done in async context)
     if auth_lock is None:
         auth_lock = asyncio.Lock()
 
-    # Fast path
     if auth_state == AuthState.AUTHENTICATED and mm_client is not None:
         return
 
@@ -1244,7 +1000,6 @@ async def ensure_authenticated() -> None:
         if auth_state == AuthState.AUTHENTICATED and mm_client is not None:
             return
 
-        # Cooldown recovery from FAILED state
         if auth_state == AuthState.FAILED:
             if auth_failed_at is not None:
                 elapsed = time.time() - auth_failed_at
@@ -1283,7 +1038,7 @@ async def ensure_authenticated() -> None:
             raise
 
 
-# FastMCP Tool definitions using decorators
+# MCP tools
 
 
 @mcp.tool(annotations=READONLY, title="Get Accounts")
@@ -1319,100 +1074,37 @@ async def get_transactions(
     is_recurring: bool | None = None,
     verbose: bool = False,
 ) -> TransactionsResult:
-    """Fetch transactions with flexible date filtering and smart output formatting.
+    """Fetch one page of transactions.
 
     Args:
-        limit: Maximum number of transactions to return (default: 100, max: 1000)
-        offset: Number of transactions to skip for pagination (default: 0)
-        start_date: Filter transactions from this date onwards. Supports natural language like 'last month', 'yesterday', '30 days ago'
-                    NOTE: If you provide start_date without end_date, end_date will auto-default to 'today'
-        end_date: Filter transactions up to this date. Supports natural language
-                  NOTE: If you provide end_date without start_date, start_date will auto-default to 'this month'
-        account_id: Filter by specific account ID (converted to list internally)
-        category_id: Filter by specific category ID (converted to list internally)
-        tag_ids: Comma-separated tag IDs to filter by (e.g., "tag1,tag2")
-        has_attachments: Filter to transactions with (True) or without (False) attachments
-        has_notes: Filter to transactions with (True) or without (False) notes
-        hidden_from_reports: Include hidden transactions (True), exclude them (False), or show all (None)
-        is_split: Filter to split transactions only (True) or non-split (False)
-        is_recurring: Filter to recurring transactions only (True) or non-recurring (False)
-        verbose: Output format control (default: False)
-            - False (compact mode): Returns essential fields only (~80% smaller)
-                Fields included: id, date, amount, merchant, plaidName, category,
-                                account, pending, needsReview, notes
+        limit: Maximum transactions to request (default: 100).
+        offset: Transactions to skip for pagination.
+        start_date: Inclusive start; accepts ISO dates, 'last month', or '30 days ago'.
+            Without end_date, the end defaults to today.
+        end_date: Inclusive end, with the same date formats. Without start_date,
+            the start defaults to the first day of the end date's month.
+        account_id: Account ID from get_accounts.
+        category_id: Category ID from get_transaction_categories.
+        tag_ids: Comma-separated tag IDs.
+        has_attachments: True for transactions with attachments, False for those without.
+        has_notes: True for transactions with notes, False for those without.
+        hidden_from_reports: True for hidden transactions, False for visible ones.
+        is_split: True for split transactions, False for non-split transactions.
+        is_recurring: True for recurring transactions, False for non-recurring ones.
+        verbose: False returns compact fields; True preserves the full API objects.
 
-            - True (verbose mode): Returns ALL fields including:
-                Essential fields (same as compact) PLUS:
-                • hideFromReports (bool)
-                • reviewStatus (str: "needs_review" | "reviewed" | null)
-                • isSplitTransaction (bool)
-                • isRecurring (bool)
-                • attachments (list of attachment objects)
-                • tags (list of tag objects)
-                • createdAt (ISO timestamp)
-                • updatedAt (ISO timestamp)
-                • __typename (GraphQL metadata)
-                • Full nested objects with all their fields
+    Boolean filters default to None (no restriction). Results contain transactions,
+    count (this page only), and verbose. Use offset to fetch further pages.
 
-            Use verbose=False for most queries to reduce token usage.
-            Use verbose=True when you need: timestamps, split info, attachment details,
-            or are updating transactions (need full context).
+    Compact fields: id, date, amount, merchant, plaidName, category, categoryId,
+    account, needsReview; pending appears only when true, notes only when nonempty.
+    Amounts are negative for expenses and positive for income. Use id for updates.
+    merchant is the display name; plaidName preserves the original statement text.
+    category and account are names, not nested objects.
 
-    Key Transaction Fields:
-        Core Identifiers:
-            - id: Unique transaction ID (required for updates)
-            - date: Transaction date (YYYY-MM-DD format)
-            - amount: Transaction amount (negative = expense, positive = income)
-
-        Merchant Information:
-            IMPORTANT: Monarch normalizes merchant names for cleaner UI
-            - merchant.name: User-facing display name shown in Monarch UI (normalized/cleaned)
-                Example: "Chipotle" for all Chipotle locations
-            - plaidName: Original bank statement text from Plaid/institution (raw data)
-                Example: "CHIPOTLE 4963", "CHIPOTLE MEX GR ONLINE", "CHIPOTLE 1879"
-                Use this to see location numbers or original descriptors
-            - Multiple transactions from different locations share the same merchant.name
-            - Use plaidName to distinguish between specific locations/variants
-
-        Categorization:
-            - category.id: Category ID (for filtering/updates)
-            - category.name: Category display name (e.g., "Restaurants & Bars")
-            - tags: List of tag objects applied to transaction
-
-        Account Info:
-            - account.id: Account ID where transaction occurred
-            - account.displayName: Account name (e.g., "Main Credit Card")
-
-        Status Flags:
-            - pending: True if transaction hasn't cleared yet
-            - needsReview: True if flagged for user review
-            - reviewStatus: "needs_review", "reviewed", or null
-            - hideFromReports: True if hidden from budget/reports
-
-        Transaction Types:
-            - isSplitTransaction: True if split into multiple categories
-            - isRecurring: True if part of a recurring series
-
-        User Annotations:
-            NOTE: These are different fields with different purposes
-            - notes: Free-form user memo/annotation (e.g., "Business lunch with client")
-            - merchant_name: The merchant's display name (e.g., "Olive Garden")
-            - Both are editable, but serve different purposes in the UI
-            - attachments: List of receipt/document attachments
-
-        Metadata (verbose mode only):
-            - createdAt: When transaction was first imported
-            - updatedAt: Last modification timestamp
-            - __typename: GraphQL type information
-
-    Returns:
-        JSON string containing transaction list
-
-    Common Filter Examples:
-        - Unreviewed transactions: has_notes=False, needs_review=True
-        - Split transactions: is_split=True
-        - Transactions with receipts: has_attachments=True
-        - Manual transactions: synced_from_institution=False
+    Verbose results retain nested merchant/category/account objects and upstream
+    fields such as hideFromReports, reviewStatus, isSplitTransaction, isRecurring,
+    attachments, tags, and timestamps.
     """
     await ensure_authenticated()
 
@@ -1466,30 +1158,29 @@ async def search_transactions(
     is_recurring: bool | None = None,
     verbose: bool = False,
 ) -> SearchResult:
-    """Search transactions by text using Monarch Money's built-in search.
-
-    Searches merchant names, descriptions, notes, and other fields.
-    Accepts all the same filters as get_transactions plus a search query.
-    Returns compact results by default (use verbose=True for full details).
+    """Search one page of transactions using Monarch's text search.
 
     Args:
-        query: Search term to find in transactions
-        limit: Maximum transactions to return (default: 500, max: 1000)
-        offset: Number of transactions to skip for pagination
-        start_date: Filter from this date (supports natural language like 'last month')
-        end_date: Filter to this date (supports natural language)
-        account_id: Filter by specific account ID
-        category_id: Filter by specific category ID
-        tag_ids: Comma-separated tag IDs to filter by
-        has_attachments: Filter by attachment presence
-        has_notes: Filter by notes presence
-        hidden_from_reports: Filter by report visibility
-        is_split: Filter split transactions
-        is_recurring: Filter recurring transactions
-        verbose: False=compact fields, True=all fields
+        query: Nonempty search text for Monarch's transaction search.
+        limit: Maximum transactions to request (default: 500).
+        offset: Transactions to skip for pagination.
+        start_date: Inclusive start, accepting ISO dates or natural language.
+            Without end_date, the end defaults to today.
+        end_date: Inclusive end. Without start_date, the start defaults to the
+            first day of the end date's month.
+        account_id: Account ID from get_accounts.
+        category_id: Category ID from get_transaction_categories.
+        tag_ids: Comma-separated tag IDs.
+        has_attachments: Filter by attachment presence.
+        has_notes: Filter by notes presence.
+        hidden_from_reports: True for hidden transactions, False for visible ones.
+        is_split: Filter by split status.
+        is_recurring: Filter by recurring status.
+        verbose: False uses get_transactions' compact fields; True keeps full API objects.
 
-    Returns:
-        JSON with search_metadata and matching transactions
+    Boolean filters default to None (no restriction). Returns matching transactions
+    and search_metadata with the query, this page's result_count, and applied filters.
+    Use offset for further pages; result_count is not the total number of matches.
     """
     await ensure_authenticated()
 
@@ -1537,18 +1228,13 @@ async def search_transactions(
 @mcp.tool(annotations=READONLY, title="Get Budgets")
 @track_usage
 async def get_budgets(start_date: str | None = None, end_date: str | None = None) -> BudgetsResult:
-    """Retrieve budget information with flexible date filtering.
+    """Retrieve budgets for optional start_date/end_date filters.
 
-    Args:
-        start_date: Filter budgets from this date onwards. Supports natural language like 'last month', 'this year'
-        end_date: Filter budgets up to this date. Supports natural language
-
-    Returns:
-        JSON string containing budget information
+    Dates accept ISO strings or natural language such as 'last month'. A missing
+    end defaults to today; a missing start to the first day of the end date's month.
     """
     await ensure_authenticated()
 
-    # Use build_date_filter for consistent natural language date support
     kwargs = build_date_filter(start_date, end_date)
 
     try:
@@ -1560,25 +1246,19 @@ async def get_budgets(start_date: str | None = None, end_date: str | None = None
         if "Something went wrong while processing: None" in str(e):
             return BudgetsResult(budgets=[], message="No budgets configured in your Monarch Money account")
         else:
-            # Re-raise other errors
             raise
 
 
 @mcp.tool(annotations=READONLY, title="Get Cashflow")
 @track_usage
 async def get_cashflow(start_date: str | None = None, end_date: str | None = None) -> CashflowResult:
-    """Analyze cashflow data with flexible date filtering.
+    """Retrieve cash flow for optional start_date/end_date filters.
 
-    Args:
-        start_date: Filter cashflow from this date onwards. Supports natural language like 'last month', 'this year'
-        end_date: Filter cashflow up to this date. Supports natural language
-
-    Returns:
-        JSON string containing cashflow analysis
+    Dates accept ISO strings or natural language such as 'last month'. A missing
+    end defaults to today; a missing start to the first day of the end date's month.
     """
     await ensure_authenticated()
 
-    # Use build_date_filter for consistent natural language date support
     kwargs = build_date_filter(start_date, end_date)
 
     cashflow = await api_call_with_retry("get_cashflow", **kwargs)  # type: ignore[arg-type]
@@ -1589,16 +1269,10 @@ async def get_cashflow(start_date: str | None = None, end_date: str | None = Non
 @mcp.tool(annotations=READONLY, title="Get Transaction Categories")
 @track_usage
 async def get_transaction_categories(verbose: bool = False) -> CategoriesResult:
-    """List all transaction categories.
+    """List category IDs and names for lookups and transaction updates.
 
-    Args:
-        verbose: Output format control (default: False)
-            - False: Returns compact format with just {id, name} per category (~80% smaller).
-                     Ideal for category lookups when mapping names to IDs.
-            - True: Returns full category details including group, order, timestamps, system flags.
-
-    Returns:
-        JSON string containing category list
+    verbose=True preserves full API details, including groups and system flags.
+    Returns categories, count, and verbose.
     """
     await ensure_authenticated()
 
@@ -1625,32 +1299,28 @@ async def create_transaction(
     notes: str | None = None,
     update_balance: bool = False,
 ) -> TransactionResult:
-    """Create a new manual transaction.
+    """Create a manual transaction.
 
     Args:
-        amount: Transaction amount (positive for income, negative for expense)
-        merchant_name: Name of the merchant/payee (e.g., "Starbucks", "Monthly Rent")
-        account_id: ID of the account for this transaction
-        date: Transaction date in YYYY-MM-DD format
-        category_id: ID of the category to assign (required for new transactions)
-        notes: Optional notes/memo for this transaction
-        update_balance: Whether to update account balance when creating this transaction (default: False)
-            - False: Transaction is recorded but doesn't affect account balance (typical for synced accounts)
-            - True: Adjusts account balance by transaction amount (useful for manual accounts)
+        amount: Positive for income, negative for an expense.
+        merchant_name: Merchant/payee display name.
+        account_id: Account ID from get_accounts.
+        date: Transaction date in YYYY-MM-DD format.
+        category_id: Required category ID from get_transaction_categories.
+        notes: Optional memo.
+        update_balance: False records the transaction without changing the account
+            balance. True also adjusts the balance, useful for manual accounts.
 
-    Returns:
-        JSON string with created transaction details
+    Returns the created transaction details.
     """
     await ensure_authenticated()
 
     try:
-        # Validate required fields
         if not merchant_name or merchant_name.strip() == "":
             raise ValueError("merchant_name cannot be empty")
         if not category_id:
             raise ValueError("category_id is required when creating transactions")
 
-        # Convert date string to ISO format string (API expects YYYY-MM-DD)
         try:
             transaction_date = datetime.strptime(date, "%Y-%m-%d").date()
             date_str = transaction_date.isoformat()
@@ -1659,7 +1329,6 @@ async def create_transaction(
 
         log.info("creating_transaction", merchant=merchant_name, amount=amount, date=date_str)
 
-        # Use api_call_with_retry for session expiration handling and add timeout
         result = await asyncio.wait_for(
             api_call_with_retry(
                 "create_transaction",
@@ -1671,7 +1340,7 @@ async def create_transaction(
                 notes=notes or "",
                 update_balance=update_balance,
             ),
-            timeout=30.0,  # 30 second timeout
+            timeout=30.0,
         )
         result = convert_dates_to_strings(result)
         return TransactionResult(transaction=result)
@@ -1698,67 +1367,31 @@ async def update_transaction(
     hide_from_reports: bool | None = None,
     needs_review: bool | None = None,
 ) -> TransactionResult:
-    """Update an existing transaction.
+    """Update a transaction, leaving omitted fields unchanged.
 
     Args:
-        transaction_id: ID of the transaction to update (required)
-        amount: New transaction amount
-        merchant_name: New merchant display name shown in Monarch UI
-            - This updates the user-facing name (merchant.name field)
-            - Does NOT change plaidName (original bank statement text, read-only)
-            - Empty strings are ignored by the API
-            - Example: Change "AMZN Mktp US" to "Amazon"
-        category_id: ID of the new category to assign
-        date: New transaction date in YYYY-MM-DD format
-        notes: User notes/memo for this transaction (separate from merchant name)
-            NOTE: This is different from merchant_name
-            - notes: Free-form user memo/annotation (e.g., "Business lunch with client")
-            - merchant_name: The merchant's display name (e.g., "Olive Garden")
-            - Both are editable, but serve different purposes in the UI
-            - Use empty string "" to clear existing notes
-        goal_id: ID of savings goal to associate with this transaction
-            - Use empty string "" to clear goal association
-        hide_from_reports: Whether to hide this transaction from reports/analytics
-        needs_review: Flag transaction as needing review
+        transaction_id: Transaction ID from get_transactions or search_transactions.
+        amount: New amount.
+        merchant_name: New display name, not the read-only plaidName statement text.
+            The API ignores empty names.
+        category_id: New category ID from get_transaction_categories.
+        date: New date in YYYY-MM-DD format.
+        notes: Memo, separate from the merchant name; "" clears it.
+        goal_id: Savings goal ID; "" clears the association.
+        hide_from_reports: Whether to hide the transaction from reports.
+        needs_review: Whether to flag the transaction for review.
 
-    Field Editability:
-        Editable Fields (can be updated):
-            - amount: Transaction amount
-            - merchant_name: User-facing merchant display name
-            - category_id: Category assignment
-            - date: Transaction date
-            - notes: User memo/notes
-            - goal_id: Goal association
-            - hide_from_reports: Visibility in reports
-            - needs_review: Review flag
-
-        Read-Only Fields (cannot be updated):
-            - id: Transaction ID (immutable)
-            - plaidName: Original bank statement text (from institution)
-            - account: Account where transaction occurred
-            - pending: Pending status (controlled by institution)
-            - createdAt: Creation timestamp
-            - isSplitTransaction: Split status (use separate split API)
-            - attachments: Use separate attachment API
-
-    Returns:
-        JSON string with updated transaction details
-
-    Common Use Cases:
-        - Change merchant: merchant_name="Starbucks"
-        - Add note: notes="Business expense"
-        - Recategorize: category_id="cat_groceries_123"
-        - Mark for review: needs_review=True
-        - Clear notes: notes=""
+    Returns updated transaction details. This tool cannot change the transaction
+    ID, account, pending status, attachments, or timestamps. Use
+    update_transaction_splits to change splits and update_recurring_transaction
+    to change a merchant's recurring schedule.
     """
     await ensure_authenticated()
 
     try:
-        # Validate parameters before API call
         if merchant_name is not None and merchant_name.strip() == "":
             log.warning("empty_merchant_name_ignored")
 
-        # Build update parameters
         updates: dict[str, Any] = {"transaction_id": transaction_id}
         if amount is not None:
             updates["amount"] = amount
@@ -1777,14 +1410,12 @@ async def update_transaction(
         if needs_review is not None:
             updates["needs_review"] = needs_review
 
-        # Log what we're updating (for debugging)
         update_fields = [k for k in updates if k != "transaction_id"]
         log.info("updating_transaction", transaction_id=transaction_id, fields=update_fields)
 
-        # Use api_call_with_retry for session expiration handling and add timeout
         result = await asyncio.wait_for(
             api_call_with_retry("update_transaction", **updates),
-            timeout=30.0,  # 30 second timeout
+            timeout=30.0,
         )
         result = convert_dates_to_strings(result)
         return TransactionResult(transaction=result)
@@ -1792,7 +1423,6 @@ async def update_transaction(
         log.error("update_transaction_timeout", transaction_id=transaction_id)
         raise ValueError("Transaction update timed out after 30 seconds. Please try again.") from e
     except ValueError as e:
-        # Enhanced error messages for validation failures
         error_msg = str(e)
         if "date" in error_msg.lower():
             raise ValueError(f"Invalid date format. Use YYYY-MM-DD (e.g., 2024-01-15). Error: {e}") from e
@@ -1805,36 +1435,26 @@ async def update_transaction(
 @mcp.tool(annotations=WRITE_IDEMPOTENT, title="Bulk Update Transactions")
 @track_usage
 async def update_transactions_bulk(updates: str) -> BulkUpdateResult:
-    """Update multiple transactions in a single call to save round-trips.
-
-    This is much more efficient than calling update_transaction multiple times.
-    Updates are executed in parallel for maximum performance.
+    """Update transactions concurrently, returning per-item results and counts.
 
     Args:
-        updates: JSON string containing list of transaction updates. Each update should have:
-            - transaction_id (required): ID of transaction to update
-            - amount (optional): New amount
-            - merchant_name (optional): New merchant display name
-            - category_id (optional): New category ID
-            - date (optional): New date in YYYY-MM-DD format
-            - notes (optional): New notes
-            - goal_id (optional): Goal ID or empty string to clear
-            - hide_from_reports (optional): Boolean visibility flag
-            - needs_review (optional): Boolean review flag
+        updates: JSON array encoded as a string. Each item requires a nonempty
+            transaction_id and accepts amount, merchant_name, category_id, date
+            (YYYY-MM-DD), notes, goal_id, hide_from_reports, and needs_review.
+            Fields have the same meaning as update_transaction; omitted/null fields
+            stay unchanged. Empty notes or goal_id clears that value.
+
+    Items reject unknown fields and wrong types without coercion; amounts must
+    be finite numbers and flags must be booleans. Invalid items fail individually;
+    valid items still run. The batch is not atomic and does not roll back successes.
 
     Example:
-        [
-            {"transaction_id": "123", "category_id": "cat_456", "notes": "Updated"},
-            {"transaction_id": "789", "merchant_name": "Starbucks", "needs_review": false}
-        ]
-
-    Returns:
-        JSON with results for each transaction including successes and any failures
+        [{"transaction_id": "txn_123", "category_id": "cat_456", "notes": ""},
+         {"transaction_id": "txn_789", "needs_review": false}]
     """
     await ensure_authenticated()
 
     try:
-        # Parse the updates JSON
         try:
             updates_list = json.loads(updates)
         except json.JSONDecodeError as e:
@@ -1850,9 +1470,8 @@ async def update_transactions_bulk(updates: str) -> BulkUpdateResult:
 
         log.info("bulk_update_start", count=len(updates_list))
 
-        # Build list of update tasks
         async def update_single(update_data: object) -> BulkItemResult:
-            """Update a single transaction without letting malformed items break the batch."""
+            """Validate and update one item, returning errors without aborting the batch."""
             txn_id: str | None = None
             if isinstance(update_data, dict) and isinstance(update_data.get("transaction_id"), str):
                 txn_id = update_data["transaction_id"]
@@ -1862,10 +1481,8 @@ async def update_transactions_bulk(updates: str) -> BulkUpdateResult:
                 if update.date is not None:
                     update_params["date"] = datetime.strptime(update.date, "%Y-%m-%d").date()
 
-                # Execute update with timeout
                 await asyncio.wait_for(api_call_with_retry("update_transaction", **update_params), timeout=30.0)
 
-                # Compact success response: just confirm the update succeeded
                 return BulkItemResult(transaction_id=txn_id, status="success")
 
             except asyncio.TimeoutError:
@@ -1877,13 +1494,11 @@ async def update_transactions_bulk(updates: str) -> BulkUpdateResult:
             except Exception as e:
                 return BulkItemResult(transaction_id=txn_id, status="error", error=str(e))
 
-        # Execute all updates in parallel
         results = await asyncio.gather(
             *[update_single(update_data) for update_data in updates_list],
-            return_exceptions=False,  # We handle exceptions in update_single
+            return_exceptions=False,
         )
 
-        # Count successes and failures
         success_count = sum(1 for r in results if r.status == "success")
         failure_count = len(results) - success_count
 
@@ -1902,19 +1517,10 @@ async def update_transactions_bulk(updates: str) -> BulkUpdateResult:
 @mcp.tool(annotations=READONLY, title="Get Transaction Splits")
 @track_usage
 async def get_transaction_splits(transaction_id: str) -> TransactionSplitsResult:
-    """Get the split legs of a transaction.
+    """Get split legs for transaction_id from get_transactions or search_transactions.
 
-    Splitting lets a single transaction be divided across multiple categories
-    (e.g. a Target run that is part groceries, part household). This returns the
-    current split legs, if any.
-
-    Args:
-        transaction_id: ID of the transaction to inspect
-
-    Returns:
-        The transaction id, whether it currently has splits, and the list of
-        split legs (each with its own amount, category, merchant, and notes).
-        ``splits`` is empty for an un-split transaction.
+    Returns transaction_id, has_split_transactions, and splits with each leg's
+    amount, category, merchant, and notes. An unsplit transaction has an empty list.
     """
     await ensure_authenticated()
 
@@ -1936,45 +1542,30 @@ async def get_transaction_splits(transaction_id: str) -> TransactionSplitsResult
 @mcp.tool(annotations=WRITE_IDEMPOTENT, title="Update Transaction Splits")
 @track_usage
 async def update_transaction_splits(transaction_id: str, splits: list[TransactionSplit]) -> UpdateSplitsResult:
-    """Create, replace, or remove the splits on a transaction.
-
-    This is a full replacement: the splits you pass become the transaction's
-    complete set of split legs, replacing any that exist. Pass an empty list to
-    remove all splits and restore the transaction to a single un-split entry.
+    """Replace a transaction's entire set of splits, or remove all splits with [].
 
     Args:
-        transaction_id: ID of the transaction to split (required)
-        splits: The complete set of split legs. Each leg has:
-            - amount (required): Leg amount, using the parent's sign convention
-              (expenses negative, income positive). All leg amounts MUST sum to
-              the parent transaction's amount or Monarch rejects the update.
-            - category_id (optional): Category for this leg
-            - merchant_name (optional): Merchant display name for this leg;
-              defaults to the parent merchant when omitted
-            - notes (optional): Per-leg memo
-            Pass an empty list to delete all existing splits.
+        transaction_id: Parent transaction ID from get_transactions or search_transactions.
+        splits: Complete replacement list. Each leg accepts:
+            - amount (required): Negative for expenses, positive for income.
+              Amounts must sum to the parent's amount or Monarch rejects the update.
+            - category_id: Category ID for the leg.
+            - merchant_name: Display name; defaults to the parent merchant.
+            - notes: Per-leg memo.
 
-    Example:
-        Split a -100.00 transaction into groceries and household:
-            transaction_id="txn_123"
-            splits=[
-                {"amount": -70.00, "category_id": "cat_groceries", "notes": "Food"},
-                {"amount": -30.00, "category_id": "cat_household"},
-            ]
+    Example for a -100.00 parent transaction:
+        [{"amount": -70.00, "category_id": "cat_groceries", "notes": "Food"},
+         {"amount": -30.00, "category_id": "cat_household"}]
 
-    Returns:
-        The transaction id, whether it now has splits, the resulting split legs,
-        and a human-readable summary message.
+    Returns transaction_id, has_split_transactions, resulting splits, and a summary.
     """
     await ensure_authenticated()
 
     try:
-        # Translate our snake_case inputs into the camelCase shape the API expects.
         split_data: list[dict[str, Any]] = []
         for split in splits:
             entry: dict[str, Any] = {"amount": split.amount}
-            # Always send merchantName (empty string => inherit the parent merchant),
-            # matching the documented split payload shape.
+            # An empty merchantName inherits the parent merchant.
             entry["merchantName"] = split.merchant_name if split.merchant_name is not None else ""
             if split.category_id is not None:
                 entry["categoryId"] = split.category_id
@@ -2019,11 +1610,7 @@ async def update_transaction_splits(transaction_id: str, splits: list[Transactio
 @mcp.tool(annotations=READONLY, title="Get Account Holdings")
 @track_usage
 async def get_account_holdings(account_id: str) -> HoldingsResult:
-    """Get investment portfolio data (holdings) for a brokerage account.
-
-    Args:
-        account_id: ID of the investment/brokerage account to fetch holdings for.
-    """
+    """Get investment holdings for an account_id from get_accounts."""
     await ensure_authenticated()
 
     try:
@@ -2040,7 +1627,10 @@ async def get_account_holdings(account_id: str) -> HoldingsResult:
 async def get_account_history(
     account_id: str, start_date: str | None = None, end_date: str | None = None
 ) -> AccountHistoryResult:
-    """Get historical account balance data."""
+    """Get balance history for account_id from get_accounts.
+
+    Optional start_date and end_date must use YYYY-MM-DD, not natural language.
+    """
     await ensure_authenticated()
 
     kwargs: dict[str, Any] = {"account_id": account_id}
@@ -2119,9 +1709,9 @@ async def update_recurring_transaction(
     occurrence's stream.merchant.id, not stream.id or transactionId.
     Pass the current merchant_name to avoid renaming the merchant.
 
-    Omitted settings stay unchanged. is_recurring enables or removes recurrence;
-    is_active pauses or resumes a schedule. frequency is Monarch's frequency
-    string (for example, "monthly"). base_date is the schedule's anchor date and
+    Omitted settings stay unchanged; provide at least one. is_recurring enables or
+    removes recurrence; is_active pauses or resumes a schedule.
+    frequency is Monarch's string (for example, "monthly"). base_date is the schedule's anchor date and
     accepts the same date formats as get_recurring_transactions.
     amount uses Monarch's signed amount, as returned by the existing stream.
     This does not create posted transactions or move money.
@@ -2155,7 +1745,7 @@ async def update_recurring_transaction(
 @mcp.tool(annotations=WRITE_IDEMPOTENT, title="Set Budget Amount")
 @track_usage
 async def set_budget_amount(category_id: str, amount: float) -> SetBudgetResult:
-    """Set budget amount for a category."""
+    """Set amount for a category_id from get_transaction_categories."""
     await ensure_authenticated()
 
     try:
@@ -2171,7 +1761,7 @@ async def set_budget_amount(category_id: str, amount: float) -> SetBudgetResult:
 @mcp.tool(annotations=WRITE_CREATE, title="Create Manual Account")
 @track_usage
 async def create_manual_account(account_name: str, account_type: str, balance: float) -> CreateAccountResult:
-    """Create a manually tracked account."""
+    """Create a manual account with account_name, Monarch account_type, and balance."""
     await ensure_authenticated()
 
     try:
@@ -2191,21 +1781,21 @@ async def create_manual_account(account_name: str, account_type: str, balance: f
 async def get_spending_summary(
     start_date: str | None = None, end_date: str | None = None, group_by: str = "category"
 ) -> SpendingSummaryResult:
-    """Get intelligent spending summary with aggregations.
+    """Summarize income, expenses, and net by category, account, or month.
 
     Args:
-        start_date: Start date (supports natural language like 'last month')
-        end_date: End date (supports natural language)
-        group_by: Group spending by 'category', 'account', or 'month'
+        start_date: Inclusive start; accepts ISO dates or natural language.
+        end_date: Inclusive end; accepts the same formats. A missing end defaults
+            to today; a missing start to the first day of the end date's month.
+        group_by: 'category', 'account', or 'month'; other values produce one group.
+
+    Fetches all matching pages. Expenses are positive magnitudes.
     """
     await ensure_authenticated()
 
     try:
         log.info("Generating spending summary", start_date=start_date, end_date=end_date, group_by=group_by)
 
-        # Get transactions for the period — paginate; a single limit=1000 call
-        # silently truncates any window with more than 1000 matching transactions
-        # (see monarchmoney's own get_duplicate_transactions for this pattern).
         filters = build_date_filter(start_date, end_date)
         page_size = 1000
         offset = 0
@@ -2233,7 +1823,6 @@ async def get_spending_summary(
                 # page is the only signal that this was the last page.
                 break
 
-        # Aggregate spending data
         summary: dict[str, Any] = {
             "groups": {},
             "totals": {"income": 0, "expenses": 0, "net": 0},
@@ -2242,14 +1831,12 @@ async def get_spending_summary(
         for txn in transactions:
             amount = float(txn.get("amount", 0))
 
-            # Track totals
             totals: dict[str, float] = summary["totals"]
             if amount > 0:
                 totals["income"] += amount
             else:
                 totals["expenses"] += abs(amount)
 
-            # Group by specified field
             if group_by == "category":
                 key = (
                     txn.get("category", {}).get("name", "Uncategorized")
@@ -2281,7 +1868,6 @@ async def get_spending_summary(
 
         summary["totals"]["net"] = summary["totals"]["income"] - summary["totals"]["expenses"]
 
-        # Sort groups by total spending (expenses)
         sorted_groups = dict(sorted(summary["groups"].items(), key=lambda x: x[1]["expenses"], reverse=True))
 
         totals_data: dict[str, float] = summary["totals"]
@@ -2312,7 +1898,7 @@ async def get_spending_summary(
 @mcp.tool(annotations=WRITE_SIDE_EFFECT, title="Refresh Accounts")
 @track_usage
 async def refresh_accounts() -> RefreshResult:
-    """Request a refresh of all account data from financial institutions."""
+    """Request an institution refresh for all accounts; do not wait for completion."""
     await ensure_authenticated()
 
     try:
@@ -2328,13 +1914,12 @@ async def refresh_accounts() -> RefreshResult:
 @mcp.tool(annotations=READONLY, title="Complete Financial Overview")
 @track_usage
 async def get_complete_financial_overview(period: str = "this month", ctx: Context | None = None) -> FinancialOverview:
-    """Get complete financial overview in a single call - accounts, transactions, budgets, cashflow.
+    """Fetch accounts, budgets, cash flow, transactions, and categories together.
 
-    This intelligent batch tool combines multiple API calls to provide comprehensive financial analysis,
-    reducing round-trips and providing deeper insights.
-
-    Args:
-        period: Time period for analysis ("this month", "last month", "this year", etc.)
+    period is a start date or phrase such as 'this month', 'last month', or 'this year';
+    the end is always today. 'last month' therefore includes the current month too.
+    Transactions and their summary use one page of up to 500 entries, not the full
+    history. Failed API sections contain errors while successful sections remain.
     """
     await ensure_authenticated()
 
@@ -2342,23 +1927,19 @@ async def get_complete_financial_overview(period: str = "this month", ctx: Conte
         if ctx is not None:
             await ctx.report_progress(0, 5, "Fetching accounts, budgets, cashflow, transactions, categories…")
 
-        # Parse the period into date filters
         filters = build_date_filter(period, None)
 
-        # Execute all API calls in parallel for maximum efficiency
         accounts_task = api_call_with_retry("get_accounts")
         budgets_task = api_call_with_retry("get_budgets", **filters)  # type: ignore[arg-type]
         cashflow_task = api_call_with_retry("get_cashflow", **filters)  # type: ignore[arg-type]
         transactions_task = api_call_with_retry("get_transactions", limit=500, **filters)  # type: ignore[arg-type]
         categories_task = api_call_with_retry("get_transaction_categories")
 
-        # Wait for all results
         api_results = await asyncio.gather(
             accounts_task, budgets_task, cashflow_task, transactions_task, categories_task, return_exceptions=True
         )
         accounts, budgets, cashflow, transactions, categories = api_results
 
-        # Handle any exceptions gracefully
         results: dict[str, Any] = {}
 
         if not isinstance(accounts, Exception):
@@ -2377,10 +1958,8 @@ async def get_complete_financial_overview(period: str = "this month", ctx: Conte
             results["cashflow"] = {"error": str(cashflow)}
 
         if not isinstance(transactions, Exception):
-            # Extract transactions list from nested response structure
             transactions_list = extract_transactions_list(transactions)
             results["transactions"] = convert_dates_to_strings(transactions_list)
-            # Add intelligent transaction analysis
             if isinstance(transactions_list, list):
                 results["transaction_summary"] = {
                     "total_count": len(transactions_list),
@@ -2416,8 +1995,6 @@ async def get_complete_financial_overview(period: str = "this month", ctx: Conte
         if ctx is not None:
             await ctx.report_progress(5, 5, "Assembled financial overview")
 
-        # Metadata about the batch operation (leading underscore avoided so it
-        # round-trips through the Pydantic model rather than being treated as private).
         results["batch_metadata"] = {
             "period": period,
             "filters_applied": convert_dates_to_strings(filters),
@@ -2447,17 +2024,17 @@ async def get_complete_financial_overview(period: str = "this month", ctx: Conte
 async def analyze_spending_patterns(
     lookback_months: int = 6, include_forecasting: bool = True, ctx: Context | None = None
 ) -> SpendingPatterns:
-    """Intelligent spending pattern analysis with trend forecasting.
-
-    Combines multiple data sources to provide deep spending insights including:
-    - Monthly spending trends by category
-    - Account usage patterns
-    - Budget performance analysis
-    - Predictive spending forecasts
+    """Summarize monthly trends, category expenses, account usage, and budget data.
 
     Args:
-        lookback_months: Number of months to analyze (default 6)
-        include_forecasting: Whether to include spending forecasts
+        lookback_months: Months before today to include (default: 6).
+        include_forecasting: Include average-based income and expense estimates.
+
+    Requests one page of up to 2000 transactions, without pagination; analysis can
+    be incomplete for larger periods. Forecasts average up to three month buckets
+    in response order, not necessarily the latest three calendar months. The
+    confidence label is fixed, not a statistical measure. Failed transaction or
+    budget requests leave the corresponding analysis sections empty.
     """
     await ensure_authenticated()
 
@@ -2465,11 +2042,9 @@ async def analyze_spending_patterns(
         if ctx is not None:
             await ctx.report_progress(0, 2, "Fetching transactions, budgets, accounts, categories…")
 
-        # Calculate date ranges for analysis
         end_date = datetime.now().date()
         start_date = end_date - relativedelta(months=lookback_months)
 
-        # Batch API calls for comprehensive data
         transactions_task = api_call_with_retry(
             "get_transactions", limit=2000, start_date=start_date, end_date=end_date
         )
@@ -2498,10 +2073,8 @@ async def analyze_spending_patterns(
         }
 
         if not isinstance(transactions, Exception):
-            # Extract transactions list from nested response structure
             transactions_list = extract_transactions_list(transactions)
 
-            # Monthly spending trends
             monthly_data: dict[str, dict[str, float]] = {}
             category_totals: dict[str, dict[str, float]] = {}
             account_usage: dict[str, dict[str, float]] = {}
@@ -2518,7 +2091,6 @@ async def analyze_spending_patterns(
                     txn.get("account", {}).get("name", "Unknown") if isinstance(txn.get("account"), dict) else "Unknown"
                 )
 
-                # Monthly trends (YYYY-MM)
                 month_key = txn_date[:7] if len(txn_date) >= 7 else "Unknown"
                 if month_key not in monthly_data:
                     monthly_data[month_key] = {"income": 0.0, "expenses": 0.0, "net": 0.0, "transaction_count": 0.0}
@@ -2530,19 +2102,16 @@ async def analyze_spending_patterns(
                 monthly_data[month_key]["net"] += amount
                 monthly_data[month_key]["transaction_count"] += 1
 
-                # Category analysis
                 if category_name not in category_totals:
                     category_totals[category_name] = {"total": 0.0, "transactions": 0.0, "avg_amount": 0.0}
-                category_totals[category_name]["total"] += abs(amount) if amount < 0 else 0.0  # Only expenses
+                category_totals[category_name]["total"] += abs(amount) if amount < 0 else 0.0
                 category_totals[category_name]["transactions"] += 1
 
-                # Account usage
                 if account_name not in account_usage:
                     account_usage[account_name] = {"total_volume": 0.0, "transactions": 0.0}
                 account_usage[account_name]["total_volume"] += abs(amount)
                 account_usage[account_name]["transactions"] += 1
 
-            # Calculate averages and sort data
             for category in category_totals:
                 if category_totals[category]["transactions"] > 0:
                     category_totals[category]["avg_amount"] = (
@@ -2557,9 +2126,8 @@ async def analyze_spending_patterns(
                 sorted(account_usage.items(), key=lambda x: x[1]["total_volume"], reverse=True)  # type: ignore[index]
             )
 
-            # Simple forecasting if requested
             if include_forecasting and monthly_data:
-                recent_months = list(monthly_data.values())[-3:]  # Last 3 months
+                recent_months = list(monthly_data.values())[-3:]
                 if recent_months:
                     avg_monthly_expenses = sum(m["expenses"] for m in recent_months) / len(recent_months)
                     avg_monthly_income = sum(m["income"] for m in recent_months) / len(recent_months)
@@ -2570,14 +2138,13 @@ async def analyze_spending_patterns(
                         "predicted_expenses": round(avg_monthly_expenses, 2),
                         "predicted_income": round(avg_monthly_income, 2),
                         "predicted_net": round(avg_monthly_income - avg_monthly_expenses, 2),
-                        "confidence": "medium",  # Based on 3-month average
+                        "confidence": "medium",
                         "note": "Forecast based on 3-month spending average",
                     }
 
         if not isinstance(budgets, Exception):
             analysis["budget_performance"] = convert_dates_to_strings(budgets)
 
-        # Metadata (leading underscore avoided so it round-trips through the model).
         txn_count = len(transactions_list) if not isinstance(transactions, Exception) else 0
         analysis["metadata"] = {
             "api_calls_made": 4,
@@ -2603,11 +2170,7 @@ async def analyze_spending_patterns(
 
 
 async def main() -> None:
-    """Main entry point for the server.
-
-    The server starts immediately without authentication. Authentication
-    happens lazily on the first tool call via ensure_authenticated().
-    """
+    """Start stdio immediately; authenticate on the first request that needs Monarch."""
     log.info("server_starting", session_file=str(session_file), auth_state=auth_state.value)
 
     try:
@@ -2622,10 +2185,7 @@ async def main() -> None:
 
 
 def run() -> None:
-    """Synchronous console-script entry point (`monarch-mcp-jamiew`).
-
-    Wraps the async `main()` so the published entry point actually awaits it.
-    """
+    """Await main() from the synchronous console-script entry point."""
 
     try:
         asyncio.run(main())

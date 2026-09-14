@@ -1,4 +1,4 @@
-"""Tests for new Monarch Money API tools."""
+"""Tests for holdings, history, institutions, budgets, and manual accounts."""
 
 from unittest.mock import AsyncMock
 
@@ -8,7 +8,7 @@ import server
 
 
 class TestNewMonarchTools:
-    """Test newly added Monarch Money API tools."""
+    """Test account and budget tools."""
 
     @pytest.mark.asyncio
     async def test_get_account_holdings(self) -> None:
@@ -52,7 +52,6 @@ class TestNewMonarchTools:
             assert result.history == mock_history
             assert result.account_id == "acc123"
 
-            # Verify call parameters
             mock_client.get_account_history.assert_called_once()
             call_args = mock_client.get_account_history.call_args
             assert call_args.kwargs["account_id"] == "acc123"
@@ -105,7 +104,6 @@ class TestNewMonarchTools:
             assert result.category_id == "cat123"
             assert result.amount == 500.0
 
-            # Verify parameters
             mock_client.set_budget_amount.assert_called_once()
             call_args = mock_client.set_budget_amount.call_args
             assert call_args.kwargs["category_id"] == "cat123"
@@ -132,7 +130,6 @@ class TestNewMonarchTools:
             assert isinstance(result, server.CreateAccountResult)
             assert result.account == mock_result
 
-            # Verify parameters
             mock_client.create_manual_account.assert_called_once()
             call_args = mock_client.create_manual_account.call_args
             assert call_args.kwargs["account_name"] == "My Savings"
@@ -144,7 +141,7 @@ class TestNewMonarchTools:
 
     @pytest.mark.asyncio
     async def test_error_handling_in_new_tools(self) -> None:
-        """Test that new tools properly handle and log errors."""
+        """Propagate API errors from holdings requests."""
         mock_client = AsyncMock()
         mock_client.get_account_holdings.side_effect = Exception("API Error")
 
@@ -159,32 +156,3 @@ class TestNewMonarchTools:
 
         finally:
             server.mm_client = original_client
-
-
-class TestToolCounts:
-    """Test that we have the expected number of tools."""
-
-    def test_all_tools_available(self) -> None:
-        """Test that all expected tools are available."""
-        expected_tools = [
-            "get_accounts",
-            "get_transactions",
-            "get_budgets",
-            "get_cashflow",
-            "get_transaction_categories",
-            "create_transaction",
-            "update_transaction",
-            "refresh_accounts",
-            "get_account_holdings",
-            "get_account_history",
-            "get_institutions",
-            "get_recurring_transactions",
-            "set_budget_amount",
-            "create_manual_account",
-        ]
-
-        for tool_name in expected_tools:
-            assert hasattr(server, tool_name), f"Tool {tool_name} not found"
-
-        # Should have 14 tools total now
-        assert len(expected_tools) == 14

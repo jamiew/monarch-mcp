@@ -23,7 +23,6 @@ class TestDateAutoFill:
 
         assert "start_date" in result  # Should be auto-filled
         assert "end_date" in result
-        # Start date should be beginning of the end_date's month (December 2024)
         assert result["start_date"] == "2024-12-01"
         assert result["end_date"] == "2024-12-31"
 
@@ -62,7 +61,6 @@ class TestDateAutoFill:
     def test_end_date_in_current_month_uses_this_month(self) -> None:
         """When end_date is in current month, start should be 'this month'."""
         today = date.today()
-        # Use a date in the current month
         current_month_date = date(today.year, today.month, 15).isoformat()
         result = build_date_filter(None, current_month_date)
 

@@ -14,10 +14,8 @@ class TestUsageAnalytics:
     @pytest.mark.asyncio
     async def test_track_usage_decorator(self) -> None:
         """Test that usage tracking decorator works correctly."""
-        # Clear existing patterns
         server.usage_patterns.clear()
 
-        # Mock client
         mock_client = AsyncMock()
         mock_client.get_accounts.return_value = [{"id": "1", "name": "Test Account"}]
 
@@ -26,10 +24,8 @@ class TestUsageAnalytics:
 
         try:
             with patch.object(server, "ensure_authenticated", new_callable=AsyncMock):
-                # Call a tracked function
                 await server.get_accounts()
 
-                # Verify tracking occurred
                 assert "get_accounts" in server.usage_patterns
                 assert len(server.usage_patterns["get_accounts"]) == 1
 
@@ -44,12 +40,11 @@ class TestUsageAnalytics:
 
 
 class TestBatchTools:
-    """Test intelligent batch operations."""
+    """Test batch financial analysis."""
 
     @pytest.mark.asyncio
     async def test_get_complete_financial_overview(self) -> None:
         """Test comprehensive financial overview batch tool."""
-        # Setup mock client with all required methods
         mock_client = AsyncMock()
         mock_client.get_accounts.return_value = [{"id": "1", "name": "Test Account"}]
         mock_client.get_budgets.return_value = [{"category": "Food", "amount": 500}]
@@ -69,7 +64,6 @@ class TestBatchTools:
                 assert isinstance(result, server.FinancialOverview)
                 overview = json.loads(result.model_dump_json())
 
-                # Verify all data sources are included
                 assert "accounts" in overview
                 assert "budgets" in overview
                 assert "cashflow" in overview
@@ -78,13 +72,11 @@ class TestBatchTools:
                 assert "transaction_summary" in overview
                 assert "batch_metadata" in overview
 
-                # Verify transaction summary
                 summary = overview["transaction_summary"]
                 assert summary["total_count"] == 1
                 assert summary["total_expenses"] == 50
                 assert summary["unique_categories"] == 1
 
-                # Verify metadata
                 metadata = overview["batch_metadata"]
                 assert metadata["api_calls_made"] == 5
                 assert "timestamp" in metadata
@@ -95,7 +87,6 @@ class TestBatchTools:
     @pytest.mark.asyncio
     async def test_analyze_spending_patterns(self) -> None:
         """Test spending pattern analysis with forecasting."""
-        # Setup mock client
         mock_client = AsyncMock()
         mock_transactions = [
             {"date": "2024-01-15", "amount": -100, "category": {"name": "Food"}, "account": {"name": "Checking"}},
@@ -117,7 +108,6 @@ class TestBatchTools:
                 assert isinstance(result, server.SpendingPatterns)
                 analysis = json.loads(result.model_dump_json())
 
-                # Verify analysis structure
                 assert "analysis_period" in analysis
                 assert "monthly_trends" in analysis
                 assert "category_analysis" in analysis
@@ -125,20 +115,17 @@ class TestBatchTools:
                 assert "forecast" in analysis
                 assert "metadata" in analysis
 
-                # Verify monthly trends
                 monthly_trends = analysis["monthly_trends"]
                 assert "2024-01" in monthly_trends
                 assert "2024-02" in monthly_trends
                 assert monthly_trends["2024-01"]["expenses"] == 150  # 100 + 50
                 assert monthly_trends["2024-02"]["income"] == 3000
 
-                # Verify category analysis
                 category_analysis = analysis["category_analysis"]
                 assert "Food" in category_analysis
                 assert "Gas" in category_analysis
                 assert category_analysis["Food"]["total"] == 100
 
-                # Verify forecasting
                 forecast = analysis["forecast"]
                 assert "predicted_expenses" in forecast
                 assert "predicted_income" in forecast
@@ -150,7 +137,6 @@ class TestBatchTools:
     @pytest.mark.asyncio
     async def test_batch_error_handling(self) -> None:
         """Test that batch operations handle API errors gracefully."""
-        # Setup mock client with some methods failing
         mock_client = AsyncMock()
         mock_client.get_accounts.return_value = [{"id": "1", "name": "Test"}]
         mock_client.get_budgets.side_effect = Exception("Budget API error")
@@ -168,16 +154,13 @@ class TestBatchTools:
                 assert isinstance(result, server.FinancialOverview)
                 overview = json.loads(result.model_dump_json())
 
-                # Verify successful data is included
                 assert "accounts" in overview
                 assert isinstance(overview["accounts"], list)
 
-                # Verify failed API calls are handled gracefully
                 assert "budgets" in overview
                 assert "error" in overview["budgets"]
                 assert "Budget API error" in overview["budgets"]["error"]
 
-                # Verify other data sources still work
                 assert "cashflow" in overview
                 assert overview["cashflow"]["income"] == 1000
 
@@ -202,37 +185,17 @@ class TestLoggingConfiguration:
         except ValueError:
             pytest.fail("Session ID is not a valid UUID")
 
-    def test_analytics_markers_in_output(self) -> None:
-        """Test that analytics use special markers for log filtering."""
-        # Test that our track_usage decorator adds the right markers
-        # This is verified by the decorator outputting to stderr with [ANALYTICS] markers
-        import sys
-        from io import StringIO
-
-        # Capture stderr to verify marker format
-        original_stderr = sys.stderr
-        captured_stderr = StringIO()
-        sys.stderr = captured_stderr
-
-        try:
-            # The track_usage decorator should output analytics markers
-            # This is tested indirectly through other test methods
-            assert True  # Placeholder - actual testing happens in decorator usage
-        finally:
-            sys.stderr = original_stderr
-
 
 class TestToolCounts:
-    """Test that new tools are properly registered."""
+    """Test batch tool registration."""
 
     def test_new_batch_tools_available(self) -> None:
-        """Test that new batch analysis tools are available."""
+        """Check that batch analysis tools are available."""
         new_tools = ["get_complete_financial_overview", "analyze_spending_patterns"]
 
         for tool_name in new_tools:
             assert hasattr(server, tool_name), f"Tool {tool_name} not found"
 
-        # Verify tools are decorated properly
         for tool_name in new_tools:
             func = getattr(server, tool_name)
             assert hasattr(func, "__wrapped__"), f"Tool {tool_name} not properly decorated with @track_usage"

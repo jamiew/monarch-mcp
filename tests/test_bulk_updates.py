@@ -16,7 +16,6 @@ class TestBulkTransactionUpdates:
         """Test successful bulk update of multiple transactions."""
         from server import update_transactions_bulk
 
-        # Mock successful updates
         mock_update_results = [
             {"id": "txn_123", "amount": 50.0, "updated": True},
             {"id": "txn_456", "category_id": "cat_789", "updated": True},
@@ -36,12 +35,10 @@ class TestBulkTransactionUpdates:
             result_str = await update_transactions_bulk(updates_json)
             result = json.loads(result_str.model_dump_json())
 
-            # Verify summary
             assert result["summary"]["total"] == 2
             assert result["summary"]["succeeded"] == 2
             assert result["summary"]["failed"] == 0
 
-            # Verify individual results
             assert len(result["results"]) == 2
             assert all(r["status"] == "success" for r in result["results"])
             assert result["results"][0]["transaction_id"] == "txn_123"
@@ -54,7 +51,6 @@ class TestBulkTransactionUpdates:
 
         mock_client = MagicMock()
 
-        # First update succeeds, second fails
         async def mock_update(**kwargs):
             if kwargs["transaction_id"] == "txn_123":
                 return {"id": "txn_123", "updated": True}
@@ -71,12 +67,10 @@ class TestBulkTransactionUpdates:
             result_str = await update_transactions_bulk(updates_json)
             result = json.loads(result_str.model_dump_json())
 
-            # Verify summary shows mixed results
             assert result["summary"]["total"] == 2
             assert result["summary"]["succeeded"] == 1
             assert result["summary"]["failed"] == 1
 
-            # Check individual results
             assert result["results"][0]["status"] == "success"
             assert result["results"][1]["status"] == "error"
             assert "not found" in result["results"][1]["error"].lower()
@@ -195,10 +189,8 @@ class TestBulkTransactionUpdates:
             result_str = await update_transactions_bulk(updates_json)
             result = json.loads(result_str.model_dump_json())
 
-            # Verify date was passed correctly
             assert result["results"][0]["status"] == "success"
 
-            # Check that update_transaction was called with a date object
             call_kwargs = mock_client.update_transaction.call_args[1]
             assert "date" in call_kwargs
             assert isinstance(call_kwargs["date"], date)
@@ -233,7 +225,6 @@ class TestBulkTransactionUpdates:
 
             assert result["results"][0]["status"] == "success"
 
-            # Verify all fields were passed
             call_kwargs = mock_client.update_transaction.call_args[1]
             assert call_kwargs["transaction_id"] == "txn_123"
             assert call_kwargs["amount"] == 75.50
@@ -251,7 +242,6 @@ class TestBulkTransactionUpdates:
 
         mock_client = MagicMock()
 
-        # Track execution order
         execution_order = []
 
         async def mock_update(**kwargs):
@@ -274,14 +264,9 @@ class TestBulkTransactionUpdates:
         with patch("server.mm_client", mock_client), patch("server.ensure_authenticated", new_callable=AsyncMock):
             await update_transactions_bulk(updates_json)
 
-            # If executed in parallel, we should see interleaved starts/ends
-            # rather than sequential start1->end1->start2->end2->start3->end3
-            # Check that we have at least one "start" after another "start"
-            # (meaning they were running concurrently)
+            # Overlapping calls start before the previous call ends.
             starts = [i for i, item in enumerate(execution_order) if item.startswith("start_")]
             assert len(starts) == 3
-            # If parallel, all starts should happen before all ends complete
-            # (at minimum, start_2 should happen before end_1)
             assert execution_order.index("start_txn_2") < execution_order.index("end_txn_1")
 
 
@@ -303,7 +288,6 @@ class TestBulkUpdatePerformance:
 
         mock_client.update_transaction = AsyncMock(side_effect=mock_update)
 
-        # Test bulk update (parallel)
         updates_json = json.dumps([{"transaction_id": f"txn_{i}", "amount": float(i * 10)} for i in range(5)])
 
         with patch("server.mm_client", mock_client), patch("server.ensure_authenticated", new_callable=AsyncMock):
@@ -311,11 +295,9 @@ class TestBulkUpdatePerformance:
             await update_transactions_bulk(updates_json)
             bulk_duration = time.time() - bulk_start
 
-            # Bulk should take roughly the time of one API call (parallel execution)
-            # Allow some overhead, but should be < 2x a single call
+            # Allow scheduling overhead above a single 50 ms call.
             assert bulk_duration < 0.15  # 5 parallel calls @ 50ms each should be ~50-100ms
 
-            # Sequential would take 5 * 50ms = 250ms minimum
-            # So bulk should be significantly faster (at least 1.5x)
+            # Five sequential calls would take at least 250 ms.
             sequential_estimate = 0.25  # 5 * 50ms
             assert bulk_duration < sequential_estimate / 1.5
