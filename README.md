@@ -251,7 +251,7 @@ Sessions are cached in `~/.monarch-mcp/` for faster subsequent logins (override 
 
 ### Local setup
 
-Create a `.env` file (git-ignored):
+For live checks, create a `.env` file (git-ignored) and load it explicitly with `uv --env-file`:
 
 ```bash
 MONARCH_EMAIL="your-email@example.com"
@@ -262,10 +262,12 @@ MONARCH_MFA_SECRET="YOUR_TOTP_SECRET_KEY"
 ### Tests
 
 ```bash
-uv run pytest tests/ -v                          # unit tests (no creds needed)
-uv run pytest tests/test_integration.py -v        # integration tests (needs .env)
-uv run scripts/health_check.py                    # quick API connectivity check
+uv run pytest tests/ -v                          # offline; live tests are skipped
+MONARCH_RUN_INTEGRATION=true uv run --env-file .env pytest tests/test_integration.py -v
+uv run scripts/health_check.py                   # live API connectivity check
 ```
+
+Integration tests never load `.env` themselves or read/write saved sessions.
 
 ### CI checks
 

@@ -14,6 +14,15 @@
 - Refreshed compatible runtime and development dependencies, including MCP 1.30, mypy 2.3, and ruff 0.16.
 - Updated aiohttp and cryptography past the advisories found in the previous environment. The refreshed Python 3.13 environment passed `pip-audit`.
 
+### Hardening
+
+- Fixed client recreation after session resets and disabled the library's extra working-directory session file.
+- Validate bulk updates per item without unsafe string/boolean coercion or aborting valid siblings.
+- Restored normal signal handling so the server exits on SIGTERM and SIGINT.
+- Live tests now require explicit opt-in and never load `.env` or saved sessions.
+- Removed duplicate pytest settings, selected CI matrix interpreters explicitly, locked installs, and validated release tags before publishing.
+- Updated GitHub Actions and corrected the coverage upload input.
+
 ## 2026-06-30
 
 ### Transaction splitting (0.4.0)

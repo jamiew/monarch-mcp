@@ -9,7 +9,6 @@ import json
 import logging
 import os
 import re
-import signal
 import sys
 import time
 import uuid
@@ -33,7 +32,7 @@ from mcp.types import (
     ToolAnnotations,
 )
 from monarchmoney import MonarchMoney, RequireMFAException
-from pydantic import BaseModel, ConfigDict, FiniteFloat, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, JsonValue
 
 # Type definitions for Monarch Money API responses
 JsonSerializable = str | int | float | bool | None | list["JsonSerializable"] | dict[str, "JsonSerializable"]
@@ -469,24 +468,6 @@ def track_usage(func: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
             result_chars = len(payload)
             result_kb = result_chars / 1024
 
-            # Try to extract additional stats from JSON results
-            extra_stats = ""
-            try:
-                if payload.strip().startswith("{"):
-                    parsed = json.loads(payload)
-                    if isinstance(parsed, dict):
-                        # Look for common list fields to count items
-                        for key in ["transactions", "accounts", "budgets", "categories", "results"]:
-                            if key in parsed and isinstance(parsed[key], list):
-                                extra_stats += f" | {key}: {len(parsed[key])} items"
-                        # Check for batch summaries
-                        if "batch_summary" in parsed:
-                            summary = parsed["batch_summary"]
-                            if isinstance(summary, dict):
-                                extra_stats += f" | batch: {summary}"
-            except (json.JSONDecodeError, KeyError, TypeError):
-                pass
-
             call_info.update({"status": "success", "execution_time": execution_time, "result_size": result_chars})
 
             log.info(
@@ -601,6 +582,22 @@ class UpdateSplitsResult(MMModel):
     has_split_transactions: bool
     splits: list[JsonValue]
     message: str
+
+
+class BulkTransactionUpdate(BaseModel):
+    """Validate each bulk item before allowing any transaction mutation."""
+
+    model_config = ConfigDict(strict=True, extra="forbid", hide_input_in_errors=True)
+
+    transaction_id: str = Field(min_length=1)
+    amount: FiniteFloat | None = None
+    merchant_name: str | None = None
+    category_id: str | None = None
+    date: str | None = None
+    notes: str | None = None
+    goal_id: str | None = None
+    hide_from_reports: bool | None = None
+    needs_review: bool | None = None
 
 
 class BulkSummary(BaseModel):
@@ -1142,7 +1139,7 @@ async def initialize_client() -> None:
         auth_error = error_msg
         raise ValueError(error_msg)
 
-    log.info("auth_init", email=email)
+    log.info("auth_init")
     mm_client = MonarchMoney()
 
     # Try to load existing session first (unless forced to skip)
@@ -1174,11 +1171,15 @@ async def initialize_client() -> None:
 
     for attempt in range(max_retries):
         try:
+            if mm_client is None:
+                mm_client = MonarchMoney()
             log.info("auth_login_attempt", attempt=attempt + 1, max_retries=max_retries, mfa=bool(mfa_secret))
             if mfa_secret:
-                await mm_client.login(email, password, mfa_secret_key=mfa_secret, use_saved_session=False)
+                await mm_client.login(
+                    email, password, mfa_secret_key=mfa_secret, use_saved_session=False, save_session=False
+                )
             else:
-                await mm_client.login(email, password, use_saved_session=False)
+                await mm_client.login(email, password, use_saved_session=False, save_session=False)
 
             # Save session with stdout/stderr suppression
             stdout_capture = io.StringIO()
@@ -1850,37 +1851,16 @@ async def update_transactions_bulk(updates: str) -> BulkUpdateResult:
         log.info("bulk_update_start", count=len(updates_list))
 
         # Build list of update tasks
-        async def update_single(update_data: dict[str, Any]) -> BulkItemResult:
-            """Update a single transaction and return result with transaction_id."""
-            try:
-                if not isinstance(update_data, dict):
-                    return BulkItemResult(transaction_id=None, status="error", error="Update must be a dictionary")
-
-                if "transaction_id" not in update_data:
-                    return BulkItemResult(transaction_id=None, status="error", error="transaction_id is required")
-
+        async def update_single(update_data: object) -> BulkItemResult:
+            """Update a single transaction without letting malformed items break the batch."""
+            txn_id: str | None = None
+            if isinstance(update_data, dict) and isinstance(update_data.get("transaction_id"), str):
                 txn_id = update_data["transaction_id"]
-
-                # Build update parameters
-                update_params: dict[str, Any] = {"transaction_id": txn_id}
-
-                if "amount" in update_data:
-                    update_params["amount"] = float(update_data["amount"])
-                if "merchant_name" in update_data:
-                    update_params["merchant_name"] = str(update_data["merchant_name"])
-                if "category_id" in update_data:
-                    update_params["category_id"] = str(update_data["category_id"])
-                if "date" in update_data:
-                    date_str = str(update_data["date"])
-                    update_params["date"] = datetime.strptime(date_str, "%Y-%m-%d").date()
-                if "notes" in update_data:
-                    update_params["notes"] = str(update_data["notes"])
-                if "goal_id" in update_data:
-                    update_params["goal_id"] = str(update_data["goal_id"])
-                if "hide_from_reports" in update_data:
-                    update_params["hide_from_reports"] = bool(update_data["hide_from_reports"])
-                if "needs_review" in update_data:
-                    update_params["needs_review"] = bool(update_data["needs_review"])
+            try:
+                update = BulkTransactionUpdate.model_validate(update_data)
+                update_params = update.model_dump(exclude_none=True)
+                if update.date is not None:
+                    update_params["date"] = datetime.strptime(update.date, "%Y-%m-%d").date()
 
                 # Execute update with timeout
                 await asyncio.wait_for(api_call_with_retry("update_transaction", **update_params), timeout=30.0)
@@ -1890,12 +1870,12 @@ async def update_transactions_bulk(updates: str) -> BulkUpdateResult:
 
             except asyncio.TimeoutError:
                 return BulkItemResult(
-                    transaction_id=update_data.get("transaction_id"),
+                    transaction_id=txn_id,
                     status="error",
                     error="Update timed out after 30 seconds",
                 )
             except Exception as e:
-                return BulkItemResult(transaction_id=update_data.get("transaction_id"), status="error", error=str(e))
+                return BulkItemResult(transaction_id=txn_id, status="error", error=str(e))
 
         # Execute all updates in parallel
         results = await asyncio.gather(
@@ -2622,13 +2602,6 @@ def run() -> None:
 
     Wraps the async `main()` so the published entry point actually awaits it.
     """
-
-    def signal_handler(signum: int, frame: Any) -> None:
-        log.info("signal_received", signum=signum)
-        # Let asyncio handle the shutdown
-
-    signal.signal(signal.SIGTERM, signal_handler)
-    signal.signal(signal.SIGINT, signal_handler)
 
     try:
         asyncio.run(main())

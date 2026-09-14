@@ -100,22 +100,74 @@ class TestBulkTransactionUpdates:
                 await update_transactions_bulk('{"transaction_id": "123"}')
 
     @pytest.mark.asyncio
-    async def test_update_transactions_bulk_missing_transaction_id(self):
-        """Test error handling when transaction_id is missing."""
+    @pytest.mark.parametrize(
+        "invalid_update",
+        [
+            None,
+            [],
+            "not an update",
+            {"amount": 50},
+            {"transaction_id": {"id": "txn_bad"}, "amount": 50},
+            {"transaction_id": 123, "amount": 50},
+            {"transaction_id": "", "amount": 50},
+            {"transaction_id": "txn_bad", "hide_from_reports": "false"},
+            {"transaction_id": "txn_bad", "needs_review": 1},
+            {"transaction_id": "txn_bad", "amount": True},
+            {"transaction_id": "txn_bad", "amount": "50"},
+            {"transaction_id": "txn_bad", "amount": float("inf")},
+            {"transaction_id": "txn_bad", "amount": float("nan")},
+            {"transaction_id": "txn_bad", "merchant_name": {"name": "Wrong type"}},
+            {"transaction_id": "txn_bad", "date": "2024-02-30"},
+            {"transaction_id": "txn_bad", "amount": 50, "unknown_field": True},
+        ],
+    )
+    async def test_malformed_item_does_not_mutate_or_abort_batch(self, invalid_update: object) -> None:
         from server import update_transactions_bulk
 
-        mock_client = MagicMock()
+        api = AsyncMock(return_value={"updated": True})
+        updates = json.dumps([invalid_update, {"transaction_id": "txn_valid", "amount": 25}])
+        with (
+            patch("server.api_call_with_retry", api),
+            patch("server.ensure_authenticated", new_callable=AsyncMock),
+        ):
+            result = await update_transactions_bulk(updates)
 
-        updates_json = json.dumps([{"amount": 50.0, "notes": "Missing ID"}])
+        assert result.summary.total == 2
+        assert result.summary.failed == 1
+        assert result.summary.succeeded == 1
+        assert [item.status for item in result.results] == ["error", "success"]
+        assert result.results[1].transaction_id == "txn_valid"
+        assert api.await_count == 1
+        assert api.await_args.kwargs["transaction_id"] == "txn_valid"
 
-        with patch("server.mm_client", mock_client), patch("server.ensure_authenticated", new_callable=AsyncMock):
-            result_str = await update_transactions_bulk(updates_json)
-            result = json.loads(result_str.model_dump_json())
+    @pytest.mark.asyncio
+    async def test_false_and_empty_values_clear_fields_without_stringifying_null(self) -> None:
+        from server import update_transactions_bulk
 
-            # Should have error result
-            assert result["summary"]["failed"] == 1
-            assert result["results"][0]["status"] == "error"
-            assert "transaction_id is required" in result["results"][0]["error"]
+        transaction = {"hide_from_reports": True, "notes": "Old note", "goal_id": "goal_old", "merchant_name": "Shop"}
+
+        async def apply_update(method_name: str, transaction_id: str, **changes: object) -> None:
+            transaction.update(changes)
+
+        updates = json.dumps(
+            [
+                {
+                    "transaction_id": "txn_valid",
+                    "hide_from_reports": False,
+                    "notes": "",
+                    "goal_id": "",
+                    "merchant_name": None,
+                }
+            ]
+        )
+        with (
+            patch("server.api_call_with_retry", side_effect=apply_update),
+            patch("server.ensure_authenticated", new_callable=AsyncMock),
+        ):
+            result = await update_transactions_bulk(updates)
+
+        assert result.summary.succeeded == 1
+        assert transaction == {"hide_from_reports": False, "notes": "", "goal_id": "", "merchant_name": "Shop"}
 
     @pytest.mark.asyncio
     async def test_update_transactions_bulk_empty_array(self):
