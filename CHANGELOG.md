@@ -25,6 +25,7 @@
 - Fix Python 3.10 startup: its logging handler cannot be parameterized at runtime.
 - Restore normal SIGTERM and SIGINT handling.
 - Require explicit opt-in for live tests; never load `.env` or saved sessions during test collection.
+- Share one login across live integration tests to avoid rejected MFA codes and login throttling.
 - Remove duplicate pytest settings, select CI interpreters explicitly, lock installs, and validate release tags before publishing.
 - Update GitHub Actions and correct the coverage upload input.
 

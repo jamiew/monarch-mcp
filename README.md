@@ -273,7 +273,7 @@ MONARCH_RUN_INTEGRATION=true uv run --env-file .env pytest tests/test_integratio
 uv run --env-file .env scripts/health_check.py    # live API connectivity check
 ```
 
-Integration tests never load `.env` themselves or read/write saved sessions.
+Integration tests share one fresh login to avoid MFA reuse and login throttling. They never load `.env` themselves or read/write saved sessions.
 
 ### CI checks
 
