@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Documentation
+
+- Simplified the README and website, with a checked comparison to the original and enhanced Python forks.
+
 ### Recurring transactions
 
 - Added date ranges to `get_recurring_transactions`, with natural-language dates and calendar-month defaults.

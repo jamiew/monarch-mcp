@@ -910,17 +910,17 @@
             <div class="container">
                 <div class="hero-load">
                     <div class="eyebrow">Self-hosted · Model Context Protocol</div>
-                    <h1>Your money, fluent in <em>Claude</em>.</h1>
+                    <h1>Monarch Money for your <em>AI assistant</em>.</h1>
                     <p class="hero-lede">
-                        Query accounts, search and edit transactions, track budgets and investments,
-                        and analyze spending through Claude or another local stdio MCP client.
+                        Search and bulk-edit transactions, compare spending across months,
+                        and get a financial overview in one call.
                     </p>
                     <div class="hero-capabilities">
-                        <span class="chip">Accounts &amp; balances</span>
+                        <span class="chip">Accounts &amp; investments</span>
                         <span class="chip">Transaction search</span>
                         <span class="chip">Spending analysis</span>
                         <span class="chip">Budgets &amp; cashflow</span>
-                        <span class="chip">Investments</span>
+                        <span class="chip">Splits &amp; recurring schedules</span>
                         <span class="chip">Bulk edits</span>
                     </div>
                     <div class="hero-brags">
@@ -929,9 +929,9 @@
                             <code class="hero-cmd">uvx monarch-mcp-jamiew</code>
                         </p>
                         <p class="hero-brag">
-                            Runs locally using unofficial API access. Your credentials grant
-                            <strong>full account access, including writes</strong>. Protect config files,
-                            session tokens, and logs, which can contain financial inputs and error details.
+                            Uses unofficial API access with <strong>full account access, including writes</strong>.
+                            Runs locally; requested data goes to your MCP client.
+                            Protect credentials, session tokens, and logs.
                         </p>
                     </div>
                     <div class="hero-cta">
@@ -951,23 +951,27 @@
             <div class="container">
                 <div class="section-head">
                     <div class="eyebrow">Capabilities</div>
-                    <h2 class="section-title">MCP features</h2>
+                    <h2 class="section-title">What this fork adds</h2>
                     <p class="section-subtitle">
-                        Structured data and guided workflows for your assistant
+                        Search, bulk edits, spending analysis, splits, and recurring tools beyond
+                        <a href="https://github.com/colvint/monarch-money-mcp">the original server</a>.
+                        Unlike the original and
+                        <a href="https://github.com/keithah/monarch-money-mcp-enhanced-python">the enhanced Python fork</a>,
+                        it also offers the MCP features below. Other forks overlap on financial tools.
                     </p>
                 </div>
                 <div class="feature-grid">
                     <div class="feature-card">
                         <h3>Structured output</h3>
-                        <p>Each tool declares an <code>outputSchema</code> and returns machine-readable content, with a text fallback for older clients.</p>
+                        <p>Typed results with <code>outputSchema</code> and a text fallback for older clients.</p>
                     </div>
                     <div class="feature-card">
                         <h3>Resources &amp; templates</h3>
-                        <p>MCP resources for categories, accounts, and institutions, plus parameterized per-account holdings and history.</p>
+                        <p>Accounts, categories, and institutions as resources, with per-account holdings and history templates.</p>
                     </div>
                     <div class="feature-card">
                         <h3>Guided prompts</h3>
-                        <p>Financial analysis workflows with argument autocompletion.</p>
+                        <p>Spending analysis, budget review, financial health, and categorization prompts with argument completion.</p>
                     </div>
                     <div class="feature-card">
                         <h3>Natural-language dates</h3>
@@ -975,7 +979,7 @@
                     </div>
                     <div class="feature-card">
                         <h3>Tool annotations</h3>
-                        <p>Titles and read/write metadata help clients distinguish queries from changes. They do not enforce access controls.</p>
+                        <p>Read/write labels help clients distinguish queries from changes. They are not access controls.</p>
                     </div>
                 </div>
             </div>
@@ -985,7 +989,7 @@
             <div class="container">
                 <div class="section-head">
                     <div class="eyebrow">Performance</div>
-                    <h2 class="section-title">Token &amp; request efficiency</h2>
+                    <h2 class="section-title">Less data to process</h2>
                     <p class="section-subtitle">
                         Compact records and combined queries
                     </p>
@@ -993,11 +997,11 @@
                 <div class="feature-grid">
                     <div class="feature-card">
                         <h3>Compact output</h3>
-                        <p>Transactions return essential fields; categories return <code>id</code> and <code>name</code>. Use <code>verbose=True</code> on transaction reads, search, or category reads for full details.</p>
+                        <p>Compact transactions and categories by default. Set <code>verbose=True</code> for full details.</p>
                     </div>
                     <div class="feature-card">
-                        <h3>5 APIs in 1 call</h3>
-                        <p><code>get_complete_financial_overview</code> queries five Monarch APIs in parallel. Bulk updates edit multiple transactions, while summary tools aggregate data on the server.</p>
+                        <h3>One-call overview</h3>
+                        <p><code>get_complete_financial_overview</code> combines accounts, budgets, cashflow, transactions, and categories. Batch analysis reports progress.</p>
                     </div>
                 </div>
             </div>
@@ -1009,16 +1013,16 @@
                     <div class="eyebrow">Reference</div>
                     <h2 class="section-title">Available tools</h2>
                     <p class="section-subtitle">
-                        This catalog describes the source checkout. Recurring date filters, the recurring updater,
-                        stricter bulk-input validation, and the latest authentication fixes are unreleased.
-                        Use the <a href="https://github.com/jamiew/monarch-mcp#from-source-development">source setup</a>
-                        for these changes; PyPI installs use the latest published release.
+                        This catalog covers source. Recurring date filters and editing, stricter bulk validation,
+                        and the latest authentication fixes are unreleased.
+                        Use <a href="https://github.com/jamiew/monarch-mcp#from-source-development">source setup</a>
+                        for these; <code>uvx</code> runs the published release.
                     </p>
                 </div>
 
                 <div class="tools-list">
                     <div class="tool-group">
-                        <h3>Core Data Access</h3>
+                        <h3>Accounts &amp; Transactions</h3>
                         <div class="tool-grid">
                             <div class="tool-item">
                                 <div class="tool-name">get_accounts</div>
@@ -1052,7 +1056,7 @@
                     </div>
 
                     <div class="tool-group">
-                        <h3>Transaction Management</h3>
+                        <h3>Search &amp; Edits</h3>
                         <div class="tool-grid">
                             <div class="tool-item">
                                 <div class="tool-name">search_transactions</div>
@@ -1108,11 +1112,11 @@
                         <div class="tool-grid">
                             <div class="tool-item">
                                 <div class="tool-name">get_recurring_transactions</div>
-                                <div class="tool-desc">Get scheduled occurrences, not posted history or payment status. Source date filters accept ISO or natural-language dates; no dates selects this month, and one date fills the missing bound from that month. A matched <code>transactionId</code> links a recorded transaction; <code>isPast</code> does not mean paid. Use <code>get_transactions(is_recurring=True)</code> for recorded transactions.</div>
+                                <div class="tool-desc">Forecast scheduled occurrences, not payment status. Unreleased date filters accept ISO or natural language; no dates selects this month, and one date fills the missing bound. Use <code>get_transactions(is_recurring=True)</code> for posted history. Do not count forecasts and matched transactions twice; <code>isPast</code> does not mean paid.</div>
                             </div>
                             <div class="tool-item">
                                 <div class="tool-name">update_recurring_transaction</div>
-                                <div class="tool-desc">Unreleased: change a merchant-wide schedule, not one occurrence. Use <code>stream.merchant.id</code> and the current merchant name to avoid renaming it. Omitted settings stay unchanged; preserve Monarch's frequency and signed amount. This does not cancel subscriptions, move money, or create posted transactions.</div>
+                                <div class="tool-desc">Unreleased: edit a merchant-wide schedule. Use <code>stream.merchant.id</code> and the current merchant name. Omitted settings stay unchanged; use Monarch's frequency and signed amount. This does not cancel subscriptions, move money, or create posted transactions.</div>
                             </div>
                             <div class="tool-item">
                                 <div class="tool-name">set_budget_amount</div>
@@ -1177,9 +1181,9 @@
 
                 <div class="install-body">
                     <p class="install-lede">
-                        Install <a href="https://docs.astral.sh/uv/" target="_blank">uv</a> to run the PyPI release
-                        without cloning. Provide your Monarch email and password, plus
-                        <code>MONARCH_MFA_SECRET</code> for TOTP-based 2FA. Client configuration formats vary.
+                        Install <a href="https://docs.astral.sh/uv/" target="_blank">uv</a>.
+                        Provide your Monarch email and password, plus
+                        <code>MONARCH_MFA_SECRET</code> for TOTP-based 2FA.
                     </p>
 
                     <div class="install-step"><span class="num">01</span> Claude Desktop</div>
@@ -1272,8 +1276,8 @@
                         <h3>MCP Server</h3>
                         <p><strong>Author:</strong> Jamie Dubs &nbsp;·&nbsp; <a href="https://github.com/jamiew" target="_blank">@jamiew</a></p>
                         <p>
-                            A FastMCP server with structured output.
-                            Originally forked from <a href="https://github.com/colvint" target="_blank">@colvint</a>'s implementation.
+                            FastMCP rewrite of <a href="https://github.com/colvint/monarch-money-mcp" target="_blank">@colvint's server</a>,
+                            with analysis tools and structured output.
                         </p>
                         <a class="credit-link" href="https://github.com/jamiew/monarch-mcp" target="_blank">View repository →</a>
                     </div>

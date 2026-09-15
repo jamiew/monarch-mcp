@@ -1,33 +1,34 @@
 <!-- mcp-name: io.github.jamiew/monarch-mcp -->
 # Monarch Money MCP Server
 
-An [MCP](https://modelcontextprotocol.io/) server that lets AI assistants query and update your [Monarch Money](https://www.monarchmoney.com/) accounts, transactions, and budgets.
+Use an AI assistant to read and update your [Monarch Money](https://www.monarchmoney.com/) accounts, transactions, and budgets through [MCP](https://modelcontextprotocol.io/).
 
-A **FastMCP** rewrite of [@colvint/monarch-money-mcp](https://github.com/colvint/monarch-money-mcp), with transaction search, bulk updates, spending analysis, and a combined financial overview.
+## Why this fork?
 
-Built on [`monarchmoneycommunity`](https://github.com/bradleyseanf/monarchmoneycommunity) by [@bradleyseanf](https://github.com/bradleyseanf), a community fork of [`monarchmoney`](https://github.com/hammem/monarchmoney) by [@hammem](https://github.com/hammem). Source installs pin the client to a commit; PyPI installs use the published dependency.
+This FastMCP rewrite adds these tools to [colvint's original server](https://github.com/colvint/monarch-money-mcp):
 
-## Features
+- **Search and bulk edits:** `search_transactions` finds merchants or keywords; `update_transactions_bulk` edits transactions in parallel with per-item results.
+- **Spending analysis:** `get_spending_summary` groups totals by category, account, or month; `analyze_spending_patterns` compares months.
+- **One-call overview:** `get_complete_financial_overview` combines accounts, budgets, cashflow, transactions, and categories.
+- **Splits and recurring schedules:** read and replace transaction splits, view scheduled occurrences, and edit merchant-wide recurrence. Recurring date filters and editing are **unreleased**.
 
-- **Tools** covering accounts, transactions, budgets, cashflow, investments, categories, recurring transactions, and spending analysis
-- **Structured output** with a typed schema (`outputSchema`), machine-readable content, and a text fallback for older clients
-- **MCP resources** for quick access to categories, accounts, and institutions, plus parameterized templates for per-account holdings and history (`accounts://{account_id}/holdings|history`)
-- **MCP prompts** for guided financial analysis workflows, with live argument autocompletion
-- **Compact output** for transactions and categories, with optional full details
-- **Natural-language dates** such as "last month", "30 days ago", and "this year"
-- **Batch operations** for combined queries and parallel transaction updates, with progress reporting
-- **Spending analysis** — multi-month trend analysis with category/account breakdowns
-- **Tool annotations and titles** to help clients distinguish reads from writes
+Unlike the original and [keithah's enhanced Python fork](https://github.com/keithah/monarch-money-mcp-enhanced-python), this server also provides:
+
+- **Typed results:** structured output with `outputSchema`, plus a text fallback.
+- **MCP resources and prompts:** account/category/institution resources, per-account holdings/history templates, and guided prompts with argument completion.
+- **Assistant-friendly calls:** compact transaction/category records, natural-language dates, read/write labels, and progress on batch analysis.
+
+Comparison checked September 14, 2026. Other forks overlap on financial tools; the enhanced Python fork exposes a broader library API. This project focuses on analysis workflows and MCP integration, not exposing every API method. See the [tool catalog](#tools).
 
 ## Setup
 
-Install [`uv`](https://docs.astral.sh/uv/), then configure your client to run the [PyPI package](https://pypi.org/project/monarch-mcp-jamiew/) with `uvx monarch-mcp-jamiew`. You'll need your Monarch email and password, plus an [MFA secret](#getting-your-mfa-secret) if you use TOTP-based 2FA.
+Install [`uv`](https://docs.astral.sh/uv/), then configure your MCP client to run `uvx monarch-mcp-jamiew`. You'll need your Monarch email and password, plus an [MFA secret](#getting-your-mfa-secret) for TOTP-based 2FA.
 
-**Release status:** This README describes the current source checkout. Recurring date filters, `update_recurring_transaction`, stricter bulk-input validation, and the latest authentication fixes are unreleased. Use the [source setup](#from-source-development) for these changes; `uvx` runs the latest published release.
+**Release status:** This README covers source. Recurring date filters and editing, stricter bulk validation, and the latest authentication fixes are unreleased. Use [source setup](#from-source-development) for these; `uvx` runs the [published release](https://pypi.org/project/monarch-mcp-jamiew/).
 
 ### Standard config
 
-For clients that use an `mcpServers` configuration, use the following. Other clients may use different keys or setup commands.
+For clients with an `mcpServers` config:
 
 ```json
 {
@@ -44,8 +45,6 @@ For clients that use an `mcpServers` configuration, use the following. Other cli
   }
 }
 ```
-
-Pick your client below for the exact steps.
 
 <details>
 <summary><b>Claude Desktop</b></summary>
@@ -131,7 +130,7 @@ Add the [standard config](#standard-config) to `~/.openclaw/openclaw.json` under
 <details>
 <summary><b>Any other MCP client (Cursor, VS Code, Windsurf, Cline, Zed, …)</b></summary>
 
-Use your client's instructions for a local stdio MCP server. Set the command to `uvx`, the argument to `monarch-mcp-jamiew`, and the credential environment variables shown above. Config keys and file locations vary by client.
+Set up a local stdio MCP server with command `uvx`, argument `monarch-mcp-jamiew`, and the credentials above. Follow your client's config format.
 
 Not sure how? Tell your agent:
 
@@ -142,12 +141,12 @@ Not sure how? Tell your agent:
 <details>
 <summary id="from-source-development"><b>From source (development)</b></summary>
 
-To run against a local checkout (and the git-pinned `monarchmoneycommunity` lib):
+Source installs use a pinned `monarchmoneycommunity` commit:
 
 ```bash
 git clone https://github.com/jamiew/monarch-mcp
 cd monarch-mcp
-uv sync
+uv sync --locked
 ```
 
 Then point your client at the local copy with absolute paths (find them with `which uv` and `pwd`):
@@ -211,20 +210,20 @@ The source checkout exposes these 22 tools. See [release status](#setup) for unp
 
 ### Recurring transactions
 
-`get_recurring_transactions(start_date, end_date)` returns a schedule forecast, not posted transaction history.
-Dates accept ISO or natural-language input. No dates means the current calendar
-month; one date fills the missing bound from that date's month.
+`get_recurring_transactions(start_date, end_date)` returns a forecast, not posted history.
+Dates accept ISO or natural language. No dates selects this month; one date fills
+the missing bound from that month.
 
-Each occurrence includes its stream, account, category, and matched
-`transactionId`, when present. `isPast` does not mean paid. For recorded
-transactions, use `get_transactions(is_recurring=True)` instead.
+Occurrences include stream, account, category, and a matched `transactionId` when
+available. `isPast` does not mean paid. Use `get_transactions(is_recurring=True)`
+for recorded transactions; do not count forecasts and posted matches twice.
 
-`update_recurring_transaction` changes the merchant-wide schedule, not one
-occurrence. Use `stream.merchant.id` (not `stream.id` or `transactionId`) and the current merchant name to avoid renaming it.
-Pass only settings you want to change: `frequency`, `base_date`, `amount`,
-`is_recurring`, or `is_active`. Omitted settings stay unchanged. Use Monarch's
-existing frequency and signed amount. This does not cancel subscriptions, move
-money, or create posted transactions.
+`update_recurring_transaction` changes a merchant-wide schedule, not one occurrence.
+Use `stream.merchant.id`, not `stream.id` or `transactionId`, and the current merchant
+name to avoid renaming it. Pass only settings to change: `frequency`, `base_date`,
+`amount`, `is_recurring`, or `is_active`. Omitted settings stay unchanged.
+Use Monarch's frequency and signed amount. This does not cancel subscriptions,
+move money, or create posted transactions.
 
 ### Transaction format
 
@@ -278,7 +277,7 @@ Integration tests never load `.env` themselves or read/write saved sessions.
 
 ### CI checks
 
-Run all checks locally (same as GitHub Actions CI):
+Run the same checks as CI:
 
 ```bash
 uv run python scripts/ci.py
@@ -286,11 +285,11 @@ uv run python scripts/ci.py
 
 ### Releasing
 
-Use `/release` to bump `pyproject.toml`, commit, tag `vX.Y.Z`, push, and create a GitHub release. Publishing the release triggers [`.github/workflows/publish.yml`](.github/workflows/publish.yml), which publishes to PyPI and the MCP Registry through OIDC trusted publishing. The workflow sets `server.json` versions from the tag; only bump `pyproject.toml` by hand.
+Use `/release` to bump `pyproject.toml`, commit, tag `vX.Y.Z`, push, and create a GitHub release. The [publish workflow](.github/workflows/publish.yml) publishes to PyPI and the MCP Registry through OIDC, setting `server.json` versions from the tag.
 
 ### Log analysis
 
-Tools for measuring and optimizing token usage across MCP sessions:
+Measure tool calls and output sizes:
 
 ```bash
 uv run scripts/analyze_logs.py                    # full report
@@ -313,5 +312,5 @@ uv run scripts/eval_session.py analyze            # analyze new entries
 
 ## Credits
 
-This project started as a fork of [colvint/monarch-money-mcp](https://github.com/colvint/monarch-money-mcp) by [@colvint](https://github.com/colvint). Thanks for the original implementation!
+Forked from [colvint/monarch-money-mcp](https://github.com/colvint/monarch-money-mcp). API access uses [bradleyseanf/monarchmoneycommunity](https://github.com/bradleyseanf/monarchmoneycommunity), based on [hammem/monarchmoney](https://github.com/hammem/monarchmoney). Source installs pin a commit; PyPI installs use the published library.
 
