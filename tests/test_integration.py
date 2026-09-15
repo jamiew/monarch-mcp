@@ -15,6 +15,7 @@ from monarchmoney import MonarchMoney
 
 pytestmark = [
     pytest.mark.integration,
+    pytest.mark.asyncio(loop_scope="module"),
     pytest.mark.skipif(
         os.environ.get("MONARCH_RUN_INTEGRATION") != "true",
         reason="Live Monarch calls require MONARCH_RUN_INTEGRATION=true",
@@ -22,9 +23,9 @@ pytestmark = [
 ]
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def authenticated_client() -> MonarchMoney:
-    """Authenticate using only credentials supplied in the environment."""
+    """Log in once per suite to avoid reusing a TOTP code or triggering throttling."""
     email = os.environ.get("MONARCH_EMAIL")
     password = os.environ.get("MONARCH_PASSWORD")
     if not email or not password:
@@ -44,7 +45,6 @@ async def authenticated_client() -> MonarchMoney:
 class TestMonarchAPIConnectivity:
     """Verify response envelopes without requiring a populated account."""
 
-    @pytest.mark.asyncio
     async def test_get_accounts(self, authenticated_client: MonarchMoney) -> None:
         """Accounts are returned as a list inside an object."""
         accounts = await authenticated_client.get_accounts()
@@ -52,7 +52,6 @@ class TestMonarchAPIConnectivity:
         assert "accounts" in accounts
         assert isinstance(accounts["accounts"], list)
 
-    @pytest.mark.asyncio
     async def test_get_transactions(self, authenticated_client: MonarchMoney) -> None:
         """Transactions expose a results list and total count."""
         transactions = await authenticated_client.get_transactions(limit=5)
@@ -63,7 +62,6 @@ class TestMonarchAPIConnectivity:
         assert isinstance(result.get("results"), list)
         assert isinstance(result.get("totalCount"), int)
 
-    @pytest.mark.asyncio
     async def test_get_budgets(self, authenticated_client: MonarchMoney) -> None:
         """Budgets expose category and category-group monthly amounts."""
         budgets = await authenticated_client.get_budgets()
