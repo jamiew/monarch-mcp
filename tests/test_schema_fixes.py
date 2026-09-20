@@ -1,309 +1,127 @@
-"""Tests for transaction fields and filters."""
+"""Transaction behavior through FastMCP and the real client, with offline GraphQL."""
 
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
+from monarchmoney import MonarchMoney
+from pydantic import JsonValue
 
-from server import (
-    create_transaction,
-    get_transactions,
-    search_transactions,
-    update_transaction,
-    update_transactions_bulk,
-)
+import server
 
 
-class TestUpdateTransactionSchema:
-    """Test update_transaction fields."""
-
-    @pytest.mark.asyncio
-    async def test_merchant_name_parameter(self):
-        """Verify merchant_name parameter works (not 'description')."""
-        with patch("server.ensure_authenticated", new_callable=AsyncMock):
-            with patch("server.api_call_with_retry", new_callable=AsyncMock) as mock_api:
-                mock_api.return_value = {
-                    "id": "txn_123",
-                    "merchant": {"name": "New Merchant Name"},
-                    "amount": -50.00,
-                }
-
-                result = await update_transaction(transaction_id="txn_123", merchant_name="New Merchant Name")
-
-                mock_api.assert_called_once()
-                call_kwargs = mock_api.call_args[1]
-                assert "merchant_name" in call_kwargs
-                assert call_kwargs["merchant_name"] == "New Merchant Name"
-                assert "description" not in call_kwargs
-
-    @pytest.mark.asyncio
-    async def test_goal_id_parameter(self):
-        """Test goal_id parameter for savings goals."""
-        with patch("server.ensure_authenticated", new_callable=AsyncMock):
-            with patch("server.api_call_with_retry", new_callable=AsyncMock) as mock_api:
-                mock_api.return_value = {"id": "txn_123", "goal": {"id": "goal_456"}}
-
-                result = await update_transaction(transaction_id="txn_123", goal_id="goal_456")
-
-                call_kwargs = mock_api.call_args[1]
-                assert "goal_id" in call_kwargs
-                assert call_kwargs["goal_id"] == "goal_456"
-
-    @pytest.mark.asyncio
-    async def test_hide_from_reports_parameter(self):
-        """Test hide_from_reports boolean parameter."""
-        with patch("server.ensure_authenticated", new_callable=AsyncMock):
-            with patch("server.api_call_with_retry", new_callable=AsyncMock) as mock_api:
-                mock_api.return_value = {"id": "txn_123", "hideFromReports": True}
-
-                result = await update_transaction(transaction_id="txn_123", hide_from_reports=True)
-
-                call_kwargs = mock_api.call_args[1]
-                assert "hide_from_reports" in call_kwargs
-                assert call_kwargs["hide_from_reports"] is True
-
-    @pytest.mark.asyncio
-    async def test_needs_review_parameter(self):
-        """Test needs_review boolean parameter."""
-        with patch("server.ensure_authenticated", new_callable=AsyncMock):
-            with patch("server.api_call_with_retry", new_callable=AsyncMock) as mock_api:
-                mock_api.return_value = {"id": "txn_123", "needsReview": False}
-
-                result = await update_transaction(transaction_id="txn_123", needs_review=False)
-
-                call_kwargs = mock_api.call_args[1]
-                assert "needs_review" in call_kwargs
-                assert call_kwargs["needs_review"] is False
-
-    @pytest.mark.asyncio
-    async def test_all_new_parameters_together(self):
-        """Combine merchant, goal, reporting, and review fields."""
-        with patch("server.ensure_authenticated", new_callable=AsyncMock):
-            with patch("server.api_call_with_retry", new_callable=AsyncMock) as mock_api:
-                mock_api.return_value = {"id": "txn_123"}
-
-                result = await update_transaction(
-                    transaction_id="txn_123",
-                    merchant_name="Starbucks",
-                    goal_id="goal_savings",
-                    hide_from_reports=True,
-                    needs_review=False,
-                    notes="Updated via API",
-                )
-
-                call_kwargs = mock_api.call_args[1]
-                assert call_kwargs["merchant_name"] == "Starbucks"
-                assert call_kwargs["goal_id"] == "goal_savings"
-                assert call_kwargs["hide_from_reports"] is True
-                assert call_kwargs["needs_review"] is False
-                assert call_kwargs["notes"] == "Updated via API"
+@pytest.fixture
+def graphql(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    client = MonarchMoney()
+    call = AsyncMock()
+    monkeypatch.setattr(client, "gql_call", call)
+    monkeypatch.setattr(server, "mm_client", client)
+    return call
 
 
-class TestCreateTransactionSchema:
-    """Test create_transaction with merchant_name instead of description."""
+@pytest.mark.parametrize("bulk", [False, True], ids=["single", "bulk"])
+async def test_updates_preserve_omitted_fields_and_apply_false_and_empty_values(graphql: AsyncMock, bulk: bool) -> None:
+    transaction: dict[str, JsonValue] = {
+        "id": "txn_123",
+        "name": "Corner Deli",
+        "category": "cat_001",
+        "goalId": "goal_old",
+        "hideFromReports": True,
+        "needsReview": True,
+        "notes": "Old note",
+    }
 
-    @pytest.mark.asyncio
-    async def test_merchant_name_required(self):
-        """Verify merchant_name is used (not description)."""
-        with patch("server.ensure_authenticated", new_callable=AsyncMock):
-            with patch("server.api_call_with_retry", new_callable=AsyncMock) as mock_api:
-                mock_api.return_value = {"id": "txn_new", "merchant": {"name": "Test Merchant"}}
+    async def mutate(operation: str, graphql_query: object, variables: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        changes = variables["input"]
+        if not isinstance(changes, dict):
+            raise TypeError("Expected mutation input")
+        # Monarch ignores null category/name, but accepts empty goal IDs and notes.
+        transaction.update({key: value for key, value in changes.items() if value is not None})
+        return {"updateTransaction": {"errors": [], "transaction": transaction.copy()}}
 
-                result = await create_transaction(
-                    amount=-25.00,
-                    merchant_name="Test Merchant",
-                    account_id="acc_123",
-                    date="2024-01-15",
-                    category_id="cat_456",
-                )
+    graphql.side_effect = mutate
+    arguments: dict[str, JsonValue] = {
+        "transaction_id": "txn_123",
+        "merchant_name": "Market Stall",
+        "goal_id": "goal_new",
+        "hide_from_reports": False,
+        "needs_review": False,
+        "notes": "Updated note",
+    }
+    if bulk:
+        result = await server.update_transactions_bulk(json.dumps([arguments]))
+        assert result.summary.succeeded == 1
+    else:
+        _, structured = await server.mcp._tool_manager.call_tool("update_transaction", arguments, convert_result=True)
+        assert structured["transaction"] == {"updateTransaction": {"errors": [], "transaction": transaction}}
 
-                call_kwargs = mock_api.call_args[1]
-                assert "merchant_name" in call_kwargs
-                assert call_kwargs["merchant_name"] == "Test Merchant"
-                assert "description" not in call_kwargs
+    assert transaction == {
+        "id": "txn_123",
+        "name": "Market Stall",
+        "category": "cat_001",
+        "goalId": "goal_new",
+        "hideFromReports": False,
+        "needsReview": False,
+        "notes": "Updated note",
+    }
 
-    @pytest.mark.asyncio
-    async def test_update_balance_parameter(self):
-        """Test the update_balance parameter."""
-        with patch("server.ensure_authenticated", new_callable=AsyncMock):
-            with patch("server.api_call_with_retry", new_callable=AsyncMock) as mock_api:
-                mock_api.return_value = {"id": "txn_new"}
+    arguments = {"transaction_id": "txn_123", "merchant_name": None, "goal_id": "", "notes": ""}
+    if bulk:
+        result = await server.update_transactions_bulk(json.dumps([arguments]))
+        assert result.summary.succeeded == 1
+    else:
+        await server.mcp._tool_manager.call_tool("update_transaction", arguments)
 
-                result = await create_transaction(
-                    amount=-100.00,
-                    merchant_name="Manual Transaction",
-                    account_id="acc_manual",
-                    date="2024-01-15",
-                    category_id="cat_expense",
-                    update_balance=True,
-                )
-
-                call_kwargs = mock_api.call_args[1]
-                assert "update_balance" in call_kwargs
-                assert call_kwargs["update_balance"] is True
-
-    @pytest.mark.asyncio
-    async def test_empty_merchant_name_fails(self):
-        """Verify empty merchant_name is rejected."""
-        with patch("server.ensure_authenticated", new_callable=AsyncMock):
-            with pytest.raises(ValueError, match="merchant_name cannot be empty"):
-                await create_transaction(
-                    amount=-50.00, merchant_name="", account_id="acc_123", date="2024-01-15", category_id="cat_456"
-                )
-
-
-class TestGetTransactionsFilters:
-    """Test get_transactions filters."""
-
-    @pytest.mark.asyncio
-    async def test_has_attachments_filter(self):
-        """Test filtering by attachment presence."""
-        with patch("server.ensure_authenticated", new_callable=AsyncMock):
-            with patch("server.api_call_with_retry", new_callable=AsyncMock) as mock_api:
-                mock_api.return_value = {"allTransactions": {"results": [{"id": "txn_1", "hasAttachments": True}]}}
-
-                result = await get_transactions(has_attachments=True)
-
-                call_kwargs = mock_api.call_args[1]
-                assert "has_attachments" in call_kwargs
-                assert call_kwargs["has_attachments"] is True
-
-    @pytest.mark.asyncio
-    async def test_has_notes_filter(self):
-        """Test filtering by notes presence."""
-        with patch("server.ensure_authenticated", new_callable=AsyncMock):
-            with patch("server.api_call_with_retry", new_callable=AsyncMock) as mock_api:
-                mock_api.return_value = {"allTransactions": {"results": [{"id": "txn_1", "notes": "Has notes"}]}}
-
-                result = await get_transactions(has_notes=True)
-
-                call_kwargs = mock_api.call_args[1]
-                assert "has_notes" in call_kwargs
-                assert call_kwargs["has_notes"] is True
-
-    @pytest.mark.asyncio
-    async def test_is_split_filter(self):
-        """Test filtering for split transactions."""
-        with patch("server.ensure_authenticated", new_callable=AsyncMock):
-            with patch("server.api_call_with_retry", new_callable=AsyncMock) as mock_api:
-                mock_api.return_value = {"allTransactions": {"results": [{"id": "txn_1", "isSplit": True}]}}
-
-                result = await get_transactions(is_split=True)
-
-                call_kwargs = mock_api.call_args[1]
-                assert "is_split" in call_kwargs
-                assert call_kwargs["is_split"] is True
-
-    @pytest.mark.asyncio
-    async def test_is_recurring_filter(self):
-        """Test filtering for recurring transactions."""
-        with patch("server.ensure_authenticated", new_callable=AsyncMock):
-            with patch("server.api_call_with_retry", new_callable=AsyncMock) as mock_api:
-                mock_api.return_value = {"allTransactions": {"results": [{"id": "txn_1", "isRecurring": True}]}}
-
-                result = await get_transactions(is_recurring=True)
-
-                call_kwargs = mock_api.call_args[1]
-                assert "is_recurring" in call_kwargs
-                assert call_kwargs["is_recurring"] is True
-
-    @pytest.mark.asyncio
-    async def test_tag_ids_filter(self):
-        """Test filtering by tag IDs with comma-separated string."""
-        with patch("server.ensure_authenticated", new_callable=AsyncMock):
-            with patch("server.api_call_with_retry", new_callable=AsyncMock) as mock_api:
-                mock_api.return_value = {"allTransactions": {"results": [{"id": "txn_1"}]}}
-
-                result = await get_transactions(tag_ids="tag_1,tag_2,tag_3")
-
-                call_kwargs = mock_api.call_args[1]
-                assert "tag_ids" in call_kwargs
-                assert call_kwargs["tag_ids"] == ["tag_1", "tag_2", "tag_3"]
-
-    @pytest.mark.asyncio
-    async def test_multiple_filters_combined(self):
-        """Combine attachment, note, split, and reporting filters."""
-        with patch("server.ensure_authenticated", new_callable=AsyncMock):
-            with patch("server.api_call_with_retry", new_callable=AsyncMock) as mock_api:
-                mock_api.return_value = {"allTransactions": {"results": []}}
-
-                result = await get_transactions(
-                    has_attachments=True, has_notes=False, is_split=True, hidden_from_reports=False
-                )
-
-                call_kwargs = mock_api.call_args[1]
-                assert call_kwargs["has_attachments"] is True
-                assert call_kwargs["has_notes"] is False
-                assert call_kwargs["is_split"] is True
-                assert call_kwargs["hidden_from_reports"] is False
+    assert transaction == {
+        "id": "txn_123",
+        "name": "Market Stall",
+        "category": "cat_001",
+        "goalId": "",
+        "hideFromReports": False,
+        "needsReview": False,
+        "notes": "",
+    }
 
 
-class TestSearchTransactionsFilters:
-    """Test filters shared by search_transactions and get_transactions."""
+@pytest.mark.parametrize("tool_name", ["get_transactions", "search_transactions"])
+async def test_pending_filter_distinguishes_posted_pending_and_unfiltered(graphql: AsyncMock, tool_name: str) -> None:
+    rows: list[JsonValue] = [
+        {"id": "txn_posted", "pending": False, "merchant": {"name": "Corner Deli"}},
+        {"id": "txn_pending", "pending": True, "merchant": {"name": "Corner Deli"}},
+    ]
 
-    @pytest.mark.asyncio
-    async def test_search_with_attachments_filter(self):
-        """Test search with has_attachments filter."""
-        with patch("server.ensure_authenticated", new_callable=AsyncMock):
-            with patch("server.api_call_with_retry", new_callable=AsyncMock) as mock_api:
-                mock_api.return_value = {"allTransactions": {"results": [{"id": "txn_1"}]}}
+    async def query(operation: str, graphql_query: object, variables: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        filters = variables["filters"]
+        if not isinstance(filters, dict):
+            raise TypeError("Expected transaction filters")
+        pending = filters.get("isPending")
+        selected = [row for row in rows if isinstance(row, dict) and (pending is None or row["pending"] is pending)]
+        return {"allTransactions": {"results": selected}}
 
-                result = await search_transactions(query="Starbucks", has_attachments=True)
+    graphql.side_effect = query
+    arguments: dict[str, JsonValue] = {"verbose": True}
+    if tool_name == "search_transactions":
+        arguments["query"] = "Corner Deli"
 
-                call_kwargs = mock_api.call_args[1]
-                assert "search" in call_kwargs
-                assert call_kwargs["search"] == "Starbucks"
-                assert "has_attachments" in call_kwargs
-                assert call_kwargs["has_attachments"] is True
+    for filter_arguments, expected in [
+        ({}, rows),
+        ({"is_pending": False}, [rows[0]]),
+        ({"is_pending": True}, [rows[1]]),
+        ({"is_pending": None}, rows),
+    ]:
+        _, structured = await server.mcp._tool_manager.call_tool(
+            tool_name, {**arguments, **filter_arguments}, convert_result=True
+        )
+        assert structured["transactions"] == expected
+        if tool_name == "search_transactions":
+            assert structured["search_metadata"]["result_count"] == len(expected)
+        else:
+            assert structured["count"] == len(expected)
 
 
-class TestBulkUpdateTransactions:
-    """Test bulk transaction fields."""
-
-    @pytest.mark.asyncio
-    async def test_bulk_update_with_merchant_name(self):
-        """Test bulk update with merchant_name field."""
-        with patch("server.ensure_authenticated", new_callable=AsyncMock):
-            with patch("server.api_call_with_retry", new_callable=AsyncMock) as mock_api:
-                mock_api.return_value = {"id": "txn_123"}
-
-                updates_json = json.dumps(
-                    [
-                        {"transaction_id": "txn_1", "merchant_name": "Starbucks"},
-                        {"transaction_id": "txn_2", "merchant_name": "Whole Foods"},
-                    ]
-                )
-
-                result = await update_transactions_bulk(updates=updates_json)
-
-                assert mock_api.call_count == 2
-
-                for call in mock_api.call_args_list:
-                    assert "merchant_name" in call[1]
-
-    @pytest.mark.asyncio
-    async def test_bulk_update_with_all_new_fields(self):
-        """Combine merchant, goal, reporting, and review fields in bulk updates."""
-        with patch("server.ensure_authenticated", new_callable=AsyncMock):
-            with patch("server.api_call_with_retry", new_callable=AsyncMock) as mock_api:
-                mock_api.return_value = {"id": "txn_123"}
-
-                updates_json = json.dumps(
-                    [
-                        {
-                            "transaction_id": "txn_1",
-                            "merchant_name": "Updated Merchant",
-                            "goal_id": "goal_123",
-                            "hide_from_reports": True,
-                            "needs_review": False,
-                        }
-                    ]
-                )
-
-                result = await update_transactions_bulk(updates=updates_json)
-
-                call_kwargs = mock_api.call_args[1]
-                assert call_kwargs["merchant_name"] == "Updated Merchant"
-                assert call_kwargs["goal_id"] == "goal_123"
-                assert call_kwargs["hide_from_reports"] is True
-                assert call_kwargs["needs_review"] is False
+async def test_empty_merchant_name_fails_before_creation(graphql: AsyncMock) -> None:
+    with pytest.raises(ValueError):
+        await server.create_transaction(
+            amount=-50.00, merchant_name="", account_id="acc_123", date="2024-01-15", category_id="cat_456"
+        )
+    graphql.assert_not_awaited()

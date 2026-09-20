@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import stat
 import sys
 import time
 import uuid
@@ -20,9 +21,11 @@ from pathlib import Path
 from typing import Any, ParamSpec, TypeVar
 
 import structlog
+from anyio import AsyncFile
 from dateutil import parser as date_parser
 from dateutil.relativedelta import relativedelta
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.stdio import stdio_server
 from mcp.types import (
     Completion,
     CompletionArgument,
@@ -32,7 +35,7 @@ from mcp.types import (
     ToolAnnotations,
 )
 from monarchmoney import MonarchMoney, RequireMFAException
-from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, JsonValue, TypeAdapter
 
 JsonSerializable = str | int | float | bool | None | list["JsonSerializable"] | dict[str, "JsonSerializable"]
 
@@ -260,6 +263,7 @@ def _build_transaction_filters(
     hidden_from_reports: bool | None = None,
     is_split: bool | None = None,
     is_recurring: bool | None = None,
+    is_pending: bool | None = None,
 ) -> dict[str, Any]:
     """Build shared filters for transaction retrieval and search."""
     filters: dict[str, Any] = build_date_filter(start_date, end_date)
@@ -281,6 +285,8 @@ def _build_transaction_filters(
         filters["is_split"] = is_split
     if is_recurring is not None:
         filters["is_recurring"] = is_recurring
+    if is_pending is not None:
+        filters["is_pending"] = is_pending
 
     return filters
 
@@ -453,6 +459,23 @@ class TransactionResult(MMModel):
     transaction: JsonValue
 
 
+class TransactionUpdatePayload(BaseModel):
+    errors: list[JsonValue] | None = None
+    transaction: dict[str, JsonValue] | None
+
+
+class TransactionUpdateEnvelope(BaseModel):
+    updateTransaction: TransactionUpdatePayload
+
+
+def _check_transaction_update(result: object) -> None:
+    payload = TransactionUpdateEnvelope.model_validate(result).updateTransaction
+    if payload.errors:
+        raise ValueError(f"Monarch rejected the transaction update: {payload.errors}")
+    if payload.transaction is None:
+        raise ValueError("Monarch returned no updated transaction")
+
+
 class TransactionSplit(BaseModel):
     """One leg of a split transaction.
 
@@ -493,6 +516,7 @@ class BulkTransactionUpdate(BaseModel):
     goal_id: str | None = None
     hide_from_reports: bool | None = None
     needs_review: bool | None = None
+    owner_user_id: str | None = None
 
 
 class BulkSummary(BaseModel):
@@ -515,6 +539,24 @@ class BulkUpdateResult(MMModel):
 
 class HoldingsResult(MMModel):
     holdings: JsonValue
+
+
+class BrokerageHoldingsResult(MMModel):
+    accounts: list[JsonValue]
+
+
+class TransactionRulesResult(MMModel):
+    rules: list[JsonValue]
+    count: int
+
+
+class HouseholdMembersResult(MMModel):
+    members: list[JsonValue]
+    count: int
+
+
+class AccountHistorySnapshot(MMModel):
+    date: date
 
 
 class AccountHistoryResult(MMModel):
@@ -599,6 +641,7 @@ class SpendingPatterns(MMModel):
     budget_performance: JsonValue = None
     forecast: JsonValue = None
     metadata: JsonValue = None
+    errors: dict[str, str] = Field(default_factory=dict)
 
 
 # MCP resources
@@ -1073,6 +1116,7 @@ async def get_transactions(
     is_split: bool | None = None,
     is_recurring: bool | None = None,
     verbose: bool = False,
+    is_pending: bool | None = None,
 ) -> TransactionsResult:
     """Fetch one page of transactions.
 
@@ -1091,6 +1135,7 @@ async def get_transactions(
         hidden_from_reports: True for hidden transactions, False for visible ones.
         is_split: True for split transactions, False for non-split transactions.
         is_recurring: True for recurring transactions, False for non-recurring ones.
+        is_pending: True for pending transactions, False for posted transactions.
         verbose: False returns compact fields; True preserves the full API objects.
 
     Boolean filters default to None (no restriction). Results contain transactions,
@@ -1120,6 +1165,7 @@ async def get_transactions(
             hidden_from_reports,
             is_split,
             is_recurring,
+            is_pending,
         )
 
         response = await api_call_with_retry("get_transactions", limit=limit, offset=offset, **filters)
@@ -1157,6 +1203,7 @@ async def search_transactions(
     is_split: bool | None = None,
     is_recurring: bool | None = None,
     verbose: bool = False,
+    is_pending: bool | None = None,
 ) -> SearchResult:
     """Search one page of transactions using Monarch's text search.
 
@@ -1176,6 +1223,7 @@ async def search_transactions(
         hidden_from_reports: True for hidden transactions, False for visible ones.
         is_split: Filter by split status.
         is_recurring: Filter by recurring status.
+        is_pending: True for pending transactions, False for posted transactions.
         verbose: False uses get_transactions' compact fields; True keeps full API objects.
 
     Boolean filters default to None (no restriction). Returns matching transactions
@@ -1200,6 +1248,7 @@ async def search_transactions(
             hidden_from_reports,
             is_split,
             is_recurring,
+            is_pending,
         )
         filters["search"] = query_str
 
@@ -1366,6 +1415,7 @@ async def update_transaction(
     goal_id: str | None = None,
     hide_from_reports: bool | None = None,
     needs_review: bool | None = None,
+    owner_user_id: str | None = None,
 ) -> TransactionResult:
     """Update a transaction, leaving omitted fields unchanged.
 
@@ -1380,12 +1430,16 @@ async def update_transaction(
         goal_id: Savings goal ID; "" clears the association.
         hide_from_reports: Whether to hide the transaction from reports.
         needs_review: Whether to flag the transaction for review.
+        owner_user_id: Member ID from get_household_members; "" makes it Shared.
+            Omitted/null leaves ownership unchanged. Read verbose transactions to
+            verify ownership; the update response does not include the owner.
 
     Returns updated transaction details. This tool cannot change the transaction
     ID, account, pending status, attachments, or timestamps. Use
     update_transaction_splits to change splits and update_recurring_transaction
     to change a merchant's recurring schedule.
     """
+    parsed_date = datetime.strptime(date, "%Y-%m-%d").date() if date is not None else None
     await ensure_authenticated()
 
     try:
@@ -1399,8 +1453,8 @@ async def update_transaction(
             updates["merchant_name"] = merchant_name
         if category_id is not None:
             updates["category_id"] = category_id
-        if date is not None:
-            updates["date"] = datetime.strptime(date, "%Y-%m-%d").date()
+        if parsed_date is not None:
+            updates["date"] = parsed_date.isoformat()
         if notes is not None:
             updates["notes"] = notes
         if goal_id is not None:
@@ -1409,6 +1463,8 @@ async def update_transaction(
             updates["hide_from_reports"] = hide_from_reports
         if needs_review is not None:
             updates["needs_review"] = needs_review
+        if owner_user_id is not None:
+            updates["owner_user_id"] = owner_user_id
 
         update_fields = [k for k in updates if k != "transaction_id"]
         log.info("updating_transaction", transaction_id=transaction_id, fields=update_fields)
@@ -1417,16 +1473,12 @@ async def update_transaction(
             api_call_with_retry("update_transaction", **updates),
             timeout=30.0,
         )
+        _check_transaction_update(result)
         result = convert_dates_to_strings(result)
         return TransactionResult(transaction=result)
     except asyncio.TimeoutError as e:
         log.error("update_transaction_timeout", transaction_id=transaction_id)
         raise ValueError("Transaction update timed out after 30 seconds. Please try again.") from e
-    except ValueError as e:
-        error_msg = str(e)
-        if "date" in error_msg.lower():
-            raise ValueError(f"Invalid date format. Use YYYY-MM-DD (e.g., 2024-01-15). Error: {e}") from e
-        raise
     except Exception as e:
         log.error("update_transaction_failed", transaction_id=transaction_id, error=str(e))
         raise
@@ -1440,9 +1492,10 @@ async def update_transactions_bulk(updates: str) -> BulkUpdateResult:
     Args:
         updates: JSON array encoded as a string. Each item requires a nonempty
             transaction_id and accepts amount, merchant_name, category_id, date
-            (YYYY-MM-DD), notes, goal_id, hide_from_reports, and needs_review.
-            Fields have the same meaning as update_transaction; omitted/null fields
-            stay unchanged. Empty notes or goal_id clears that value.
+            (YYYY-MM-DD), notes, goal_id, hide_from_reports, needs_review, and
+            owner_user_id. Fields have the same meaning as update_transaction;
+            omitted/null fields stay unchanged. Empty notes or goal_id clears that
+            value; empty owner_user_id makes the transaction Shared.
 
     Items reject unknown fields and wrong types without coercion; amounts must
     be finite numbers and flags must be booleans. Invalid items fail individually;
@@ -1479,9 +1532,12 @@ async def update_transactions_bulk(updates: str) -> BulkUpdateResult:
                 update = BulkTransactionUpdate.model_validate(update_data)
                 update_params = update.model_dump(exclude_none=True)
                 if update.date is not None:
-                    update_params["date"] = datetime.strptime(update.date, "%Y-%m-%d").date()
+                    update_params["date"] = datetime.strptime(update.date, "%Y-%m-%d").date().isoformat()
 
-                await asyncio.wait_for(api_call_with_retry("update_transaction", **update_params), timeout=30.0)
+                result = await asyncio.wait_for(
+                    api_call_with_retry("update_transaction", **update_params), timeout=30.0
+                )
+                _check_transaction_update(result)
 
                 return BulkItemResult(transaction_id=txn_id, status="success")
 
@@ -1607,6 +1663,46 @@ async def update_transaction_splits(transaction_id: str, splits: list[Transactio
         raise
 
 
+@mcp.tool(annotations=READONLY, title="Get All Brokerage Holdings")
+@track_usage
+async def get_all_holdings() -> BrokerageHoldingsResult:
+    """Get holdings grouped by brokerage account, not all asset classes.
+
+    Fetches accounts, then holdings for each brokerage account concurrently.
+    A failed account request fails the entire call; this is not a single API request.
+    """
+    await ensure_authenticated()
+    return BrokerageHoldingsResult.model_validate(await api_call_with_retry("get_all_holdings"))
+
+
+@mcp.tool(annotations=READONLY, title="Get Transaction Rules")
+@track_usage
+async def get_transaction_rules() -> TransactionRulesResult:
+    """Read transaction automation rules in priority order, including criteria and actions.
+
+    Rules are returned as configured by Monarch; this does not execute or modify them.
+    """
+    await ensure_authenticated()
+    response = await api_call_with_retry("get_transaction_rules")
+    rules = extract_list(response, "transactionRules")
+    return TransactionRulesResult(rules=rules, count=len(rules))
+
+
+@mcp.tool(annotations=READONLY, title="Get Household Members")
+@track_usage
+async def get_household_members() -> HouseholdMembersResult:
+    """List current household members and IDs for transaction ownership.
+
+    Pending invitations are excluded. Use an ID as owner_user_id in transaction
+    updates, or "" for Shared; a missing/null owner_user_id leaves it unchanged.
+    """
+    await ensure_authenticated()
+    response = await api_call_with_retry("get_household_members")
+    household = response.get("myHousehold") if isinstance(response, dict) else None
+    members = extract_list(household, "users")
+    return HouseholdMembersResult(members=members, count=len(members))
+
+
 @mcp.tool(annotations=READONLY, title="Get Account Holdings")
 @track_usage
 async def get_account_holdings(account_id: str) -> HoldingsResult:
@@ -1629,20 +1725,25 @@ async def get_account_history(
 ) -> AccountHistoryResult:
     """Get balance history for account_id from get_accounts.
 
-    Optional start_date and end_date must use YYYY-MM-DD, not natural language.
+    Optional bounds are inclusive YYYY-MM-DD dates. An omitted bound is unbounded.
+    Monarch returns the full history; date filtering happens locally.
     """
+    start = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date is not None else None
+    end = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date is not None else None
+    if start is not None and end is not None and start > end:
+        raise ValueError("start_date must not be after end_date")
     await ensure_authenticated()
 
-    kwargs: dict[str, Any] = {"account_id": account_id}
-    if start_date:
-        kwargs["start_date"] = datetime.strptime(start_date, "%Y-%m-%d").date()
-    if end_date:
-        kwargs["end_date"] = datetime.strptime(end_date, "%Y-%m-%d").date()
-
     try:
-        history = await api_call_with_retry("get_account_history", **kwargs)
-        history = convert_dates_to_strings(history)
-        return AccountHistoryResult(account_id=account_id, history=history)
+        history = await api_call_with_retry("get_account_history", account_id=account_id)
+        if start is not None or end is not None:
+            snapshots = TypeAdapter(list[AccountHistorySnapshot]).validate_python(history)
+            history = [
+                snapshot.model_dump(mode="json")
+                for snapshot in snapshots
+                if (start is None or snapshot.date >= start) and (end is None or snapshot.date <= end)
+            ]
+        return AccountHistoryResult(account_id=account_id, history=convert_dates_to_strings(history))
     except Exception as e:
         log.error("Failed to fetch account history", error=str(e), account_id=account_id)
         raise
@@ -2034,7 +2135,7 @@ async def analyze_spending_patterns(
     be incomplete for larger periods. Forecasts average up to three month buckets
     in response order, not necessarily the latest three calendar months. The
     confidence label is fixed, not a statistical measure. Failed transaction or
-    budget requests leave the corresponding analysis sections empty.
+    budget requests appear in errors; successful analysis sections remain available.
     """
     await ensure_authenticated()
 
@@ -2046,9 +2147,11 @@ async def analyze_spending_patterns(
         start_date = end_date - relativedelta(months=lookback_months)
 
         transactions_task = api_call_with_retry(
-            "get_transactions", limit=2000, start_date=start_date, end_date=end_date
+            "get_transactions", limit=2000, start_date=start_date.isoformat(), end_date=end_date.isoformat()
         )
-        budgets_task = api_call_with_retry("get_budgets", start_date=start_date, end_date=end_date)
+        budgets_task = api_call_with_retry(
+            "get_budgets", start_date=start_date.isoformat(), end_date=end_date.isoformat()
+        )
         accounts_task = api_call_with_retry("get_accounts")
         categories_task = api_call_with_retry("get_transaction_categories")
 
@@ -2056,6 +2159,11 @@ async def analyze_spending_patterns(
             transactions_task, budgets_task, accounts_task, categories_task, return_exceptions=True
         )
         transactions, budgets, accounts, categories = api_results
+        errors: dict[str, str] = {}
+        if isinstance(transactions, Exception):
+            errors["transactions"] = str(transactions)
+        if isinstance(budgets, Exception):
+            errors["budgets"] = str(budgets)
 
         if ctx is not None:
             await ctx.report_progress(1, 2, "Computing trends, category and account analysis…")
@@ -2162,11 +2270,33 @@ async def analyze_spending_patterns(
             include_forecasting=include_forecasting,
         )
 
-        return SpendingPatterns.model_validate(analysis)
+        return SpendingPatterns.model_validate({**analysis, "errors": errors})
 
     except Exception as e:
         log.error("Failed to analyze spending patterns", error=str(e), lookback_months=lookback_months)
         raise
+
+
+class _CancellableStdin(AsyncFile[str]):
+    """Keep SDK framing without its cancellation-shielded blocking pipe read."""
+
+    def __init__(self, reader: asyncio.StreamReader) -> None:
+        super().__init__(sys.stdin)
+        self._reader = reader
+
+    async def readline(self) -> str:
+        parts: list[bytes] = []
+        while True:
+            try:
+                parts.append(await self._reader.readuntil(b"\n"))
+                break
+            except asyncio.LimitOverrunError as exc:
+                # MCP messages can exceed StreamReader's default 64 KiB limit.
+                parts.append(await self._reader.readexactly(exc.consumed))
+            except asyncio.IncompleteReadError as exc:
+                parts.append(exc.partial)
+                break
+        return b"".join(parts).decode("utf-8", errors="replace")
 
 
 async def main() -> None:
@@ -2174,7 +2304,27 @@ async def main() -> None:
     log.info("server_starting", session_file=str(session_file), auth_state=auth_state.value)
 
     try:
-        await mcp.run_stdio_async()
+        if sys.platform == "win32" or stat.S_ISREG(os.fstat(sys.stdin.fileno()).st_mode):
+            # Windows pipe handles and regular files need the SDK's file transport.
+            await mcp.run_stdio_async()
+        else:
+            fd = sys.stdin.fileno()
+            was_blocking = os.get_blocking(fd)
+            reader = asyncio.StreamReader()
+            transport: asyncio.BaseTransport | None = None
+            with os.fdopen(os.dup(fd), "rb", buffering=0) as pipe:
+                try:
+                    transport, _ = await asyncio.get_running_loop().connect_read_pipe(
+                        lambda: asyncio.StreamReaderProtocol(reader), pipe
+                    )
+                    async with stdio_server(stdin=_CancellableStdin(reader)) as (read_stream, write_stream):
+                        await mcp._mcp_server.run(
+                            read_stream, write_stream, mcp._mcp_server.create_initialization_options()
+                        )
+                finally:
+                    if transport is not None:
+                        transport.close()
+                    os.set_blocking(fd, was_blocking)
     except (BrokenPipeError, ConnectionResetError):
         log.info("client_disconnected")
     except KeyboardInterrupt:

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Tools and analysis
+
+- Added brokerage-wide holdings, transaction-rule inspection, and household-member lookup.
+- Added pending/posted filters to transaction reads and search.
+- Added owner assignment and Shared ownership to single and bulk updates. Rejected or malformed mutations fail instead of reporting success; successful responses may have null errors.
+- Fixed date serialization in spending analysis and transaction updates. Partial analysis failures now expose errors alongside successful sections.
+- Fixed account-history date bounds by filtering snapshots locally, with inclusive and open-ended ranges.
+
 ### Documentation
 
 - Simplified the README and website, with a checked comparison to the original and enhanced Python forks.
@@ -14,8 +22,8 @@
 
 ### Dependencies
 
-- Updated `monarchmoneycommunity` to the September 9 dev commit and raised the published floor to 1.5.2. MCP tools still use released APIs.
-- Refreshed compatible dependencies, including MCP 1.30, mypy 2.3, and ruff 0.16.
+- Updated `monarchmoneycommunity` to verified dev `d30f2859`, identical to the published 1.6.0 source tree; raised the published floor to 1.6.0.
+- Refreshed Ruff and compatible HTTP dependencies. Retained maintained MCP 1.30; MCP 2 requires a separate API migration and does not fix the stdin shutdown issue.
 - Updated aiohttp and cryptography past the advisories found in the previous environment. The refreshed Python 3.13 environment passed `pip-audit`.
 
 ### Hardening
@@ -23,7 +31,7 @@
 - Recreate the client after session resets and prevent the library's extra working-directory session file.
 - Validate bulk updates per item without unsafe coercion or aborting valid siblings.
 - Fix Python 3.10 startup: its logging handler cannot be parameterized at runtime.
-- Restore normal SIGTERM and SIGINT handling.
+- Fixed POSIX SIGINT shutdown with stdin still open, retaining SDK framing and normal SIGTERM handling.
 - Require explicit opt-in for live tests; never load `.env` or saved sessions during test collection.
 - Share one login across live integration tests to avoid rejected MFA codes and login throttling.
 - Remove duplicate pytest settings, select CI interpreters explicitly, lock installs, and validate release tags before publishing.

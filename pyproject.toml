@@ -27,8 +27,9 @@ classifiers = [
     "Topic :: Office/Business :: Financial",
 ]
 dependencies = [
+    "anyio>=4.9,<5",
     "mcp[cli]>=1.30.0,<2",
-    "monarchmoneycommunity>=1.5.2",
+    "monarchmoneycommunity>=1.6.0",
     "pydantic>=2.13.5",
     "python-dateutil>=2.9.0.post0",
     "structlog>=26.1.0",
@@ -147,5 +148,5 @@ exclude_lines = [
 ]
 
 [tool.uv.sources]
-# Exact dev HEAD, checked 2026-09-14. See the fork assessment in CLAUDE.md.
-monarchmoneycommunity = { git = "https://github.com/bradleyseanf/monarchmoneycommunity", rev = "c2f91f14f3d962d36275cb934dd3594b8aa1dcad" }
+# Exact dev HEAD, checked 2026-09-20. Same source tree as the published 1.6.0 release.
+monarchmoneycommunity = { git = "https://github.com/bradleyseanf/monarchmoneycommunity", rev = "d30f285998a8a64db7f8e923f6742e095645c2b4" }

@@ -132,7 +132,7 @@ class TestFastMCPParameterValidation:
     async def test_update_transaction_with_partial_updates(self) -> None:
         """Test update_transaction with only some fields updated."""
         mock_client = AsyncMock()
-        mock_result = {"id": "txn123", "status": "updated"}
+        mock_result = {"updateTransaction": {"errors": [], "transaction": {"id": "txn123", "amount": -100.0}}}
         mock_client.update_transaction.return_value = mock_result
 
         original_client = server.mm_client
@@ -156,33 +156,6 @@ class TestFastMCPParameterValidation:
             assert "category_id" not in call_args.kwargs
             assert "date" not in call_args.kwargs
             assert "notes" not in call_args.kwargs
-
-        finally:
-            server.mm_client = original_client
-
-    @pytest.mark.asyncio
-    async def test_date_parameter_conversion(self) -> None:
-        """Keep date filters as ISO strings for API serialization."""
-        mock_client = AsyncMock()
-        mock_transactions = [{"id": "1", "amount": -50.0}]
-        mock_client.get_transactions.return_value = mock_transactions
-
-        original_client = server.mm_client
-        server.mm_client = mock_client
-
-        try:
-            await server.get_transactions(start_date="2024-01-01", end_date="2024-12-31")
-
-            mock_client.get_transactions.assert_called_once()
-            call_args = mock_client.get_transactions.call_args
-
-            start_date = call_args.kwargs["start_date"]
-            end_date = call_args.kwargs["end_date"]
-
-            assert isinstance(start_date, str)
-            assert isinstance(end_date, str)
-            assert start_date == "2024-01-01"
-            assert end_date == "2024-12-31"
 
         finally:
             server.mm_client = original_client

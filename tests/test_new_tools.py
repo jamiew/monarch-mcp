@@ -3,8 +3,19 @@
 from unittest.mock import AsyncMock
 
 import pytest
+from monarchmoney import MonarchMoney
+from pydantic import JsonValue
 
 import server
+
+
+@pytest.fixture
+def history_graphql(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    client = MonarchMoney()
+    call = AsyncMock()
+    monkeypatch.setattr(client, "gql_call", call)
+    monkeypatch.setattr(server, "mm_client", client)
+    return call
 
 
 class TestNewMonarchTools:
@@ -34,32 +45,60 @@ class TestNewMonarchTools:
             server.mm_client = original_client
 
     @pytest.mark.asyncio
-    async def test_get_account_history(self) -> None:
-        """Test get_account_history with date filtering."""
-        mock_client = AsyncMock()
-        mock_history = [{"date": "2024-01-01", "balance": 1000}, {"date": "2024-01-02", "balance": 1050}]
-        mock_client.get_account_history.return_value = mock_history
+    @pytest.mark.parametrize(
+        ("start_date", "end_date", "expected_indices"),
+        [
+            ("2026-09-01", "2026-09-30", [1, 2]),
+            ("2026-09-01", "2026-09-01", [1]),
+            ("2026-09-01", None, [1, 2, 3]),
+            (None, "2026-09-30", [0, 1, 2]),
+            (None, None, [0, 1, 2, 3]),
+            ("2026-09-02", "2026-09-29", []),
+        ],
+    )
+    async def test_get_account_history_filters_snapshots(
+        self,
+        history_graphql: AsyncMock,
+        start_date: str | None,
+        end_date: str | None,
+        expected_indices: list[int],
+    ) -> None:
+        snapshots: list[dict[str, JsonValue]] = [
+            {"date": "2026-08-31", "signedBalance": 900, "source": {"kind": "synthetic"}},
+            {"date": "2026-09-01", "signedBalance": 1000, "source": {"kind": "synthetic"}},
+            {"date": "2026-09-30", "signedBalance": 1050, "source": {"kind": "synthetic"}},
+            {"date": "2026-10-01", "signedBalance": 1100, "source": {"kind": "synthetic"}},
+        ]
+        expected_history = [
+            {**snapshots[index], "accountId": "acc_001", "accountName": "Synthetic account"}
+            for index in expected_indices
+        ]
+        history_graphql.return_value = {
+            "account": {"displayName": "Synthetic account"},
+            "snapshots": snapshots,
+        }
 
-        original_client = server.mm_client
-        server.mm_client = mock_client
+        result = await server.get_account_history(account_id="acc_001", start_date=start_date, end_date=end_date)
 
-        try:
-            result = await server.get_account_history(
-                account_id="acc123", start_date="2024-01-01", end_date="2024-01-31"
-            )
+        assert result.account_id == "acc_001"
+        assert result.history == expected_history
 
-            assert isinstance(result, server.AccountHistoryResult)
-            assert result.history == mock_history
-            assert result.account_id == "acc123"
-
-            mock_client.get_account_history.assert_called_once()
-            call_args = mock_client.get_account_history.call_args
-            assert call_args.kwargs["account_id"] == "acc123"
-            assert "start_date" in call_args.kwargs
-            assert "end_date" in call_args.kwargs
-
-        finally:
-            server.mm_client = original_client
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("start_date", "end_date"),
+        [
+            ("2026-09-30", "2026-09-01"),
+            ("2026-02-30", None),
+            (None, "not-a-date"),
+            ("last month", None),
+        ],
+    )
+    async def test_get_account_history_rejects_invalid_bounds_before_api(
+        self, history_graphql: AsyncMock, start_date: str | None, end_date: str | None
+    ) -> None:
+        with pytest.raises(ValueError):
+            await server.get_account_history(account_id="acc_001", start_date=start_date, end_date=end_date)
+        history_graphql.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_get_institutions(self) -> None:

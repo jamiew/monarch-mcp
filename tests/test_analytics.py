@@ -4,6 +4,9 @@ import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from aiohttp.payload import JsonPayload
+from monarchmoney import MonarchMoney
+from pydantic import JsonValue
 
 import server
 
@@ -85,54 +88,72 @@ class TestBatchTools:
             server.mm_client = original_client
 
     @pytest.mark.asyncio
-    async def test_analyze_spending_patterns(self) -> None:
-        """Test spending pattern analysis with forecasting."""
-        mock_client = AsyncMock()
-        mock_transactions = [
-            {"date": "2024-01-15", "amount": -100, "category": {"name": "Food"}, "account": {"name": "Checking"}},
-            {"date": "2024-01-20", "amount": -50, "category": {"name": "Gas"}, "account": {"name": "Checking"}},
-            {"date": "2024-02-10", "amount": 3000, "category": {"name": "Salary"}, "account": {"name": "Checking"}},
+    async def test_analyze_spending_patterns(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Exercise analysis through the real client's JSON request boundary."""
+        transactions: list[JsonValue] = [
+            {
+                "date": "2026-08-15",
+                "amount": -100,
+                "category": {"name": "Food"},
+                "account": {"name": "Synthetic account"},
+            },
+            {
+                "date": "2026-08-20",
+                "amount": -50,
+                "category": {"name": "Transit"},
+                "account": {"name": "Synthetic account"},
+            },
+            {
+                "date": "2026-09-10",
+                "amount": 3000,
+                "category": {"name": "Salary"},
+                "account": {"name": "Synthetic account"},
+            },
         ]
-        mock_client.get_transactions.return_value = mock_transactions
-        mock_client.get_budgets.return_value = []
-        mock_client.get_accounts.return_value = []
-        mock_client.get_transaction_categories.return_value = []
+        budgets: dict[str, JsonValue] = {
+            "budgetData": {
+                "monthlyAmountsByCategory": [
+                    {
+                        "category": {"id": "cat_001"},
+                        "monthlyAmounts": [{"month": "2026-08-01", "plannedCashFlowAmount": 200, "actualAmount": 100}],
+                    }
+                ]
+            }
+        }
+        responses: dict[str, dict[str, JsonValue]] = {
+            "GetTransactionsList": {"allTransactions": {"results": transactions, "totalCount": 3}},
+            "GetJointPlanningData": budgets,
+            "GetAccounts": {"accounts": [{"id": "acc_001", "displayName": "Synthetic account"}]},
+            "GetCategories": {"categories": [{"id": "cat_001", "name": "Food"}]},
+        }
 
-        original_client = server.mm_client
-        server.mm_client = mock_client
+        async def gql_call(
+            operation: str, graphql_query: object, variables: dict[str, object] | None = None
+        ) -> dict[str, JsonValue]:
+            # Match aiohttp's transport: date objects must fail rather than be
+            # accepted silently by a high-level AsyncMock.
+            JsonPayload(variables)
+            return responses[operation]
 
-        try:
-            with patch.object(server, "ensure_authenticated", new_callable=AsyncMock):
-                result = await server.analyze_spending_patterns(lookback_months=3, include_forecasting=True)
+        client = MonarchMoney()
+        monkeypatch.setattr(client, "gql_call", gql_call)
+        monkeypatch.setattr(server, "mm_client", client)
 
-                assert isinstance(result, server.SpendingPatterns)
-                analysis = json.loads(result.model_dump_json())
+        result = await server.analyze_spending_patterns(lookback_months=3, include_forecasting=True)
+        analysis = json.loads(result.model_dump_json())
 
-                assert "analysis_period" in analysis
-                assert "monthly_trends" in analysis
-                assert "category_analysis" in analysis
-                assert "account_usage" in analysis
-                assert "forecast" in analysis
-                assert "metadata" in analysis
-
-                monthly_trends = analysis["monthly_trends"]
-                assert "2024-01" in monthly_trends
-                assert "2024-02" in monthly_trends
-                assert monthly_trends["2024-01"]["expenses"] == 150  # 100 + 50
-                assert monthly_trends["2024-02"]["income"] == 3000
-
-                category_analysis = analysis["category_analysis"]
-                assert "Food" in category_analysis
-                assert "Gas" in category_analysis
-                assert category_analysis["Food"]["total"] == 100
-
-                forecast = analysis["forecast"]
-                assert "predicted_expenses" in forecast
-                assert "predicted_income" in forecast
-                assert "confidence" in forecast
-
-        finally:
-            server.mm_client = original_client
+        assert analysis["monthly_trends"] == {
+            "2026-08": {"expenses": 150, "income": 0, "net": -150, "transaction_count": 2},
+            "2026-09": {"expenses": 0, "income": 3000, "net": 3000, "transaction_count": 1},
+        }
+        assert analysis["category_analysis"]["Food"]["total"] == 100
+        assert analysis["category_analysis"]["Transit"]["total"] == 50
+        assert analysis["account_usage"]["Synthetic account"] == {"total_volume": 3150, "transactions": 3}
+        assert analysis["budget_performance"] == budgets
+        assert analysis["forecast"]["predicted_expenses"] == 75
+        assert analysis["forecast"]["predicted_income"] == 1500
+        assert analysis["forecast"]["predicted_net"] == 1425
+        assert analysis["errors"] == {}
 
     @pytest.mark.asyncio
     async def test_batch_error_handling(self) -> None:

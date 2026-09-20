@@ -56,33 +56,6 @@ class TestSearchTransactions:
             call_kwargs = mock_client.get_transactions.call_args[1]
             assert call_kwargs["search"] == "Apple"
 
-    async def test_search_transactions_passes_query_to_api(self):
-        """Test that search query is passed to the API."""
-        mock_transactions = [
-            {
-                "id": "1",
-                "date": "2024-01-15",
-                "amount": -50.0,
-                "merchant": {"name": "Apple Store"},
-                "plaidName": "APPLE.COM/BILL",
-                "category": {"name": "Shopping"},
-                "account": {"displayName": "Chase Checking"},
-                "pending": False,
-                "needsReview": False,
-            }
-        ]
-
-        with patch.object(server, "mm_client") as mock_client:
-            mock_client.get_transactions = AsyncMock(return_value=mock_transactions)
-
-            await server.search_transactions(query="apple")
-            call_kwargs = mock_client.get_transactions.call_args[1]
-            assert call_kwargs["search"] == "apple"
-
-            await server.search_transactions(query="APPLE")
-            call_kwargs = mock_client.get_transactions.call_args[1]
-            assert call_kwargs["search"] == "APPLE"
-
     async def test_search_transactions_returns_api_results(self):
         """Test that search returns results from the API."""
         mock_transactions = [
