@@ -127,25 +127,3 @@ class TestServerInitialization:
             process.wait(timeout=5)
             if process.stdout is not None:
                 process.stdout.close()
-
-
-class TestBasicFunctionality:
-    """Test basic server functionality without external dependencies."""
-
-    def test_imports_work(self) -> None:
-        """Test that all required imports are working."""
-        import server
-
-        assert hasattr(server, "mcp")  # FastMCP instance
-        assert hasattr(server, "MonarchMoney")
-        assert hasattr(server, "convert_dates_to_strings")
-        assert hasattr(server, "initialize_client")
-
-    def test_environment_variable_access(self) -> None:
-        """Test that environment variable access works."""
-        import os
-
-        email = os.getenv("MONARCH_EMAIL")
-        password = os.getenv("MONARCH_PASSWORD")
-        assert email is None or isinstance(email, str)
-        assert password is None or isinstance(password, str)

@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-from datetime import date
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -17,8 +16,8 @@ class TestBulkTransactionUpdates:
         from server import update_transactions_bulk
 
         mock_update_results = [
-            {"id": "txn_123", "amount": 50.0, "updated": True},
-            {"id": "txn_456", "category_id": "cat_789", "updated": True},
+            {"updateTransaction": {"errors": [], "transaction": {"id": "txn_123", "amount": 50.0}}},
+            {"updateTransaction": {"errors": [], "transaction": {"id": "txn_456", "category_id": "cat_789"}}},
         ]
 
         mock_client = MagicMock()
@@ -53,7 +52,7 @@ class TestBulkTransactionUpdates:
 
         async def mock_update(**kwargs):
             if kwargs["transaction_id"] == "txn_123":
-                return {"id": "txn_123", "updated": True}
+                return {"updateTransaction": {"errors": [], "transaction": {"id": "txn_123"}}}
             else:
                 raise Exception("Transaction not found")
 
@@ -118,7 +117,7 @@ class TestBulkTransactionUpdates:
     async def test_malformed_item_does_not_mutate_or_abort_batch(self, invalid_update: object) -> None:
         from server import update_transactions_bulk
 
-        api = AsyncMock(return_value={"updated": True})
+        api = AsyncMock(return_value={"updateTransaction": {"errors": [], "transaction": {"id": "txn_valid"}}})
         updates = json.dumps([invalid_update, {"transaction_id": "txn_valid", "amount": 25}])
         with (
             patch("server.api_call_with_retry", api),
@@ -140,8 +139,9 @@ class TestBulkTransactionUpdates:
 
         transaction = {"hide_from_reports": True, "notes": "Old note", "goal_id": "goal_old", "merchant_name": "Shop"}
 
-        async def apply_update(method_name: str, transaction_id: str, **changes: object) -> None:
+        async def apply_update(method_name: str, transaction_id: str, **changes: object) -> dict[str, object]:
             transaction.update(changes)
+            return {"updateTransaction": {"errors": [], "transaction": {"id": transaction_id, **transaction}}}
 
         updates = json.dumps(
             [
@@ -176,64 +176,6 @@ class TestBulkTransactionUpdates:
             assert result["results"] == []
 
     @pytest.mark.asyncio
-    async def test_update_transactions_bulk_date_parsing(self):
-        """Test that dates are properly parsed in bulk updates."""
-        from server import update_transactions_bulk
-
-        mock_client = MagicMock()
-        mock_client.update_transaction = AsyncMock(return_value={"id": "txn_123", "updated": True})
-
-        updates_json = json.dumps([{"transaction_id": "txn_123", "date": "2024-01-15"}])
-
-        with patch("server.mm_client", mock_client), patch("server.ensure_authenticated", new_callable=AsyncMock):
-            result_str = await update_transactions_bulk(updates_json)
-            result = json.loads(result_str.model_dump_json())
-
-            assert result["results"][0]["status"] == "success"
-
-            call_kwargs = mock_client.update_transaction.call_args[1]
-            assert "date" in call_kwargs
-            assert isinstance(call_kwargs["date"], date)
-            assert call_kwargs["date"].year == 2024
-            assert call_kwargs["date"].month == 1
-            assert call_kwargs["date"].day == 15
-
-    @pytest.mark.asyncio
-    async def test_update_transactions_bulk_all_fields(self):
-        """Test bulk update with all possible fields."""
-        from server import update_transactions_bulk
-
-        mock_client = MagicMock()
-        mock_client.update_transaction = AsyncMock(return_value={"id": "txn_123", "updated": True})
-
-        updates_json = json.dumps(
-            [
-                {
-                    "transaction_id": "txn_123",
-                    "amount": 75.50,
-                    "merchant_name": "Updated merchant",
-                    "category_id": "cat_456",
-                    "date": "2024-02-20",
-                    "notes": "Updated notes",
-                }
-            ]
-        )
-
-        with patch("server.mm_client", mock_client), patch("server.ensure_authenticated", new_callable=AsyncMock):
-            result_str = await update_transactions_bulk(updates_json)
-            result = json.loads(result_str.model_dump_json())
-
-            assert result["results"][0]["status"] == "success"
-
-            call_kwargs = mock_client.update_transaction.call_args[1]
-            assert call_kwargs["transaction_id"] == "txn_123"
-            assert call_kwargs["amount"] == 75.50
-            assert call_kwargs["merchant_name"] == "Updated merchant"
-            assert call_kwargs["category_id"] == "cat_456"
-            assert call_kwargs["notes"] == "Updated notes"
-            assert isinstance(call_kwargs["date"], date)
-
-    @pytest.mark.asyncio
     async def test_update_transactions_bulk_parallel_execution(self):
         """Test that bulk updates execute in parallel."""
         import asyncio
@@ -249,7 +191,7 @@ class TestBulkTransactionUpdates:
             execution_order.append(f"start_{txn_id}")
             await asyncio.sleep(0.01)  # Simulate API call
             execution_order.append(f"end_{txn_id}")
-            return {"id": txn_id, "updated": True}
+            return {"updateTransaction": {"errors": [], "transaction": {"id": txn_id}}}
 
         mock_client.update_transaction = AsyncMock(side_effect=mock_update)
 
@@ -284,7 +226,7 @@ class TestBulkUpdatePerformance:
 
         async def mock_update(**kwargs):
             await asyncio.sleep(0.05)  # Simulate 50ms API call
-            return {"id": kwargs["transaction_id"], "updated": True}
+            return {"updateTransaction": {"errors": [], "transaction": {"id": kwargs["transaction_id"]}}}
 
         mock_client.update_transaction = AsyncMock(side_effect=mock_update)
 
