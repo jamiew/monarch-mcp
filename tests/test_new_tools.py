@@ -101,6 +101,41 @@ class TestNewMonarchTools:
         history_graphql.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_get_account_history_filters_before_paging_in_upstream_order(
+        self, history_graphql: AsyncMock
+    ) -> None:
+        snapshots: list[dict[str, JsonValue]] = [
+            {"date": "2026-10-01", "signedBalance": 1100},
+            {"date": "2026-09-30", "signedBalance": 1050},
+            {"date": "2026-08-31", "signedBalance": 900},
+            {"date": "2026-09-01", "signedBalance": 1000},
+            {"date": "2026-09-15", "signedBalance": 1025},
+        ]
+        history_graphql.return_value = {
+            "account": {"displayName": "Synthetic account"},
+            "snapshots": snapshots,
+        }
+        expected = [
+            {**snapshots[index], "accountId": "acc_001", "accountName": "Synthetic account"} for index in (1, 3, 4)
+        ]
+
+        first = await server.get_account_history("acc_001", start_date="2026-09-01", end_date="2026-09-30", limit=2)
+        assert first.history == expected[:2]
+        assert (first.count, first.total_count, first.offset, first.next_offset) == (2, 3, 0, 2)
+
+        final = await server.get_account_history(
+            "acc_001", start_date="2026-09-01", end_date="2026-09-30", limit=2, offset=2
+        )
+        assert final.history == expected[2:]
+        assert (final.count, final.total_count, final.offset, final.next_offset) == (1, 3, 2, None)
+
+        empty = await server.get_account_history(
+            "acc_001", start_date="2026-09-01", end_date="2026-09-30", limit=2, offset=4
+        )
+        assert empty.history == []
+        assert (empty.count, empty.total_count, empty.offset, empty.next_offset) == (0, 3, 4, None)
+
+    @pytest.mark.asyncio
     async def test_get_institutions(self) -> None:
         """Test get_institutions functionality."""
         mock_client = AsyncMock()

@@ -3,7 +3,7 @@
   "name": "io.github.jamiew/monarch-mcp",
   "title": "Monarch MCP Server",
   "description": "Query and update Monarch Money accounts, transactions, and budgets",
-  "version": "0.3.2",
+  "version": "0.5.0",
   "repository": {
     "url": "https://github.com/jamiew/monarch-mcp",
     "source": "github"
@@ -12,7 +12,7 @@
     {
       "registryType": "pypi",
       "identifier": "monarch-mcp-jamiew",
-      "version": "0.3.2",
+      "version": "0.5.0",
       "transport": {
         "type": "stdio"
       },
@@ -46,27 +46,30 @@
   ],
   "tools": [
     { "name": "get_accounts", "description": "List accounts with balances" },
-    { "name": "get_transactions", "description": "Filter transactions by date, account, or category" },
-    { "name": "search_transactions", "description": "Search by merchant or keyword" },
+    { "name": "get_transactions", "description": "Filter transactions by date, account, category, or pending/posted status" },
+    { "name": "search_transactions", "description": "Search by merchant or keyword, optionally pending/posted only" },
     { "name": "get_budgets", "description": "Get budgets and spending limits" },
     { "name": "get_cashflow", "description": "Get income and expense totals" },
     { "name": "get_transaction_categories", "description": "List transaction categories" },
+    { "name": "get_transaction_rules", "description": "Page through compact rules in priority order; verbose details optional" },
+    { "name": "get_household_members", "description": "List household members and IDs for ownership updates" },
     { "name": "create_transaction", "description": "Create a manual transaction" },
-    { "name": "update_transaction", "description": "Update a transaction" },
-    { "name": "update_transactions_bulk", "description": "Update multiple transactions in parallel" },
+    { "name": "update_transaction", "description": "Update transaction fields or assign ownership" },
+    { "name": "update_transactions_bulk", "description": "Update fields or owners with per-item results" },
     { "name": "get_transaction_splits", "description": "Read transaction splits" },
     { "name": "update_transaction_splits", "description": "Replace all splits; an empty list removes them" },
     { "name": "get_account_holdings", "description": "Get account investment holdings" },
-    { "name": "get_account_history", "description": "Get account balance history" },
+    { "name": "get_all_holdings", "description": "Get holdings grouped by brokerage account" },
+    { "name": "get_account_history", "description": "Page through account history with inclusive ISO date bounds" },
     { "name": "get_institutions", "description": "List linked financial institutions" },
-    { "name": "get_recurring_transactions", "description": "Read scheduled occurrences, not payment status; date filters unreleased" },
-    { "name": "update_recurring_transaction", "description": "Unreleased: edit merchant-wide recurrence, not posted transactions" },
+    { "name": "get_recurring_transactions", "description": "Read scheduled occurrences within a date range, not payment status" },
+    { "name": "update_recurring_transaction", "description": "Edit merchant-wide recurrence, not posted transactions" },
     { "name": "set_budget_amount", "description": "Set a category budget" },
     { "name": "create_manual_account", "description": "Create a manually tracked account" },
     { "name": "refresh_accounts", "description": "Request account refresh" },
     { "name": "get_spending_summary", "description": "Group spending by category, account, or month" },
-    { "name": "get_complete_financial_overview", "description": "Combine accounts, transactions, budgets, cashflow, and categories" },
-    { "name": "analyze_spending_patterns", "description": "Summarize trends with optional average-based forecasts" }
+    { "name": "get_complete_financial_overview", "description": "Get compact financial summaries; full sections optional" },
+    { "name": "analyze_spending_patterns", "description": "Summarize trends with compact budgets and optional forecasts" }
   ],
   "securityConsiderations": "Unofficial API access requires Monarch credentials with full read/write access. Protect credentials, session tokens, and logs, which may contain financial inputs and error details."
 }

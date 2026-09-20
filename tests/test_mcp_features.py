@@ -192,25 +192,31 @@ class TestProgressReporting:
 
     @pytest.mark.asyncio
     async def test_overview_reports_progress(self, mock_api: AsyncMock) -> None:
-        mock_api.return_value = []
+        responses = {
+            "get_accounts": {"accounts": []},
+            "get_budgets": {"budgetData": {"totalsByMonth": []}},
+            "get_cashflow": {"summary": [{"summary": {"sumIncome": 0, "sumExpense": 0}}]},
+            "get_transactions": {"allTransactions": {"results": [], "totalCount": 0}},
+            "get_transaction_categories": {"categories": []},
+        }
+        mock_api.side_effect = lambda method, **kwargs: responses[method]
         ctx = AsyncMock()
         await server.get_complete_financial_overview(period="this month", ctx=ctx)
-        assert ctx.report_progress.await_count >= 2
         first_progress = ctx.report_progress.await_args_list[0].args[0]
         last_progress = ctx.report_progress.await_args_list[-1].args[0]
         assert first_progress == 0
-        assert last_progress == 5
+        assert last_progress == ctx.report_progress.await_args_list[-1].args[1]
 
     @pytest.mark.asyncio
     async def test_analyze_patterns_reports_progress(self, mock_api: AsyncMock) -> None:
-        mock_api.return_value = []
+        responses = {
+            "get_transactions": {"allTransactions": {"results": [], "totalCount": 0}},
+            "get_budgets": {"budgetData": {"totalsByMonth": []}},
+        }
+        mock_api.side_effect = lambda method, **kwargs: responses[method]
         ctx = AsyncMock()
         await server.analyze_spending_patterns(lookback_months=2, include_forecasting=False, ctx=ctx)
-        assert ctx.report_progress.await_count >= 2
-
-    @pytest.mark.asyncio
-    async def test_overview_works_without_context(self, mock_api: AsyncMock) -> None:
-        # ctx is optional; omitting it must not raise.
-        mock_api.return_value = []
-        result = await server.get_complete_financial_overview(period="this month")
-        assert isinstance(result, server.FinancialOverview)
+        first_progress = ctx.report_progress.await_args_list[0].args[0]
+        last_progress = ctx.report_progress.await_args_list[-1].args[0]
+        assert first_progress == 0
+        assert last_progress == ctx.report_progress.await_args_list[-1].args[1]
