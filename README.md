@@ -24,7 +24,7 @@ Comparison checked September 14, 2026. Other forks overlap on financial tools; t
 
 Install [`uv`](https://docs.astral.sh/uv/), then configure your MCP client to run `uvx monarch-mcp-jamiew`. You'll need your Monarch email and password, plus an [MFA secret](#getting-your-mfa-secret) for TOTP-based 2FA.
 
-**Release status:** This README covers source. Recurring date filters and editing, stricter bulk validation, and the latest authentication fixes are unreleased. Use [source setup](#from-source-development) for these; `uvx` runs the [published release](https://pypi.org/project/monarch-mcp-jamiew/).
+**Release status:** This README covers source. New tools, ownership updates, recurring editing, and hardening fixes are unreleased. Use [source setup](#from-source-development) for these; `uvx` runs the [published release](https://pypi.org/project/monarch-mcp-jamiew/).
 
 ### Standard config
 
@@ -181,23 +181,26 @@ Then point your client at the local copy with absolute paths (find them with `wh
 
 ## Tools
 
-The source checkout exposes these 22 tools. See [release status](#setup) for unpublished changes.
+The source checkout exposes these 25 tools. See [release status](#setup) for unpublished changes.
 
 | Tool | Description |
 |------|-------------|
 | `get_accounts` | List accounts with balances |
-| `get_transactions` | Transactions with date/account/category filtering |
-| `search_transactions` | Search by merchant name or keyword |
+| `get_transactions` | Transactions with date/account/category and pending/posted filtering |
+| `search_transactions` | Search by merchant name or keyword, optionally pending/posted only |
 | `get_transaction_categories` | Category list (compact by default) |
+| `get_transaction_rules` | Read automation rules and their criteria/actions in priority order |
+| `get_household_members` | Household members and IDs for ownership updates |
 | `create_transaction` | Create a manual transaction |
-| `update_transaction` | Update a single transaction |
-| `update_transactions_bulk` | Update multiple transactions in parallel |
+| `update_transaction` | Update transaction fields or assign ownership |
+| `update_transactions_bulk` | Update fields or owners with per-item success/failure |
 | `get_transaction_splits` | Read a transaction's splits |
 | `update_transaction_splits` | Replace all splits; an empty list removes them |
 | `get_budgets` | Budget data and spending analysis |
 | `get_cashflow` | Income and expense analysis |
 | `get_account_holdings` | Investment holdings for an account (requires `account_id`) |
-| `get_account_history` | Account balance history |
+| `get_all_holdings` | Holdings grouped by brokerage account; excludes other account types |
+| `get_account_history` | Balance history with inclusive, locally applied ISO date bounds |
 | `get_institutions` | Linked financial institutions |
 | `get_recurring_transactions` | Scheduled occurrences within a date range |
 | `update_recurring_transaction` | Change a merchant's recurring schedule |
@@ -206,7 +209,13 @@ The source checkout exposes these 22 tools. See [release status](#setup) for unp
 | `refresh_accounts` | Trigger account data refresh |
 | `get_spending_summary` | Spending aggregated by category, account, or month |
 | `get_complete_financial_overview` | Combine accounts, budgets, cashflow, transactions, and categories |
-| `analyze_spending_patterns` | Multi-month trend analysis |
+| `analyze_spending_patterns` | Monthly trends and forecasts, with explicit upstream errors |
+
+Use `is_pending=True` for pending transactions or `False` for posted ones; omit it
+for both. Single and bulk updates accept `owner_user_id` from `get_household_members`.
+An empty string sets Shared ownership; omitted/null leaves ownership unchanged.
+Assignments override inherited ownership. Inspect `ownedByUser` with `verbose=True`;
+the update response does not include it.
 
 ### Recurring transactions
 

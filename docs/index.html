@@ -941,7 +941,7 @@
                         <a href="#tools" class="btn-primary btn-ghost btn-lg">Browse the tools</a>
                     </div>
                     <p class="hero-techline">
-                        <strong>22</strong> tools in the source checkout<span class="dot">·</span>Structured output<span class="dot">·</span>Read and write access
+                        <strong>25</strong> tools in the source checkout<span class="dot">·</span>Structured output<span class="dot">·</span>Read and write access
                     </p>
                 </div>
             </div>
@@ -1013,8 +1013,8 @@
                     <div class="eyebrow">Reference</div>
                     <h2 class="section-title">Available tools</h2>
                     <p class="section-subtitle">
-                        This catalog covers source. Recurring date filters and editing, stricter bulk validation,
-                        and the latest authentication fixes are unreleased.
+                        This catalog covers source. New tools, ownership updates, recurring editing,
+                        and hardening fixes are unreleased.
                         Use <a href="https://github.com/jamiew/monarch-mcp#from-source-development">source setup</a>
                         for these; <code>uvx</code> runs the published release.
                     </p>
@@ -1030,7 +1030,7 @@
                             </div>
                             <div class="tool-item">
                                 <div class="tool-name">get_transactions</div>
-                                <div class="tool-desc">Get transactions filtered by date, account, or category.</div>
+                                <div class="tool-desc">Filter transactions by date, account, category, or pending/posted status.</div>
                                 <div class="tool-params">
                                     <div class="tool-params-title">Key features</div>
                                     <ul>
@@ -1052,6 +1052,14 @@
                                 <div class="tool-name">get_transaction_categories</div>
                                 <div class="tool-desc">List transaction categories.</div>
                             </div>
+                            <div class="tool-item">
+                                <div class="tool-name">get_transaction_rules</div>
+                                <div class="tool-desc">Read automation rules, criteria, and actions in priority order.</div>
+                            </div>
+                            <div class="tool-item">
+                                <div class="tool-name">get_household_members</div>
+                                <div class="tool-desc">List household members and IDs for ownership updates.</div>
+                            </div>
                         </div>
                     </div>
 
@@ -1060,7 +1068,7 @@
                         <div class="tool-grid">
                             <div class="tool-item">
                                 <div class="tool-name">search_transactions</div>
-                                <div class="tool-desc">Search transactions by merchant name or keyword.</div>
+                                <div class="tool-desc">Search by merchant or keyword, optionally pending/posted only.</div>
                             </div>
                             <div class="tool-item">
                                 <div class="tool-name">create_transaction</div>
@@ -1068,11 +1076,11 @@
                             </div>
                             <div class="tool-item">
                                 <div class="tool-name">update_transaction</div>
-                                <div class="tool-desc">Update an existing transaction's details.</div>
+                                <div class="tool-desc">Update transaction fields or assign an owner. Empty <code>owner_user_id</code> sets Shared; omitted/null preserves ownership.</div>
                             </div>
                             <div class="tool-item">
                                 <div class="tool-name">update_transactions_bulk</div>
-                                <div class="tool-desc">Update multiple transactions in parallel.</div>
+                                <div class="tool-desc">Update fields or owners in parallel, with per-item success/failure.</div>
                             </div>
                             <div class="tool-item">
                                 <div class="tool-name">get_transaction_splits</div>
@@ -1093,8 +1101,12 @@
                                 <div class="tool-desc">Get investment holdings for an account (requires <code>account_id</code>).</div>
                             </div>
                             <div class="tool-item">
+                                <div class="tool-name">get_all_holdings</div>
+                                <div class="tool-desc">Get holdings grouped by brokerage account, excluding other account types.</div>
+                            </div>
+                            <div class="tool-item">
                                 <div class="tool-name">get_account_history</div>
-                                <div class="tool-desc">Get account balance history.</div>
+                                <div class="tool-desc">Get balance history with inclusive, locally applied ISO date bounds.</div>
                             </div>
                             <div class="tool-item">
                                 <div class="tool-name">get_institutions</div>
@@ -1152,7 +1164,7 @@
                             </div>
                             <div class="tool-item">
                                 <div class="tool-name">analyze_spending_patterns</div>
-                                <div class="tool-desc">Summarize spending across months, with optional average-based forecasts.</div>
+                                <div class="tool-desc">Summarize monthly spending with optional forecasts and explicit upstream errors.</div>
                                 <div class="tool-params">
                                     <div class="tool-params-title">Includes</div>
                                     <ul>

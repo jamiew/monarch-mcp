@@ -228,21 +228,34 @@ class TestBatchToolDegradation:
 
     @pytest.mark.asyncio
     async def test_analyze_spending_patterns_degrades_when_transactions_fail(self, mock_api: AsyncMock) -> None:
+        budgets = {
+            "budgetData": {
+                "monthlyAmountsByCategory": [
+                    {
+                        "category": {"id": "cat_001"},
+                        "monthlyAmounts": [{"month": "2026-09-01", "plannedCashFlowAmount": 200}],
+                    }
+                ]
+            }
+        }
         mock_api.side_effect = dispatch(
             {
                 "get_transactions": RuntimeError("transactions service down"),
-                "get_budgets": [],
+                "get_budgets": budgets,
                 "get_accounts": [],
                 "get_transaction_categories": [],
             }
         )
-        result = await server.analyze_spending_patterns(lookback_months=3, include_forecasting=False)
+        result = await server.analyze_spending_patterns(lookback_months=3, include_forecasting=True)
         assert result.monthly_trends == {}
         assert result.category_analysis == {}
         assert result.analysis_period["months_analyzed"] == 3
+        assert set(result.errors) == {"transactions"}
+        assert result.budget_performance == budgets
+        assert result.forecast is None
 
     @pytest.mark.asyncio
-    async def test_analyze_spending_patterns_builds_trends_on_success(self, mock_api: AsyncMock) -> None:
+    async def test_analyze_spending_patterns_retains_trends_when_budgets_fail(self, mock_api: AsyncMock) -> None:
         transactions = [
             {"date": "2024-01-15", "amount": -50.0, "category": {"name": "Food"}, "account": {"name": "Checking"}},
             {"date": "2024-02-10", "amount": -75.0, "category": {"name": "Food"}, "account": {"name": "Checking"}},
@@ -250,12 +263,17 @@ class TestBatchToolDegradation:
         mock_api.side_effect = dispatch(
             {
                 "get_transactions": transactions,
-                "get_budgets": [],
+                "get_budgets": RuntimeError("budgets service down"),
                 "get_accounts": [],
                 "get_transaction_categories": [],
             }
         )
-        result = await server.analyze_spending_patterns(lookback_months=3, include_forecasting=False)
-        assert "2024-01" in result.monthly_trends
-        assert "2024-02" in result.monthly_trends
+        result = await server.analyze_spending_patterns(lookback_months=3, include_forecasting=True)
+        assert result.monthly_trends == {
+            "2024-01": {"income": 0, "expenses": 50, "net": -50, "transaction_count": 1},
+            "2024-02": {"income": 0, "expenses": 75, "net": -75, "transaction_count": 1},
+        }
         assert result.category_analysis["Food"]["total"] == 125.0
+        assert set(result.errors) == {"budgets"}
+        assert result.budget_performance == {}
+        assert result.forecast["predicted_expenses"] == 62.5

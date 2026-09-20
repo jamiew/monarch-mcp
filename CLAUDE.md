@@ -59,12 +59,15 @@ That command contacts Monarch. Ordinary tests use synthetic data and skip live c
 - Authentication uses one `mm_client` and a lock. It starts lazily on the first data call; loading a session does not validate it immediately.
 - `api_call_with_retry()` retries recognized authentication failures with reauthentication. It is not a general network retry or rate-limit policy.
 - Three static resources expose accounts, categories, and institutions. Two resource templates expose account holdings/history. Four prompts support completions; batch analysis reports progress through `Context`.
+- POSIX pipe input uses a cancellable asyncio reader with SDK framing so SIGINT works without EOF. Windows and regular-file input retain the SDK transport; Windows signal behavior is not verified.
 
 See README for the tool catalog. Keep these less-obvious contracts intact:
 
-- `get_account_holdings` requires an account ID.
+- `get_account_holdings` requires an account ID. `get_all_holdings` fetches brokerage accounts only, then their holdings concurrently; one failure fails the call.
 - Transaction splits are full-replace; an empty list removes all splits.
 - Bulk updates validate each item independently. Invalid types and unknown fields fail that item; omitted/null fields stay unchanged, while valid false and empty-string updates are preserved.
+- `owner_user_id` assigns a household member; "" explicitly sets Shared, while omitted/null leaves ownership unchanged. Ownership updates override inheritance. Single/bulk mutations validate nested errors and require a returned transaction.
+- Account-history dates filter snapshots locally; upstream accepts only account_id. Transaction/budget requests need ISO strings, not Python dates. Spending analysis exposes failed sections in `errors`.
 - Recurring reads return scheduled occurrences for a date range, not a complete stream inventory. Missing date bounds use the supplied date's month; no dates means the current month.
 - `update_recurring_transaction` changes a merchant-wide schedule through upstream `update_reoccuring`. Use the merchant ID and current name, not a stream or transaction ID. Check nested mutation errors before reporting success.
 - Recurring `isPast` is not proof of payment. Forecasts and posted transactions must not be double-counted.
@@ -91,12 +94,12 @@ Source changes marked **Unreleased** are not available through PyPI until publis
 
 ## Upstream library and forks
 
-**Checked 2026-09-14.** Keep `monarchmoneycommunity`; no inspected sibling is a safer replacement.
+**Community and parent rechecked 2026-09-20; sibling survey 2026-09-14.** Keep `monarchmoneycommunity`; no inspected sibling is a safer replacement.
 
 | Repository | Verified revision/activity | Assessment |
 |---|---|---|
 | [hammem/monarchmoney](https://github.com/hammem/monarchmoney) | `98a6e0d`, 2025-11-03 | No new merged fixes. Domain and cookie-auth PRs remain open. |
-| [bradleyseanf/monarchmoneycommunity](https://github.com/bradleyseanf/monarchmoneycommunity) | `dev` `c2f91f14`, 2026-09-09; PyPI 1.5.2, 2026-08-02 | Active dependency. Stable adds liability/ownership fields, pending filtering, and an MFA error fix. |
+| [bradleyseanf/monarchmoneycommunity](https://github.com/bradleyseanf/monarchmoneycommunity) | `dev` `d30f2859`; PyPI 1.6.0, 2026-09-20 | Stable now includes all-holdings, expanded rules, household lookup/ownership updates, and proxy support. |
 | [keithah/monarchmoney-enhanced](https://github.com/keithah/monarchmoney-enhanced) | `3c7d442`, 2026-08-13; PyPI 0.11.0 | Dependency maintenance, but feature-stale. Old API domain and divergent service/public queries. |
 | [tommyzed/monarchmoney-i18n-transactions](https://github.com/tommyzed/monarchmoney-i18n-transactions) | `9b5acb9`, 2026-09-14 | Active currency/import app, not a replacement client. Ordinary recurring getter. |
 | [jribnik/monarchmoney-enhanced](https://github.com/jribnik/monarchmoney-enhanced) | PR branches, 2026-07-28 | Proposed rules/transaction schema fixes, not a maintained release. |
@@ -104,7 +107,7 @@ Source changes marked **Unreleased** are not available through PyPI until publis
 
 Discovery covered the parent's 15 most-starred and 15 newest forks, 30 community children, and nine enhanced children. Push dates alone can reflect inherited commits.
 
-**Pin policy:** track a verified community `dev` HEAD by exact SHA. Current pin: `c2f91f14f3d962d36275cb934dd3594b8aa1dcad`. Update its comment date when changing it. The published floor is `>=1.5.2`; tools must work with that release. Dev-only proxy support, date normalization, all-holdings aggregation, rules, and household APIs are not guaranteed for PyPI installs.
+**Pin policy:** track verified community `dev` HEAD by exact SHA. Current pin: `d30f285998a8a64db7f8e923f6742e095645c2b4`, identical in source to v1.6.0. Update its comment date when changing it. Published floor: `>=1.6.0`; tools must work with that release. Since the old pin, production changes add rule fields and bounded duplicate scans; typed budgets are optional. None fixes history date arguments or transaction/budget date serialization.
 
 **Recurring candidates:** [parent PR #165](https://github.com/hammem/monarchmoney/pull/165) and enhanced's service implement `recurringTransactionStreams` with liability forecasts. These queries were not live-validated. Enhanced's paid/late summaries and review/disable mutations also need validation before adoption. A larger method list is not evidence of working coverage.
 
