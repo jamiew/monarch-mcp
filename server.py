@@ -548,6 +548,10 @@ class BrokerageHoldingsResult(MMModel):
 class TransactionRulesResult(MMModel):
     rules: list[JsonValue]
     count: int
+    total_count: int
+    offset: int
+    next_offset: int | None
+    verbose: bool
 
 
 class HouseholdMembersResult(MMModel):
@@ -562,6 +566,10 @@ class AccountHistorySnapshot(MMModel):
 class AccountHistoryResult(MMModel):
     account_id: str
     history: JsonValue
+    count: int
+    total_count: int
+    offset: int
+    next_offset: int | None
 
 
 class InstitutionsResult(MMModel):
@@ -624,6 +632,7 @@ class SpendingSummaryResult(MMModel):
 
 class FinancialOverview(MMModel):
     period: str
+    verbose: bool = False
     accounts: JsonValue = None
     budgets: JsonValue = None
     cashflow: JsonValue = None
@@ -634,6 +643,7 @@ class FinancialOverview(MMModel):
 
 
 class SpendingPatterns(MMModel):
+    verbose: bool = False
     analysis_period: JsonValue = None
     monthly_trends: JsonValue = None
     category_analysis: JsonValue = None
@@ -642,6 +652,51 @@ class SpendingPatterns(MMModel):
     forecast: JsonValue = None
     metadata: JsonValue = None
     errors: dict[str, str] = Field(default_factory=dict)
+
+
+def _compact_payload(value: JsonValue) -> JsonValue:
+    """Drop unused object fields without losing false, zero, or empty-string values."""
+    if isinstance(value, dict):
+        compact: dict[str, JsonValue] = {}
+        for key, item in value.items():
+            if key == "__typename":
+                continue
+            reduced = _compact_payload(item)
+            if reduced is not None and reduced != [] and reduced != {}:
+                compact[key] = reduced
+        return compact
+    if isinstance(value, list):
+        return [_compact_payload(item) for item in value]
+    return value
+
+
+def _budget_totals(response: object, verbose: bool = False) -> dict[str, JsonValue]:
+    payload = TypeAdapter(dict[str, JsonValue]).validate_python(response)
+    data = payload.get("budgetData")
+    if not isinstance(data, dict) or not isinstance(data.get("totalsByMonth"), list):
+        raise ValueError("Budget response is missing totalsByMonth")
+    return payload if verbose else {"totalsByMonth": _compact_payload(data["totalsByMonth"])}
+
+
+def _cashflow_summary(response: object, verbose: bool = False) -> JsonValue:
+    payload = TypeAdapter(dict[str, JsonValue]).validate_python(response)
+    aggregates = payload.get("summary")
+    if not isinstance(aggregates, list) or len(aggregates) != 1:
+        raise ValueError("Cashflow response must contain one summary aggregate")
+    aggregate = aggregates[0]
+    if not isinstance(aggregate, dict) or not isinstance(aggregate.get("summary"), dict):
+        raise ValueError("Cashflow response is missing summary")
+    return payload if verbose else _compact_payload(aggregate["summary"])
+
+
+def _transactions_truncated(response: object, returned: int) -> bool | None:
+    if isinstance(response, dict):
+        transactions = response.get("allTransactions")
+        if isinstance(transactions, dict):
+            total = transactions.get("totalCount")
+            if isinstance(total, int) and not isinstance(total, bool):
+                return total > returned
+    return None
 
 
 # MCP resources
@@ -1677,15 +1732,29 @@ async def get_all_holdings() -> BrokerageHoldingsResult:
 
 @mcp.tool(annotations=READONLY, title="Get Transaction Rules")
 @track_usage
-async def get_transaction_rules() -> TransactionRulesResult:
-    """Read transaction automation rules in priority order, including criteria and actions.
+async def get_transaction_rules(limit: int = 25, offset: int = 0, verbose: bool = False) -> TransactionRulesResult:
+    """Read a page of automation rules in priority order, without modifying them.
 
-    Rules are returned as configured by Monarch; this does not execute or modify them.
+    limit: 1–100 (default 25); offset: zero-based position. Follow next_offset
+    until null; count is this page and total_count is all rules. Paging is local.
+    Compact results omit null/empty object fields and GraphQL type labels, but
+    preserve false, zero, and active criteria/actions. verbose=True returns the
+    full upstream objects for the requested page.
     """
+    if not 1 <= limit <= 100 or offset < 0:
+        raise ValueError("limit must be 1–100 and offset must be nonnegative")
     await ensure_authenticated()
     response = await api_call_with_retry("get_transaction_rules")
-    rules = extract_list(response, "transactionRules")
-    return TransactionRulesResult(rules=rules, count=len(rules))
+    rules = TypeAdapter(list[JsonValue]).validate_python(extract_list(response, "transactionRules"))
+    page = rules[offset : offset + limit]
+    return TransactionRulesResult(
+        rules=page if verbose else [_compact_payload(rule) for rule in page],
+        count=len(page),
+        total_count=len(rules),
+        offset=offset,
+        next_offset=offset + len(page) if offset + len(page) < len(rules) else None,
+        verbose=verbose,
+    )
 
 
 @mcp.tool(annotations=READONLY, title="Get Household Members")
@@ -1721,13 +1790,18 @@ async def get_account_holdings(account_id: str) -> HoldingsResult:
 @mcp.tool(annotations=READONLY, title="Get Account History")
 @track_usage
 async def get_account_history(
-    account_id: str, start_date: str | None = None, end_date: str | None = None
+    account_id: str, start_date: str | None = None, end_date: str | None = None, limit: int = 100, offset: int = 0
 ) -> AccountHistoryResult:
-    """Get balance history for account_id from get_accounts.
+    """Get a page of balance history for account_id from get_accounts.
 
-    Optional bounds are inclusive YYYY-MM-DD dates. An omitted bound is unbounded.
-    Monarch returns the full history; date filtering happens locally.
+    Optional YYYY-MM-DD bounds are inclusive; an omitted bound is unbounded.
+    Filtering precedes local paging, preserving Monarch's snapshot order.
+    limit: 1–1000 (default 100); offset: zero-based position after filtering.
+    Follow next_offset until null. total_count counts all matching snapshots.
+    Monarch still returns the full history upstream; the MCP response is bounded.
     """
+    if not 1 <= limit <= 1000 or offset < 0:
+        raise ValueError("limit must be 1–1000 and offset must be nonnegative")
     start = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date is not None else None
     end = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date is not None else None
     if start is not None and end is not None and start > end:
@@ -1743,7 +1817,16 @@ async def get_account_history(
                 for snapshot in snapshots
                 if (start is None or snapshot.date >= start) and (end is None or snapshot.date <= end)
             ]
-        return AccountHistoryResult(account_id=account_id, history=convert_dates_to_strings(history))
+        matching = TypeAdapter(list[JsonValue]).validate_python(convert_dates_to_strings(history))
+        page = matching[offset : offset + limit]
+        return AccountHistoryResult(
+            account_id=account_id,
+            history=page,
+            count=len(page),
+            total_count=len(matching),
+            offset=offset,
+            next_offset=offset + len(page) if offset + len(page) < len(matching) else None,
+        )
     except Exception as e:
         log.error("Failed to fetch account history", error=str(e), account_id=account_id)
         raise
@@ -1946,7 +2029,9 @@ async def get_spending_summary(
                 )
             elif group_by == "account":
                 key = (
-                    txn.get("account", {}).get("name", "Unknown") if isinstance(txn.get("account"), dict) else "Unknown"
+                    (txn["account"].get("displayName") or "Unknown")
+                    if isinstance(txn.get("account"), dict)
+                    else "Unknown"
                 )
             elif group_by == "month":
                 txn_date = txn.get("date", "")
@@ -2014,13 +2099,19 @@ async def refresh_accounts() -> RefreshResult:
 
 @mcp.tool(annotations=READONLY, title="Complete Financial Overview")
 @track_usage
-async def get_complete_financial_overview(period: str = "this month", ctx: Context | None = None) -> FinancialOverview:
-    """Fetch accounts, budgets, cash flow, transactions, and categories together.
+async def get_complete_financial_overview(
+    period: str = "this month", ctx: Context | None = None, verbose: bool = False
+) -> FinancialOverview:
+    """Fetch a compact financial overview; verbose=True includes full API details.
 
     period is a start date or phrase such as 'this month', 'last month', or 'this year';
     the end is always today. 'last month' therefore includes the current month too.
     Transactions and their summary use one page of up to 500 entries, not the full
     history. Failed API sections contain errors while successful sections remain.
+    Default: account IDs/names/balances/types, monthly budget totals, cashflow totals,
+    and a transaction summary. Raw transactions/categories are null unless verbose.
+    Use their dedicated tools for details. batch_metadata.transactions_truncated
+    is true if more transactions exist, false for a complete page, null if unknown.
     """
     await ensure_authenticated()
 
@@ -2044,23 +2135,38 @@ async def get_complete_financial_overview(period: str = "this month", ctx: Conte
         results: dict[str, Any] = {}
 
         if not isinstance(accounts, Exception):
-            results["accounts"] = convert_dates_to_strings(accounts)
+            if verbose:
+                results["accounts"] = convert_dates_to_strings(accounts)
+            else:
+                account_list = TypeAdapter(list[dict[str, JsonValue]]).validate_python(
+                    extract_list(accounts, "accounts")
+                )
+                results["accounts"] = [
+                    {key: account.get(key) for key in ("id", "displayName", "currentBalance", "type")}
+                    for account in account_list
+                ]
         else:
             results["accounts"] = {"error": str(accounts)}
 
         if not isinstance(budgets, Exception):
-            results["budgets"] = convert_dates_to_strings(budgets)
+            try:
+                results["budgets"] = _budget_totals(convert_dates_to_strings(budgets), verbose)
+            except ValueError as error:
+                results["budgets"] = {"error": str(error)}
         else:
             results["budgets"] = {"error": str(budgets)}
 
         if not isinstance(cashflow, Exception):
-            results["cashflow"] = convert_dates_to_strings(cashflow)
+            try:
+                results["cashflow"] = _cashflow_summary(convert_dates_to_strings(cashflow), verbose)
+            except ValueError as error:
+                results["cashflow"] = {"error": str(error)}
         else:
             results["cashflow"] = {"error": str(cashflow)}
 
         if not isinstance(transactions, Exception):
             transactions_list = extract_transactions_list(transactions)
-            results["transactions"] = convert_dates_to_strings(transactions_list)
+            results["transactions"] = convert_dates_to_strings(transactions_list) if verbose else None
             if isinstance(transactions_list, list):
                 results["transaction_summary"] = {
                     "total_count": len(transactions_list),
@@ -2079,9 +2185,9 @@ async def get_complete_financial_overview(period: str = "this month", ctx: Conte
                     ),
                     "unique_accounts": len(
                         {
-                            t.get("account", {}).get("name", "Unknown")
+                            t["account"]["id"]
                             for t in transactions_list
-                            if isinstance(t.get("account"), dict)
+                            if isinstance(t.get("account"), dict) and t["account"].get("id")
                         }
                     ),
                 }
@@ -2089,7 +2195,7 @@ async def get_complete_financial_overview(period: str = "this month", ctx: Conte
             results["transactions"] = {"error": str(transactions)}
 
         if not isinstance(categories, Exception):
-            results["categories"] = convert_dates_to_strings(categories)
+            results["categories"] = convert_dates_to_strings(categories) if verbose else None
         else:
             results["categories"] = {"error": str(categories)}
 
@@ -2101,8 +2207,14 @@ async def get_complete_financial_overview(period: str = "this month", ctx: Conte
             "filters_applied": convert_dates_to_strings(filters),
             "api_calls_made": 5,
             "timestamp": datetime.now().isoformat(),
+            "transactions_truncated": (
+                _transactions_truncated(transactions, len(transactions_list))
+                if not isinstance(transactions, Exception)
+                else None
+            ),
         }
         results["period"] = period
+        results["verbose"] = verbose
 
         accounts_val = results.get("accounts", [])
         summary_val = results.get("transaction_summary")
@@ -2123,25 +2235,28 @@ async def get_complete_financial_overview(period: str = "this month", ctx: Conte
 @mcp.tool(annotations=READONLY, title="Analyze Spending Patterns")
 @track_usage
 async def analyze_spending_patterns(
-    lookback_months: int = 6, include_forecasting: bool = True, ctx: Context | None = None
+    lookback_months: int = 6, include_forecasting: bool = True, ctx: Context | None = None, verbose: bool = False
 ) -> SpendingPatterns:
     """Summarize monthly trends, category expenses, account usage, and budget data.
 
     Args:
         lookback_months: Months before today to include (default: 6).
         include_forecasting: Include average-based income and expense estimates.
+        verbose: Include full budget details instead of monthly budget totals.
 
     Requests one page of up to 2000 transactions, without pagination; analysis can
     be incomplete for larger periods. Forecasts average up to three month buckets
     in response order, not necessarily the latest three calendar months. The
     confidence label is fixed, not a statistical measure. Failed transaction or
     budget requests appear in errors; successful analysis sections remain available.
+    metadata.transactions_truncated reports whether more transactions exist
+    (null when unknown). Fetch narrower date ranges with get_transactions for detail.
     """
     await ensure_authenticated()
 
     try:
         if ctx is not None:
-            await ctx.report_progress(0, 2, "Fetching transactions, budgets, accounts, categories…")
+            await ctx.report_progress(0, 2, "Fetching transactions and budgets…")
 
         end_date = datetime.now().date()
         start_date = end_date - relativedelta(months=lookback_months)
@@ -2152,13 +2267,8 @@ async def analyze_spending_patterns(
         budgets_task = api_call_with_retry(
             "get_budgets", start_date=start_date.isoformat(), end_date=end_date.isoformat()
         )
-        accounts_task = api_call_with_retry("get_accounts")
-        categories_task = api_call_with_retry("get_transaction_categories")
-
-        api_results = await asyncio.gather(
-            transactions_task, budgets_task, accounts_task, categories_task, return_exceptions=True
-        )
-        transactions, budgets, accounts, categories = api_results
+        api_results: list[object] = await asyncio.gather(transactions_task, budgets_task, return_exceptions=True)
+        transactions, budgets = api_results
         errors: dict[str, str] = {}
         if isinstance(transactions, Exception):
             errors["transactions"] = str(transactions)
@@ -2168,7 +2278,7 @@ async def analyze_spending_patterns(
         if ctx is not None:
             await ctx.report_progress(1, 2, "Computing trends, category and account analysis…")
 
-        analysis = {
+        analysis: dict[str, object] = {
             "analysis_period": {
                 "start_date": start_date.isoformat(),
                 "end_date": end_date.isoformat(),
@@ -2196,7 +2306,9 @@ async def analyze_spending_patterns(
                     else "Uncategorized"
                 )
                 account_name = (
-                    txn.get("account", {}).get("name", "Unknown") if isinstance(txn.get("account"), dict) else "Unknown"
+                    (txn["account"].get("displayName") or "Unknown")
+                    if isinstance(txn.get("account"), dict)
+                    else "Unknown"
                 )
 
                 month_key = txn_date[:7] if len(txn_date) >= 7 else "Unknown"
@@ -2228,10 +2340,10 @@ async def analyze_spending_patterns(
 
             analysis["monthly_trends"] = dict(sorted(monthly_data.items()))
             analysis["category_analysis"] = dict(
-                sorted(category_totals.items(), key=lambda x: x[1]["total"], reverse=True)  # type: ignore[index]
+                sorted(category_totals.items(), key=lambda x: x[1]["total"], reverse=True)
             )
             analysis["account_usage"] = dict(
-                sorted(account_usage.items(), key=lambda x: x[1]["total_volume"], reverse=True)  # type: ignore[index]
+                sorted(account_usage.items(), key=lambda x: x[1]["total_volume"], reverse=True)
             )
 
             if include_forecasting and monthly_data:
@@ -2251,13 +2363,19 @@ async def analyze_spending_patterns(
                     }
 
         if not isinstance(budgets, Exception):
-            analysis["budget_performance"] = convert_dates_to_strings(budgets)
+            try:
+                analysis["budget_performance"] = _budget_totals(convert_dates_to_strings(budgets), verbose)
+            except ValueError as error:
+                errors["budgets"] = str(error)
 
         txn_count = len(transactions_list) if not isinstance(transactions, Exception) else 0
         analysis["metadata"] = {
-            "api_calls_made": 4,
+            "api_calls_made": 2,
             "total_transactions_analyzed": txn_count,
             "analysis_timestamp": datetime.now().isoformat(),
+            "transactions_truncated": (
+                _transactions_truncated(transactions, txn_count) if not isinstance(transactions, Exception) else None
+            ),
         }
 
         if ctx is not None:
@@ -2270,7 +2388,7 @@ async def analyze_spending_patterns(
             include_forecasting=include_forecasting,
         )
 
-        return SpendingPatterns.model_validate({**analysis, "errors": errors})
+        return SpendingPatterns.model_validate({**analysis, "errors": errors, "verbose": verbose})
 
     except Exception as e:
         log.error("Failed to analyze spending patterns", error=str(e), lookback_months=lookback_months)

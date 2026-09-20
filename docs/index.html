@@ -1013,10 +1013,9 @@
                     <div class="eyebrow">Reference</div>
                     <h2 class="section-title">Available tools</h2>
                     <p class="section-subtitle">
-                        This catalog covers source. New tools, ownership updates, recurring editing,
-                        and hardening fixes are unreleased.
-                        Use <a href="https://github.com/jamiew/monarch-mcp#from-source-development">source setup</a>
-                        for these; <code>uvx</code> runs the published release.
+                        These tools are included in
+                        <a href="https://github.com/jamiew/monarch-mcp/releases/tag/v0.5.0">0.5.0</a>.
+                        Run <code>uvx monarch-mcp-jamiew</code> through your MCP client.
                     </p>
                 </div>
 
@@ -1054,7 +1053,7 @@
                             </div>
                             <div class="tool-item">
                                 <div class="tool-name">get_transaction_rules</div>
-                                <div class="tool-desc">Read automation rules, criteria, and actions in priority order.</div>
+                                <div class="tool-desc">Read compact rules, criteria, and actions in priority order, 25 per page. Use <code>next_offset</code> to continue or <code>verbose=True</code> for full details.</div>
                             </div>
                             <div class="tool-item">
                                 <div class="tool-name">get_household_members</div>
@@ -1106,7 +1105,7 @@
                             </div>
                             <div class="tool-item">
                                 <div class="tool-name">get_account_history</div>
-                                <div class="tool-desc">Get balance history with inclusive, locally applied ISO date bounds.</div>
+                                <div class="tool-desc">Page through balance history with inclusive ISO date bounds applied before paging. Defaults to 100 snapshots; use <code>next_offset</code> to continue.</div>
                             </div>
                             <div class="tool-item">
                                 <div class="tool-name">get_institutions</div>
@@ -1124,11 +1123,11 @@
                         <div class="tool-grid">
                             <div class="tool-item">
                                 <div class="tool-name">get_recurring_transactions</div>
-                                <div class="tool-desc">Forecast scheduled occurrences, not payment status. Unreleased date filters accept ISO or natural language; no dates selects this month, and one date fills the missing bound. Use <code>get_transactions(is_recurring=True)</code> for posted history. Do not count forecasts and matched transactions twice; <code>isPast</code> does not mean paid.</div>
+                                <div class="tool-desc">Forecast scheduled occurrences, not payment status. Date filters accept ISO or natural language; no dates selects this month, and one date fills the missing bound. Use <code>get_transactions(is_recurring=True)</code> for posted history. Do not count forecasts and matched transactions twice; <code>isPast</code> does not mean paid.</div>
                             </div>
                             <div class="tool-item">
                                 <div class="tool-name">update_recurring_transaction</div>
-                                <div class="tool-desc">Unreleased: edit a merchant-wide schedule. Use <code>stream.merchant.id</code> and the current merchant name. Omitted settings stay unchanged; use Monarch's frequency and signed amount. This does not cancel subscriptions, move money, or create posted transactions.</div>
+                                <div class="tool-desc">Edit a merchant-wide schedule. Use <code>stream.merchant.id</code> and the current merchant name. Omitted settings stay unchanged; use Monarch's frequency and signed amount. This does not cancel subscriptions, move money, or create posted transactions.</div>
                             </div>
                             <div class="tool-item">
                                 <div class="tool-name">set_budget_amount</div>
@@ -1150,27 +1149,27 @@
                             </div>
                             <div class="tool-item">
                                 <div class="tool-name">get_complete_financial_overview</div>
-                                <div class="tool-desc">Combine account, transaction, budget, cashflow, and category data in one call.</div>
+                                <div class="tool-desc">Get compact financial summaries. Set <code>verbose=True</code> for full sections. Transaction samples are capped at 500; check <code>batch_metadata.transactions_truncated</code>.</div>
                                 <div class="tool-params">
                                     <div class="tool-params-title">Combines 5 API calls</div>
                                     <ul>
                                         <li>All accounts with current balances</li>
-                                        <li>Recent transactions for the period</li>
+                                        <li>Transaction totals for the period's sample</li>
                                         <li>Budget status and performance</li>
                                         <li>Cashflow analysis (income vs expenses)</li>
-                                        <li>Transaction categories</li>
+                                        <li>Transaction and category details in verbose mode</li>
                                     </ul>
                                 </div>
                             </div>
                             <div class="tool-item">
                                 <div class="tool-name">analyze_spending_patterns</div>
-                                <div class="tool-desc">Summarize monthly spending with optional forecasts and explicit upstream errors.</div>
+                                <div class="tool-desc">Summarize monthly spending with optional forecasts and explicit upstream errors. Transaction samples are capped at 2,000; check <code>batch_metadata.transactions_truncated</code>.</div>
                                 <div class="tool-params">
                                     <div class="tool-params-title">Includes</div>
                                     <ul>
                                         <li>Monthly spending trends by category</li>
                                         <li>Account usage patterns</li>
-                                        <li>Budget data for the period</li>
+                                        <li>Compact budget totals; full details with <code>verbose=True</code></li>
                                         <li>Average-based spending forecasts (optional)</li>
                                     </ul>
                                 </div>

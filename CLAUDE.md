@@ -67,7 +67,9 @@ See README for the tool catalog. Keep these less-obvious contracts intact:
 - Transaction splits are full-replace; an empty list removes all splits.
 - Bulk updates validate each item independently. Invalid types and unknown fields fail that item; omitted/null fields stay unchanged, while valid false and empty-string updates are preserved.
 - `owner_user_id` assigns a household member; "" explicitly sets Shared, while omitted/null leaves ownership unchanged. Ownership updates override inheritance. Single/bulk mutations validate nested errors and require a returned transaction.
-- Account-history dates filter snapshots locally; upstream accepts only account_id. Transaction/budget requests need ISO strings, not Python dates. Spending analysis exposes failed sections in `errors`.
+- Account-history dates filter snapshots locally before paging; upstream accepts only account_id. Rules and history return `count`, `total_count`, and `next_offset`. Transaction/budget requests need ISO strings, not Python dates.
+- Transaction accounts use `displayName`, not `name`; count distinct accounts by ID. Cashflow `summary` is an aggregate list with one nested `summary`; budgets use `budgetData.totalsByMonth`.
+- Overview and spending analysis default to compact sections, with `verbose=True` for full payloads. Their 500/2,000-transaction samples report `batch_metadata.transactions_truncated`; a missing upstream count yields null. Spending analysis exposes failed sections in `errors`.
 - Recurring reads return scheduled occurrences for a date range, not a complete stream inventory. Missing date bounds use the supplied date's month; no dates means the current month.
 - `update_recurring_transaction` changes a merchant-wide schedule through upstream `update_reoccuring`. Use the merchant ID and current name, not a stream or transaction ID. Check nested mutation errors before reporting success.
 - Recurring `isPast` is not proof of payment. Forecasts and posted transactions must not be double-counted.

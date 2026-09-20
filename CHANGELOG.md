@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 (2026-09-20)
 
 ### Tools and analysis
 
@@ -9,6 +9,10 @@
 - Added owner assignment and Shared ownership to single and bulk updates. Rejected or malformed mutations fail instead of reporting success; successful responses may have null errors.
 - Fixed date serialization in spending analysis and transaction updates. Partial analysis failures now expose errors alongside successful sections.
 - Fixed account-history date bounds by filtering snapshots locally, with inclusive and open-ended ranges.
+- Fixed account grouping to use Monarch's display names and distinct account IDs.
+- Paginate rules and account history with counts and next-page offsets; apply history date filters before paging.
+- Default overviews and spending analysis to compact summaries, retaining full sections with `verbose=True` and reporting truncated transaction samples.
+- Validate cashflow's aggregate-list envelope and preserve budget/cashflow errors.
 
 ### Documentation
 

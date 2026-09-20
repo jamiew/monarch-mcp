@@ -104,9 +104,11 @@ class TestReadToolSuccess:
 
     @pytest.mark.asyncio
     async def test_get_budgets_returns_budget_data(self, mock_api: AsyncMock) -> None:
-        mock_api.return_value = {"budgets": [{"category_id": "cat_1", "amount": 500}]}
+        mock_api.return_value = {
+            "budgetData": {"totalsByMonth": [{"month": "2026-09-01", "plannedExpenses": 500, "actualExpenses": 75}]}
+        }
         result = await server.get_budgets()
-        assert result.budgets["budgets"][0]["category_id"] == "cat_1"
+        assert result.budgets["budgetData"]["totalsByMonth"][0]["plannedExpenses"] == 500
 
     @pytest.mark.asyncio
     async def test_get_budgets_empty_when_none_configured(self, mock_api: AsyncMock) -> None:
@@ -119,9 +121,9 @@ class TestReadToolSuccess:
 
     @pytest.mark.asyncio
     async def test_get_cashflow_returns_cashflow_data(self, mock_api: AsyncMock) -> None:
-        mock_api.return_value = {"income": 5000, "expenses": 3200}
+        mock_api.return_value = {"summary": {"summary": {"sumIncome": 5000, "sumExpense": -3200}}}
         result = await server.get_cashflow()
-        assert result.cashflow["income"] == 5000
+        assert result.cashflow["summary"]["summary"] == {"sumIncome": 5000, "sumExpense": -3200}
 
     @pytest.mark.asyncio
     async def test_get_transaction_categories_compact_strips_to_id_and_name(self, mock_api: AsyncMock) -> None:
@@ -159,6 +161,31 @@ class TestReadToolSuccess:
         assert result.totals.income == 2000.0
         assert result.totals.expenses == 50.0
         assert result.totals.net == 1950.0
+
+    @pytest.mark.asyncio
+    async def test_get_spending_summary_groups_by_account_display_name(self, mock_api: AsyncMock) -> None:
+        mock_api.return_value = {
+            "allTransactions": {
+                "totalCount": 3,
+                "results": [
+                    {"amount": -40, "account": {"id": "acc_001", "displayName": "Checking"}},
+                    {"amount": 2000, "account": {"id": "acc_001", "displayName": "Checking"}},
+                    {"amount": -10, "account": {"id": "acc_002", "displayName": "Travel"}},
+                ],
+            }
+        }
+
+        result = await server.get_spending_summary(group_by="account")
+
+        assert set(result.groups) == {"Checking", "Travel"}
+        assert result.groups["Checking"].income == 2000
+        assert result.groups["Checking"].expenses == 40
+        assert result.groups["Checking"].net == 1960
+        assert result.groups["Travel"].expenses == 10
+        assert result.groups["Travel"].net == -10
+        assert result.totals.income == 2000
+        assert result.totals.expenses == 50
+        assert result.totals.net == 1950
 
     @pytest.mark.asyncio
     async def test_get_spending_summary_paginates_beyond_one_page(self, mock_api: AsyncMock) -> None:
@@ -230,20 +257,14 @@ class TestBatchToolDegradation:
     async def test_analyze_spending_patterns_degrades_when_transactions_fail(self, mock_api: AsyncMock) -> None:
         budgets = {
             "budgetData": {
-                "monthlyAmountsByCategory": [
-                    {
-                        "category": {"id": "cat_001"},
-                        "monthlyAmounts": [{"month": "2026-09-01", "plannedCashFlowAmount": 200}],
-                    }
-                ]
+                "totalsByMonth": [{"month": "2026-09-01", "plannedExpenses": 200}],
+                "monthlyAmountsByCategory": [],
             }
         }
         mock_api.side_effect = dispatch(
             {
                 "get_transactions": RuntimeError("transactions service down"),
                 "get_budgets": budgets,
-                "get_accounts": [],
-                "get_transaction_categories": [],
             }
         )
         result = await server.analyze_spending_patterns(lookback_months=3, include_forecasting=True)
@@ -251,21 +272,33 @@ class TestBatchToolDegradation:
         assert result.category_analysis == {}
         assert result.analysis_period["months_analyzed"] == 3
         assert set(result.errors) == {"transactions"}
-        assert result.budget_performance == budgets
+        assert result.budget_performance == {"totalsByMonth": [{"month": "2026-09-01", "plannedExpenses": 200}]}
+        assert result.metadata["transactions_truncated"] is None
         assert result.forecast is None
 
     @pytest.mark.asyncio
-    async def test_analyze_spending_patterns_retains_trends_when_budgets_fail(self, mock_api: AsyncMock) -> None:
+    @pytest.mark.parametrize("failure", [RuntimeError("budgets service down"), {"unexpected": []}])
+    async def test_analyze_spending_patterns_retains_trends_when_budgets_fail(
+        self, mock_api: AsyncMock, failure: object
+    ) -> None:
         transactions = [
-            {"date": "2024-01-15", "amount": -50.0, "category": {"name": "Food"}, "account": {"name": "Checking"}},
-            {"date": "2024-02-10", "amount": -75.0, "category": {"name": "Food"}, "account": {"name": "Checking"}},
+            {
+                "date": "2024-01-15",
+                "amount": -50.0,
+                "category": {"name": "Food"},
+                "account": {"id": "acc_001", "displayName": "Checking"},
+            },
+            {
+                "date": "2024-02-10",
+                "amount": -75.0,
+                "category": {"name": "Food"},
+                "account": {"id": "acc_001", "displayName": "Checking"},
+            },
         ]
         mock_api.side_effect = dispatch(
             {
-                "get_transactions": transactions,
-                "get_budgets": RuntimeError("budgets service down"),
-                "get_accounts": [],
-                "get_transaction_categories": [],
+                "get_transactions": {"allTransactions": {"totalCount": 2, "results": transactions}},
+                "get_budgets": failure,
             }
         )
         result = await server.analyze_spending_patterns(lookback_months=3, include_forecasting=True)
@@ -277,3 +310,5 @@ class TestBatchToolDegradation:
         assert set(result.errors) == {"budgets"}
         assert result.budget_performance == {}
         assert result.forecast["predicted_expenses"] == 62.5
+        assert result.account_usage == {"Checking": {"total_volume": 125, "transactions": 2}}
+        assert result.metadata["transactions_truncated"] is False

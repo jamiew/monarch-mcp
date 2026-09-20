@@ -20,7 +20,7 @@ class TestUsageAnalytics:
         server.usage_patterns.clear()
 
         mock_client = AsyncMock()
-        mock_client.get_accounts.return_value = [{"id": "1", "name": "Test Account"}]
+        mock_client.get_accounts.return_value = [{"id": "acc_001", "displayName": "Test Account"}]
 
         original_client = server.mm_client
         server.mm_client = mock_client
@@ -42,89 +42,200 @@ class TestUsageAnalytics:
             server.mm_client = original_client
 
 
+@pytest.fixture
+def overview_client(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    client = AsyncMock()
+    client.get_accounts.return_value = {
+        "accounts": [
+            {
+                "id": "acc_001",
+                "displayName": "Checking",
+                "currentBalance": 1200,
+                "type": {"name": "depository"},
+                "institution": {"name": "Synthetic Bank"},
+            },
+            {
+                "id": "acc_002",
+                "displayName": "Checking",
+                "currentBalance": 800,
+                "type": {"name": "depository"},
+            },
+        ]
+    }
+    client.get_budgets.return_value = {
+        "budgetData": {
+            "totalsByMonth": [
+                {
+                    "__typename": "BudgetTotals",
+                    "month": "2026-09-01",
+                    "plannedExpenses": 500,
+                    "actualExpenses": 75,
+                    "remainingExpenses": 425,
+                    "optional": None,
+                }
+            ],
+            "monthlyAmountsByCategory": [{"category": {"id": "cat_001"}, "monthlyAmounts": []}],
+        }
+    }
+    client.get_cashflow.return_value = {
+        "summary": [
+            {
+                "summary": {
+                    "__typename": "CashflowSummary",
+                    "sumIncome": 3000,
+                    "sumExpense": -75,
+                    "savings": 2925,
+                    "optional": None,
+                },
+            }
+        ],
+        "byCategory": [{"category": {"id": "cat_001"}, "summary": {"sum": -75}}],
+    }
+    client.get_transactions.return_value = {
+        "allTransactions": {
+            "totalCount": 9,
+            "results": [
+                {
+                    "id": "txn_001",
+                    "amount": -50,
+                    "category": {"name": "Food"},
+                    "account": {"id": "acc_001", "displayName": "Checking"},
+                },
+                {
+                    "id": "txn_002",
+                    "amount": -25,
+                    "category": {"name": "Food"},
+                    "account": {"id": "acc_002", "displayName": "Checking"},
+                },
+                {
+                    "id": "txn_003",
+                    "amount": 3000,
+                    "category": {"name": "Salary"},
+                    "account": {"id": "acc_001", "displayName": "Checking"},
+                },
+            ],
+        }
+    }
+    client.get_transaction_categories.return_value = {"categories": [{"id": "cat_001", "name": "Food"}]}
+    monkeypatch.setattr(server, "mm_client", client)
+    return client
+
+
 class TestBatchTools:
     """Test batch financial analysis."""
 
     @pytest.mark.asyncio
-    async def test_get_complete_financial_overview(self) -> None:
-        """Test comprehensive financial overview batch tool."""
-        mock_client = AsyncMock()
-        mock_client.get_accounts.return_value = [{"id": "1", "name": "Test Account"}]
-        mock_client.get_budgets.return_value = [{"category": "Food", "amount": 500}]
-        mock_client.get_cashflow.return_value = {"income": 3000, "expenses": 2000}
-        mock_client.get_transactions.return_value = [
-            {"id": "1", "amount": -50, "category": {"name": "Food"}, "account": {"name": "Checking"}}
-        ]
-        mock_client.get_transaction_categories.return_value = [{"id": "1", "name": "Food"}]
+    @pytest.mark.parametrize("verbose", [False, True])
+    async def test_get_complete_financial_overview(self, overview_client: AsyncMock, verbose: bool) -> None:
+        if verbose:
+            result = await server.get_complete_financial_overview("this month", verbose=True)
+        else:
+            result = await server.get_complete_financial_overview("this month")
+        overview = json.loads(result.model_dump_json())
 
-        original_client = server.mm_client
-        server.mm_client = mock_client
-
-        try:
-            with patch.object(server, "ensure_authenticated", new_callable=AsyncMock):
-                result = await server.get_complete_financial_overview("this month")
-
-                assert isinstance(result, server.FinancialOverview)
-                overview = json.loads(result.model_dump_json())
-
-                assert "accounts" in overview
-                assert "budgets" in overview
-                assert "cashflow" in overview
-                assert "transactions" in overview
-                assert "categories" in overview
-                assert "transaction_summary" in overview
-                assert "batch_metadata" in overview
-
-                summary = overview["transaction_summary"]
-                assert summary["total_count"] == 1
-                assert summary["total_expenses"] == 50
-                assert summary["unique_categories"] == 1
-
-                metadata = overview["batch_metadata"]
-                assert metadata["api_calls_made"] == 5
-                assert "timestamp" in metadata
-
-        finally:
-            server.mm_client = original_client
+        assert overview["transaction_summary"] == {
+            "total_count": 3,
+            "total_expenses": 75,
+            "total_income": 3000,
+            "unique_categories": 2,
+            "unique_accounts": 2,
+        }
+        assert overview["verbose"] is verbose
+        assert overview["batch_metadata"]["transactions_truncated"] is True
+        if verbose:
+            assert overview["accounts"] == overview_client.get_accounts.return_value
+            assert overview["budgets"] == overview_client.get_budgets.return_value
+            assert overview["cashflow"] == overview_client.get_cashflow.return_value
+            assert (
+                overview["transactions"] == overview_client.get_transactions.return_value["allTransactions"]["results"]
+            )
+            assert overview["categories"] == overview_client.get_transaction_categories.return_value
+        else:
+            assert overview["accounts"] == [
+                {
+                    "id": "acc_001",
+                    "displayName": "Checking",
+                    "currentBalance": 1200,
+                    "type": {"name": "depository"},
+                },
+                {
+                    "id": "acc_002",
+                    "displayName": "Checking",
+                    "currentBalance": 800,
+                    "type": {"name": "depository"},
+                },
+            ]
+            assert overview["budgets"] == {
+                "totalsByMonth": [
+                    {"month": "2026-09-01", "plannedExpenses": 500, "actualExpenses": 75, "remainingExpenses": 425}
+                ]
+            }
+            assert overview["cashflow"] == {"sumIncome": 3000, "sumExpense": -75, "savings": 2925}
+            assert overview["transactions"] is None
+            assert overview["categories"] is None
 
     @pytest.mark.asyncio
-    async def test_analyze_spending_patterns(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.mark.parametrize("total_count, truncated", [(3, False), (None, None)])
+    async def test_overview_distinguishes_complete_and_unknown_transaction_coverage(
+        self, overview_client: AsyncMock, total_count: int | None, truncated: bool | None
+    ) -> None:
+        page = overview_client.get_transactions.return_value["allTransactions"]
+        if total_count is None:
+            del page["totalCount"]
+        else:
+            page["totalCount"] = total_count
+
+        result = await server.get_complete_financial_overview()
+
+        assert result.batch_metadata["transactions_truncated"] is truncated
+        assert result.transaction_summary["total_expenses"] == 75
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("verbose", [False, True])
+    async def test_analyze_spending_patterns(self, monkeypatch: pytest.MonkeyPatch, verbose: bool) -> None:
         """Exercise analysis through the real client's JSON request boundary."""
         transactions: list[JsonValue] = [
             {
                 "date": "2026-08-15",
                 "amount": -100,
                 "category": {"name": "Food"},
-                "account": {"name": "Synthetic account"},
+                "account": {"id": "acc_001", "displayName": "Checking"},
             },
             {
                 "date": "2026-08-20",
                 "amount": -50,
                 "category": {"name": "Transit"},
-                "account": {"name": "Synthetic account"},
+                "account": {"id": "acc_002", "displayName": "Travel"},
             },
             {
                 "date": "2026-09-10",
                 "amount": 3000,
                 "category": {"name": "Salary"},
-                "account": {"name": "Synthetic account"},
+                "account": {"id": "acc_001", "displayName": "Checking"},
             },
         ]
         budgets: dict[str, JsonValue] = {
             "budgetData": {
+                "totalsByMonth": [
+                    {
+                        "__typename": "BudgetTotals",
+                        "month": "2026-08-01",
+                        "plannedExpenses": 200,
+                        "actualExpenses": 150,
+                        "optional": None,
+                    }
+                ],
                 "monthlyAmountsByCategory": [
                     {
                         "category": {"id": "cat_001"},
                         "monthlyAmounts": [{"month": "2026-08-01", "plannedCashFlowAmount": 200, "actualAmount": 100}],
                     }
-                ]
+                ],
             }
         }
         responses: dict[str, dict[str, JsonValue]] = {
-            "GetTransactionsList": {"allTransactions": {"results": transactions, "totalCount": 3}},
+            "GetTransactionsList": {"allTransactions": {"results": transactions, "totalCount": 4}},
             "GetJointPlanningData": budgets,
-            "GetAccounts": {"accounts": [{"id": "acc_001", "displayName": "Synthetic account"}]},
-            "GetCategories": {"categories": [{"id": "cat_001", "name": "Food"}]},
         }
 
         async def gql_call(
@@ -139,7 +250,10 @@ class TestBatchTools:
         monkeypatch.setattr(client, "gql_call", gql_call)
         monkeypatch.setattr(server, "mm_client", client)
 
-        result = await server.analyze_spending_patterns(lookback_months=3, include_forecasting=True)
+        if verbose:
+            result = await server.analyze_spending_patterns(lookback_months=3, include_forecasting=True, verbose=True)
+        else:
+            result = await server.analyze_spending_patterns(lookback_months=3, include_forecasting=True)
         analysis = json.loads(result.model_dump_json())
 
         assert analysis["monthly_trends"] == {
@@ -148,45 +262,52 @@ class TestBatchTools:
         }
         assert analysis["category_analysis"]["Food"]["total"] == 100
         assert analysis["category_analysis"]["Transit"]["total"] == 50
-        assert analysis["account_usage"]["Synthetic account"] == {"total_volume": 3150, "transactions": 3}
-        assert analysis["budget_performance"] == budgets
+        assert analysis["account_usage"] == {
+            "Checking": {"total_volume": 3100, "transactions": 2},
+            "Travel": {"total_volume": 50, "transactions": 1},
+        }
+        assert analysis["verbose"] is verbose
+        assert analysis["metadata"]["transactions_truncated"] is True
+        assert analysis["budget_performance"] == (
+            budgets
+            if verbose
+            else {"totalsByMonth": [{"month": "2026-08-01", "plannedExpenses": 200, "actualExpenses": 150}]}
+        )
         assert analysis["forecast"]["predicted_expenses"] == 75
         assert analysis["forecast"]["predicted_income"] == 1500
         assert analysis["forecast"]["predicted_net"] == 1425
         assert analysis["errors"] == {}
 
     @pytest.mark.asyncio
-    async def test_batch_error_handling(self) -> None:
-        """Test that batch operations handle API errors gracefully."""
-        mock_client = AsyncMock()
-        mock_client.get_accounts.return_value = [{"id": "1", "name": "Test"}]
-        mock_client.get_budgets.side_effect = Exception("Budget API error")
-        mock_client.get_cashflow.return_value = {"income": 1000}
-        mock_client.get_transactions.return_value = []
-        mock_client.get_transaction_categories.return_value = []
+    @pytest.mark.parametrize("section", ["budgets", "cashflow"])
+    @pytest.mark.parametrize("failure", ["exception", "malformed"])
+    @pytest.mark.parametrize("verbose", [False, True])
+    async def test_overview_preserves_partial_errors(
+        self, overview_client: AsyncMock, section: str, failure: str, verbose: bool
+    ) -> None:
+        api = getattr(overview_client, f"get_{section}")
+        if failure == "exception":
+            api.side_effect = RuntimeError("Synthetic upstream failure")
+        else:
+            api.return_value = {"unexpected": []}
 
-        original_client = server.mm_client
-        server.mm_client = mock_client
+        result = await server.get_complete_financial_overview("this month", verbose=verbose)
+        overview = json.loads(result.model_dump_json())
 
-        try:
-            with patch.object(server, "ensure_authenticated", new_callable=AsyncMock):
-                result = await server.get_complete_financial_overview("this month")
-
-                assert isinstance(result, server.FinancialOverview)
-                overview = json.loads(result.model_dump_json())
-
-                assert "accounts" in overview
-                assert isinstance(overview["accounts"], list)
-
-                assert "budgets" in overview
-                assert "error" in overview["budgets"]
-                assert "Budget API error" in overview["budgets"]["error"]
-
-                assert "cashflow" in overview
-                assert overview["cashflow"]["income"] == 1000
-
-        finally:
-            server.mm_client = original_client
+        assert set(overview[section]) == {"error"}
+        assert overview[section]["error"]
+        assert overview["transaction_summary"]["total_expenses"] == 75
+        assert overview["transaction_summary"]["total_income"] == 3000
+        if section == "budgets":
+            assert overview["cashflow"] == (
+                overview_client.get_cashflow.return_value
+                if verbose
+                else {"sumIncome": 3000, "sumExpense": -75, "savings": 2925}
+            )
+        elif verbose:
+            assert overview["budgets"] == overview_client.get_budgets.return_value
+        else:
+            assert overview["budgets"]["totalsByMonth"][0]["actualExpenses"] == 75
 
 
 class TestLoggingConfiguration:
@@ -205,18 +326,3 @@ class TestLoggingConfiguration:
             uuid.UUID(server.current_session_id)
         except ValueError:
             pytest.fail("Session ID is not a valid UUID")
-
-
-class TestToolCounts:
-    """Test batch tool registration."""
-
-    def test_new_batch_tools_available(self) -> None:
-        """Check that batch analysis tools are available."""
-        new_tools = ["get_complete_financial_overview", "analyze_spending_patterns"]
-
-        for tool_name in new_tools:
-            assert hasattr(server, tool_name), f"Tool {tool_name} not found"
-
-        for tool_name in new_tools:
-            func = getattr(server, tool_name)
-            assert hasattr(func, "__wrapped__"), f"Tool {tool_name} not properly decorated with @track_usage"
