@@ -61,6 +61,15 @@ TOOL_CALLS: list[Any] = [
         ),
         id="update_recurring_transaction",
     ),
+    pytest.param(
+        lambda: server.create_transaction_rule(account_ids=["acc_1"], set_category_id="cat_1"),
+        id="create_transaction_rule",
+    ),
+    pytest.param(
+        lambda: server.update_transaction_rule(rule_id="rule_1", hide_from_reports=True),
+        id="update_transaction_rule",
+    ),
+    pytest.param(lambda: server.delete_transaction_rule(rule_id="rule_1"), id="delete_transaction_rule"),
     pytest.param(lambda: server.set_budget_amount(category_id="cat_1", amount=500.0), id="set_budget_amount"),
     pytest.param(
         lambda: server.create_manual_account(account_name="Savings", account_type="savings", balance=1000.0),
