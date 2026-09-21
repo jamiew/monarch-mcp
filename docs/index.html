@@ -941,7 +941,7 @@
                         <a href="#tools" class="btn-primary btn-ghost btn-lg">Browse the tools</a>
                     </div>
                     <p class="hero-techline">
-                        <strong>25</strong> tools in the source checkout<span class="dot">·</span>Structured output<span class="dot">·</span>Read and write access
+                        <strong>28</strong> tools in the source checkout<span class="dot">·</span>Structured output<span class="dot">·</span>Read and write access
                     </p>
                 </div>
             </div>
@@ -1088,6 +1088,18 @@
                             <div class="tool-item">
                                 <div class="tool-name">update_transaction_splits</div>
                                 <div class="tool-desc">Replace all splits on a transaction. An empty list removes them.</div>
+                            </div>
+                            <div class="tool-item">
+                                <div class="tool-name">create_transaction_rule</div>
+                                <div class="tool-desc">Create a rule that sets a category, merchant name, tags, or review status. Optionally apply it to existing transactions.</div>
+                            </div>
+                            <div class="tool-item">
+                                <div class="tool-name">update_transaction_rule</div>
+                                <div class="tool-desc">Edit a rule, keeping omitted settings, and optionally re-run it on existing transactions.</div>
+                            </div>
+                            <div class="tool-item">
+                                <div class="tool-name">delete_transaction_rule</div>
+                                <div class="tool-desc">Delete a rule. Transactions it already changed keep their values.</div>
                             </div>
                         </div>
                     </div>

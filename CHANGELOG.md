@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Added `create_transaction_rule`, `update_transaction_rule`, and `delete_transaction_rule`. Creates and edits can also apply the rule to existing transactions. Edits resend the current rule with changes merged because Monarch clears omitted actions. Deletes are confirmed by rereading the rule list because Monarch's `deleted` flag is unreliable.
+- Added `gql` as a direct dependency for the rule mutations, which the community client does not provide.
+
 ## 0.5.0 (2026-09-20)
 
 ### Tools and analysis
