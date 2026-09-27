@@ -24,7 +24,7 @@ Comparison checked September 14, 2026. Other forks overlap on financial tools; t
 
 Install [`uv`](https://docs.astral.sh/uv/), then configure your MCP client to run `uvx monarch-mcp-jamiew`. You'll need your Monarch email and password, plus an [MFA secret](#getting-your-mfa-secret) for TOTP-based 2FA.
 
-These features are included in [0.5.0](https://github.com/jamiew/monarch-mcp/releases/tag/v0.5.0), available through [PyPI](https://pypi.org/project/monarch-mcp-jamiew/).
+These features are included in [0.5.1](https://github.com/jamiew/monarch-mcp/releases/tag/v0.5.1), available through [PyPI](https://pypi.org/project/monarch-mcp-jamiew/).
 
 ### Standard config
 
