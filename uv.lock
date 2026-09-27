@@ -1076,6 +1076,7 @@ version = "0.5.0"
 source = { editable = "." }
 dependencies = [
     { name = "anyio" },
+    { name = "gql" },
     { name = "mcp", extra = ["cli"] },
     { name = "monarchmoneycommunity" },
     { name = "pydantic" },
@@ -1096,6 +1097,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "anyio", specifier = ">=4.9,<5" },
+    { name = "gql", specifier = ">=4.0.0" },
     { name = "mcp", extras = ["cli"], specifier = ">=1.30.0,<2" },
     { name = "monarchmoneycommunity", git = "https://github.com/bradleyseanf/monarchmoneycommunity?rev=d30f285998a8a64db7f8e923f6742e095645c2b4" },
     { name = "pydantic", specifier = ">=2.13.5" },

@@ -181,7 +181,7 @@ Then point your client at the local copy with absolute paths (find them with `wh
 
 ## Tools
 
-The server exposes these 25 tools.
+The server exposes these 28 tools.
 
 | Tool | Description |
 |------|-------------|
@@ -190,6 +190,9 @@ The server exposes these 25 tools.
 | `search_transactions` | Search by merchant name or keyword, optionally pending/posted only |
 | `get_transaction_categories` | Category list (compact by default) |
 | `get_transaction_rules` | Page through compact automation rules in priority order |
+| `create_transaction_rule` | Create a rule that matches merchant, statement text, or amount |
+| `update_transaction_rule` | Edit a rule, and optionally run it on past transactions |
+| `delete_transaction_rule` | Delete a rule; transactions it already changed stay as they are |
 | `get_household_members` | Household members and IDs for ownership updates |
 | `create_transaction` | Create a manual transaction |
 | `update_transaction` | Update transaction fields or assign ownership |
@@ -220,6 +223,18 @@ the update response does not include it.
 Rules default to 25 per page (maximum 100); history defaults to 100 (maximum 1,000).
 Use `limit`, `offset`, and returned `next_offset` to continue; `total_count` covers all
 matching records. Rule details remain available with `verbose=True`.
+
+A rule can set a category, merchant name, tags, review status, or hide transactions
+from reports. Every rule needs a merchant, statement text, or amount criterion, because
+Monarch ignores edits to rules without one.
+
+When you edit a rule, anything you leave out stays the same. Pass `[]` or `""` to
+clear a value. Monarch replaces the whole rule on each edit, so the server sends back
+the current rule with your changes. That keeps settings the tools can't edit, such as
+owners, goals, and splits.
+
+`apply_to_existing_transactions=True` also changes matching past transactions. That is
+hard to undo.
 
 Overviews and spending analysis default to compact summaries; `verbose=True` restores
 full sections. Transaction samples are capped at 500 and 2,000 respectively, even

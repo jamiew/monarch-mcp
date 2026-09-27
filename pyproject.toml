@@ -28,6 +28,7 @@ classifiers = [
 ]
 dependencies = [
     "anyio>=4.9,<5",
+    "gql>=4.0.0",
     "mcp[cli]>=1.30.0,<2",
     "monarchmoneycommunity>=1.6.0",
     "pydantic>=2.13.5",
