@@ -59,7 +59,7 @@ That command contacts Monarch. Ordinary tests use synthetic data and skip live c
 - Authentication uses one `mm_client` and a lock. It starts lazily on the first data call; loading a session does not validate it immediately.
 - `api_call_with_retry()` retries recognized authentication failures with reauthentication. It is not a general network retry or rate-limit policy.
 - Three static resources expose accounts, categories, and institutions. Two resource templates expose account holdings/history. Four prompts support completions; batch analysis reports progress through `Context`.
-- POSIX pipe input uses a cancellable asyncio reader with SDK framing so SIGINT works without EOF. Windows and regular-file input retain the SDK transport; Windows signal behavior is not verified.
+- POSIX pipe input uses a cancellable asyncio reader with SDK framing so SIGINT works without EOF. On POSIX, SIGINT cancels the main task instead of raising `KeyboardInterrupt`; on Python 3.10 an interrupt inside a loop callback could lose a task wakeup and hang shutdown. Windows and regular-file input retain the SDK transport; Windows signal behavior is not verified.
 
 See README for the tool catalog. Keep these less-obvious contracts intact:
 
