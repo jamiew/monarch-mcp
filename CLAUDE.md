@@ -72,7 +72,12 @@ See README for the tool catalog. Keep these less-obvious contracts intact:
 - Overview and spending analysis default to compact sections, with `verbose=True` for full payloads. Their 500/2,000-transaction samples report `batch_metadata.transactions_truncated`; a missing upstream count yields null. Spending analysis exposes failed sections in `errors`.
 - Recurring reads return scheduled occurrences for a date range, not a complete stream inventory. Missing date bounds use the supplied date's month; no dates means the current month.
 - `update_recurring_transaction` changes a merchant-wide schedule through upstream `update_reoccuring`. Use the merchant ID and current name, not a stream or transaction ID. Check nested mutation errors before reporting success.
-- Rule mutations use server-side GraphQL (`createTransactionRuleV2`, `updateTransactionRuleV2`, `deleteTransactionRule`) because the community client lacks them. The opt-in round trip in `tests/test_integration.py` (`MONARCH_RUN_RULE_WRITES=true`) passed live on 2026-09-21. Update clears omitted actions and reportedly ignores input without a merchant, statement, or amount criterion, so edits reread the rule, resend it with changes merged, and reject criteria-less results. `setMerchantAction` is written as a merchant name, not an ID. An all-null `errors` object is a rejection. `deleted: false` is returned even on success, so deletion is confirmed by rereading.
+- Rule mutations call Monarch's GraphQL directly (`createTransactionRuleV2`, `updateTransactionRuleV2`, `deleteTransactionRule`) because the community client lacks them. The opt-in round trip in `tests/test_integration.py` (`MONARCH_RUN_RULE_WRITES=true`) passed live on 2026-09-21. It covered category and review-status actions only; re-sent splits, goals, and owners are untested live.
+  - Update deletes any action left out of the input, so edits read the rule, merge changes, and send it all back.
+  - Update reportedly ignores rules without a merchant, statement, or amount criterion. Create and update both require one.
+  - `setMerchantAction` takes a merchant name, not an ID.
+  - An `errors` object whose fields are all null still means Monarch rejected the change.
+  - Delete returns `deleted: false` even on success, so the tool confirms by reading the rule list again.
 - Recurring `isPast` is not proof of payment. Forecasts and posted transactions must not be double-counted.
 
 ### Sessions and troubleshooting

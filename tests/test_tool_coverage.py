@@ -62,7 +62,9 @@ TOOL_CALLS: list[Any] = [
         id="update_recurring_transaction",
     ),
     pytest.param(
-        lambda: server.create_transaction_rule(account_ids=["acc_1"], set_category_id="cat_1"),
+        lambda: server.create_transaction_rule(
+            merchant_criteria=[server.RuleTextCriterion(value="Corner Deli")], set_category_id="cat_1"
+        ),
         id="create_transaction_rule",
     ),
     pytest.param(

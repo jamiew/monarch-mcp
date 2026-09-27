@@ -2,8 +2,10 @@
 
 ## Unreleased
 
-- Added `create_transaction_rule`, `update_transaction_rule`, and `delete_transaction_rule`. Creates and edits can also apply the rule to existing transactions. Edits resend the current rule with changes merged because Monarch clears omitted actions. Deletes are confirmed by rereading the rule list because Monarch's `deleted` flag is unreliable.
-- Added `gql` as a direct dependency for the rule mutations, which the community client does not provide.
+- Added `create_transaction_rule`, `update_transaction_rule`, and `delete_transaction_rule`. Create and update can also run the rule on past transactions.
+- Every rule needs a merchant, statement text, or amount criterion, because Monarch ignores edits to rules without one.
+- Edits send back the whole current rule with your changes, because Monarch deletes any action left out. Deletes are confirmed by reading the rule list again, because Monarch's `deleted` flag is always false.
+- Added `gql` as a direct dependency, because `server.py` now imports it for the rule mutations.
 
 ## 0.5.0 (2026-09-20)
 

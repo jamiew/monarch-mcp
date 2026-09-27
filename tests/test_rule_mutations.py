@@ -111,13 +111,14 @@ async def test_create_sends_criteria_and_actions_and_returns_created_rule(mock_a
         {"set_category_id": "cat_001"},
         {"merchant_criteria": [server.RuleTextCriterion(value="Corner Deli")]},
         {"merchant_criteria": [], "set_category_id": "cat_001"},
-        {"account_ids": ["acc_001"], "set_category_id": "  ", "hide_from_reports": False},
+        {"merchant_criteria": [server.RuleTextCriterion(value="Corner Deli")], "set_category_id": "  "},
+        {"account_ids": ["acc_001"], "category_ids": ["cat_002"], "set_category_id": "cat_001"},
     ],
 )
 async def test_create_requires_a_criterion_and_an_action_before_api(
     mock_api: AsyncMock, arguments: dict[str, Any]
 ) -> None:
-    with pytest.raises(ValueError, match="at least one"):
+    with pytest.raises(ValueError, match="A rule needs"):
         await server.create_transaction_rule(**arguments)
     mock_api.assert_not_awaited()
 
@@ -150,14 +151,18 @@ def test_amount_criterion_rejects_partial_or_invalid_bounds(arguments: dict[str,
 async def test_create_fails_on_payload_errors(mock_api: AsyncMock, errors: JsonValue) -> None:
     fake = install(mock_api, FakeRulesApi([], {"createTransactionRuleV2": {"transactionRule": None, "errors": errors}}))
     with pytest.raises(ValueError, match="rejected the rule creation"):
-        await server.create_transaction_rule(account_ids=["acc_001"], set_category_id="cat_001")
+        await server.create_transaction_rule(
+            merchant_criteria=[server.RuleTextCriterion(value="Corner Deli")], set_category_id="cat_001"
+        )
     assert len(fake.mutations) == 1
 
 
 async def test_create_fails_without_returned_rule(mock_api: AsyncMock) -> None:
     install(mock_api, FakeRulesApi([], {"createTransactionRuleV2": {"transactionRule": None, "errors": None}}))
     with pytest.raises(ValueError, match="no created rule"):
-        await server.create_transaction_rule(account_ids=["acc_001"], set_category_id="cat_001")
+        await server.create_transaction_rule(
+            merchant_criteria=[server.RuleTextCriterion(value="Corner Deli")], set_category_id="cat_001"
+        )
 
 
 async def test_update_resends_existing_state_with_changes_merged(mock_api: AsyncMock) -> None:
@@ -326,6 +331,8 @@ async def test_delete_fails_on_errors_or_missing_payload(mock_api: AsyncMock, re
 
 async def test_rule_tools_advertise_write_annotations() -> None:
     tools = {tool.name: tool for tool in await server.mcp.list_tools()}
-    assert tools["create_transaction_rule"].annotations.readOnlyHint is False
-    assert tools["update_transaction_rule"].annotations.destructiveHint is False
-    assert tools["delete_transaction_rule"].annotations.destructiveHint is True
+    # Create and update can rewrite past transactions, so all three are destructive.
+    for name in ("create_transaction_rule", "update_transaction_rule", "delete_transaction_rule"):
+        assert tools[name].annotations.readOnlyHint is False
+        assert tools[name].annotations.destructiveHint is True
+    assert tools["create_transaction_rule"].annotations.idempotentHint is False

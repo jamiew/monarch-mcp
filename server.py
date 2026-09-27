@@ -48,6 +48,9 @@ WRITE_SIDE_EFFECT = ToolAnnotations(
     readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False
 )
 WRITE_DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False)
+WRITE_CREATE_DESTRUCTIVE = ToolAnnotations(
+    readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False
+)
 
 
 def parse_flexible_date(date_input: str) -> date:
@@ -557,7 +560,7 @@ class TransactionRulesResult(MMModel):
 
 
 class RuleTextCriterion(BaseModel):
-    """Match text by substring ("contains") or exact value ("eq")."""
+    """Match text that contains the value ("contains") or equals it exactly ("eq")."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -566,9 +569,10 @@ class RuleTextCriterion(BaseModel):
 
 
 class RuleAmountCriterion(BaseModel):
-    """Match an unsigned amount. is_expense selects debits (True) or credits (False).
+    """Match an amount, ignoring its sign.
 
-    "between" uses lower and upper; other operators use value.
+    is_expense=True matches money going out. False matches money coming in.
+    "between" uses lower and upper. Every other operator uses value.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -581,7 +585,7 @@ class RuleAmountCriterion(BaseModel):
 
     @model_validator(mode="after")
     def _check_bounds(self) -> "RuleAmountCriterion":
-        # A dropped threshold would silently broaden the rule, so reject partial input.
+        # If we dropped a missing limit, the rule would match more than asked, so reject it.
         if self.operator == "between":
             if self.lower is None or self.upper is None or self.value is not None:
                 raise ValueError("between requires lower and upper, and no value")
@@ -598,9 +602,8 @@ class RuleAmountCriterion(BaseModel):
         return {"operator": self.operator, "isExpense": self.is_expense, "value": self.value, "valueRange": value_range}
 
 
-# Read-side rule shapes, used to resend a rule's current state on update. Monarch's
-# update clears any action missing from the input, so every field that can be
-# round-tripped must be carried forward.
+# Shapes for reading an existing rule. Monarch's update deletes any action left out
+# of the input, so an update must send back everything the rule already has.
 
 
 class _RuleRef(BaseModel):
@@ -661,7 +664,7 @@ class ExistingRule(BaseModel):
     splitTransactionsAction: _RuleSplits | None = None
 
     def to_input(self) -> dict[str, JsonValue]:
-        """Convert to mutation input, omitting empty fields."""
+        """Build mutation input from this rule, skipping empty fields."""
         rule: dict[str, JsonValue] = {"id": self.id}
         if self.merchantCriteriaUseOriginalStatement is not None:
             rule["merchantCriteriaUseOriginalStatement"] = self.merchantCriteriaUseOriginalStatement
@@ -703,7 +706,7 @@ class ExistingRule(BaseModel):
         ):
             if flag:
                 rule[key] = True
-        # The merchant action is written as a name; an ID would create a merchant named after it.
+        # Monarch expects a merchant name here. An ID would create a merchant named after the ID.
         if self.setMerchantAction is not None and self.setMerchantAction.name:
             rule["setMerchantAction"] = self.setMerchantAction.name
         for key, ref in (
@@ -719,7 +722,7 @@ class ExistingRule(BaseModel):
             rule["addTagsAction"] = [tag.id for tag in self.addTagsAction]
         if self.reviewStatusAction:
             rule["reviewStatusAction"] = self.reviewStatusAction
-            # Monarch rejects a reviewer without a review status.
+            # Monarch rejects a reviewer unless a review status is also set.
             if self.needsReviewByUserAction is not None:
                 rule["needsReviewByUserAction"] = self.needsReviewByUserAction.id
         if self.splitTransactionsAction is not None and self.splitTransactionsAction.splitsInfo:
@@ -754,7 +757,7 @@ class _RuleMutationPayload(BaseModel):
     transactionRule: _RuleRef | None = None
 
     def check(self, action: str) -> None:
-        """Raise on rejection. An all-null errors object is still a rejection."""
+        """Raise if Monarch rejected the change, even when every error field is empty."""
         errors = self.errors if isinstance(self.errors, list) else [self.errors] if self.errors else []
         if not errors:
             return
@@ -762,18 +765,9 @@ class _RuleMutationPayload(BaseModel):
         raise ValueError(f"Monarch rejected the rule {action}: {'; '.join(reasons) or 'no reason given'}")
 
 
-RULE_CRITERIA_KEYS = (
-    "merchantCriteria",
-    "merchantNameCriteria",
-    "originalStatementCriteria",
-    "amountCriteria",
-    "categoryIds",
-    "accountIds",
-    "criteriaOwnerUserIds",
-    "criteriaOwnerIsJoint",
-    "criteriaBusinessEntityIds",
-    "criteriaBusinessEntityIsUnassigned",
-)
+# Monarch ignores rule updates without one of these. Create requires one too, so every
+# rule this server makes can be edited later.
+RULE_MATCH_KEYS = ("merchantCriteria", "merchantNameCriteria", "originalStatementCriteria", "amountCriteria")
 RULE_ACTION_KEYS = (
     "setMerchantAction",
     "setCategoryAction",
@@ -2054,10 +2048,10 @@ def _set_rule_fields(
     hide_from_reports: bool | None,
     review_status: Literal["needs_review", "reviewed", ""] | None,
 ) -> None:
-    """Apply requested changes. None keeps a field; empty values clear it."""
+    """Apply the requested changes. None keeps a field. An empty value clears it."""
     if merchant_criteria is not None:
         rule["merchantNameCriteria"] = [c.model_dump() for c in merchant_criteria]
-        # Replace legacy merchant criteria too; omitted criteria are preserved upstream.
+        # Clear the older merchant field too. Monarch keeps it if we leave it out.
         if "merchantCriteria" in rule:
             rule["merchantCriteria"] = []
     if original_statement_criteria is not None:
@@ -2068,7 +2062,7 @@ def _set_rule_fields(
         rule["accountIds"] = list(account_ids)
     if category_ids is not None:
         rule["categoryIds"] = list(category_ids)
-    # Monarch clears actions omitted from the input, so removing a key clears the action.
+    # Monarch deletes actions left out of the input, so removing a key clears that action.
     for key, text in (("setCategoryAction", set_category_id), ("setMerchantAction", set_merchant_name)):
         if text is not None:
             if text.strip():
@@ -2091,13 +2085,13 @@ def _set_rule_fields(
 
 
 def _require_criteria_and_action(rule: dict[str, JsonValue]) -> None:
-    if not any(rule.get(key) for key in RULE_CRITERIA_KEYS):
-        raise ValueError("A rule needs at least one criterion: merchant, statement, amount, account, or category")
+    if not any(rule.get(key) for key in RULE_MATCH_KEYS):
+        raise ValueError("A rule needs a merchant, statement, or amount criterion")
     if not any(rule.get(key) for key in RULE_ACTION_KEYS):
         raise ValueError("A rule needs at least one action: category, merchant name, tags, hide, or review status")
 
 
-@mcp.tool(annotations=WRITE_CREATE, title="Create Transaction Rule")
+@mcp.tool(annotations=WRITE_CREATE_DESTRUCTIVE, title="Create Transaction Rule")
 @track_usage
 async def create_transaction_rule(
     merchant_criteria: list[RuleTextCriterion] | None = None,
@@ -2112,26 +2106,29 @@ async def create_transaction_rule(
     review_status: Literal["needs_review", "reviewed"] | None = None,
     apply_to_existing_transactions: bool = False,
 ) -> TransactionRuleResult:
-    """Create an automation rule. Requires at least one criterion and one action.
+    """Create an automation rule.
 
-    Criteria (all must match; values within one list are alternatives):
-        merchant_criteria: Merchant-name text, e.g. [{"operator": "contains", "value": "Corner Deli"}].
-        original_statement_criteria: Raw bank statement text, same shape.
+    A rule needs at least one action and a merchant, statement, or amount
+    criterion. Without one of those three, Monarch ignores later edits to the rule.
+
+    Criteria (a transaction must match all of them; values in one list are "or"):
+        merchant_criteria: Merchant name text, e.g. [{"operator": "contains", "value": "Corner Deli"}].
+        original_statement_criteria: Bank statement text, same shape.
         amount_criteria: {"operator": "gt"|"lt"|"eq", "value": 20} or
-            {"operator": "between", "lower": 10, "upper": 50}. Amounts are unsigned;
-            is_expense (default true) selects debits, false selects credits.
-        account_ids / category_ids: Restrict to these accounts or current categories.
+            {"operator": "between", "lower": 10, "upper": 50}. Amounts have no sign.
+            is_expense=True (the default) matches money going out; False matches money coming in.
+        account_ids / category_ids: Only match these accounts or current categories.
 
     Actions:
         set_category_id: Category ID from get_transaction_categories.
-        set_merchant_name: Merchant name to set (a name, not a merchant ID).
+        set_merchant_name: New merchant name (a name, not an ID).
         add_tag_ids: Tag IDs to add.
         hide_from_reports: Hide matching transactions from reports.
         review_status: "needs_review" or "reviewed".
 
-    apply_to_existing_transactions also rewrites matching past transactions now.
-    That is hard to undo; check the criteria with search_transactions first.
-    New rules are added to the rule list; this tool does not change priority.
+    apply_to_existing_transactions=True also changes matching past transactions
+    right away. That is hard to undo, so check the criteria with
+    search_transactions first. This tool does not change rule priority.
     """
     rule: dict[str, JsonValue] = {"applyToExistingTransactions": apply_to_existing_transactions}
     _set_rule_fields(
@@ -2167,7 +2164,7 @@ async def create_transaction_rule(
     )
 
 
-@mcp.tool(annotations=WRITE_IDEMPOTENT, title="Update Transaction Rule")
+@mcp.tool(annotations=WRITE_DESTRUCTIVE, title="Update Transaction Rule")
 @track_usage
 async def update_transaction_rule(
     rule_id: str,
@@ -2184,21 +2181,21 @@ async def update_transaction_rule(
     review_status: Literal["needs_review", "reviewed", ""] | None = None,
     apply_to_existing_transactions: bool = False,
 ) -> TransactionRuleResult:
-    """Edit a rule, optionally applying it to existing transactions.
+    """Edit a rule, and optionally run it on existing transactions.
 
-    rule_id comes from get_transaction_rules. Omitted/null arguments keep the
-    current value. Empty values clear: [] for lists, "" for set_category_id,
-    set_merchant_name, and review_status; clear_amount_criteria removes the amount
-    criterion. Arguments use the same shapes as create_transaction_rule; a list
-    argument replaces the whole list.
+    Get rule_id from get_transaction_rules. Arguments you leave out keep their
+    current value. To clear a value, pass [] for a list or "" for
+    set_category_id, set_merchant_name, or review_status. clear_amount_criteria
+    removes the amount criterion. A list replaces the whole old list. Shapes
+    match create_transaction_rule.
 
-    Monarch replaces the whole rule, so this reads the current rule and resends it
-    with the changes merged, preserving settings this tool cannot set (owners,
-    goals, splits). The result must still have one criterion and one action, and
-    a merchant, statement, or amount criterion; Monarch ignores updates without one.
+    Monarch replaces the whole rule on update. So this reads the rule first and
+    sends it back with your changes, which keeps settings this tool can't edit,
+    such as owners, goals, and splits. The edited rule must keep at least one
+    action and a merchant, statement, or amount criterion.
 
-    apply_to_existing_transactions=True re-runs the rule over matching past
-    transactions, with or without other changes. That is hard to undo.
+    apply_to_existing_transactions=True runs the rule on matching past
+    transactions, even with no other changes. That is hard to undo.
     """
     if amount_criteria is not None and clear_amount_criteria:
         raise ValueError("Pass amount_criteria or clear_amount_criteria, not both")
@@ -2238,11 +2235,6 @@ async def update_transaction_rule(
         review_status=review_status,
     )
     _require_criteria_and_action(rule)
-    if not any(
-        rule.get(key)
-        for key in ("merchantCriteria", "merchantNameCriteria", "originalStatementCriteria", "amountCriteria")
-    ):
-        raise ValueError("Monarch ignores rule updates without a merchant, statement, or amount criterion")
     await _run_rule_mutation(
         "update",
         "Common_UpdateTransactionRuleMutationV2",
@@ -2265,12 +2257,12 @@ async def delete_transaction_rule(rule_id: str) -> DeleteTransactionRuleResult:
     """Delete an automation rule by ID from get_transaction_rules.
 
     Transactions the rule already changed keep their current values.
-    Deletion is verified by rereading the rule list.
+    Deletion is confirmed by reading the rule list again.
     """
     if not rule_id.strip():
         raise ValueError("rule_id must not be blank")
     await ensure_authenticated()
-    # The upstream deleted flag is false even on success, so rely on errors and a reread.
+    # Monarch returns deleted=false even on success, so check errors and read the list again.
     await _run_rule_mutation(
         "deletion", "Common_DeleteTransactionRule", DELETE_RULE_MUTATION, {"id": rule_id}, "deleteTransactionRule"
     )
