@@ -2,16 +2,17 @@
 
 ## Unreleased
 
-- Fixed Ctrl-C sometimes hanging the server on Python 3.10.
+- Fixed Ctrl-C sometimes freezing the server on Python 3.10.
 
 ## 0.5.1 (2026-09-27)
 
 Thanks to [@samyk](https://github.com/samyk) for the rule tools ([#22](https://github.com/jamiew/monarch-mcp/pull/22)).
 
-- Added `create_transaction_rule`, `update_transaction_rule`, and `delete_transaction_rule`. Create and update can also run the rule on past transactions.
-- Every rule needs a merchant, statement text, or amount criterion, because Monarch ignores edits to rules without one.
-- Edits send back the whole current rule with your changes, because Monarch deletes any action left out. Deletes are confirmed by reading the rule list again, because Monarch's `deleted` flag is always false.
-- Added `gql` as a direct dependency, because `server.py` now imports it for the rule mutations.
+- Added tools to make, change, and delete transaction rules: `create_transaction_rule`, `update_transaction_rule`, and `delete_transaction_rule`. Create and update can also apply the rule to past transactions.
+- Every rule must look for a merchant name, statement text, or amount. Monarch ignores edits to rules that don't.
+- When you edit a rule, the server sends Monarch the whole rule with your changes. Monarch deletes any setting that is left out, so this keeps the rest of the rule safe.
+- The server checks that a deleted rule is really gone, because Monarch's reply always says it wasn't deleted.
+- Added `gql` as a dependency, because the server now uses it directly.
 
 ## 0.5.0 (2026-09-20)
 
