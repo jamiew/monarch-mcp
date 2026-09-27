@@ -59,7 +59,7 @@ That command contacts Monarch. Ordinary tests use synthetic data and skip live c
 - Authentication uses one `mm_client` and a lock. It starts lazily on the first data call; loading a session does not validate it immediately.
 - `api_call_with_retry()` retries recognized authentication failures with reauthentication. It is not a general network retry or rate-limit policy.
 - Three static resources expose accounts, categories, and institutions. Two resource templates expose account holdings/history. Four prompts support completions; batch analysis reports progress through `Context`.
-- POSIX pipe input uses a cancellable asyncio reader with SDK framing so SIGINT works without EOF. On POSIX, SIGINT cancels the main task instead of raising `KeyboardInterrupt`; on Python 3.10 an interrupt inside a loop callback could lose a task wakeup and hang shutdown. Windows and regular-file input retain the SDK transport; Windows signal behavior is not verified.
+- POSIX pipe input uses a cancellable asyncio reader with SDK framing, so SIGINT works without EOF. On POSIX, SIGINT cancels the main task instead of raising `KeyboardInterrupt`. On Python 3.10, an interrupt inside a loop callback could lose a task wakeup and freeze shutdown. Windows and regular-file input keep the SDK transport; Windows signal behavior is not verified.
 
 See README for the tool catalog. Keep these less-obvious contracts intact:
 
@@ -72,8 +72,8 @@ See README for the tool catalog. Keep these less-obvious contracts intact:
 - Overview and spending analysis default to compact sections, with `verbose=True` for full payloads. Their 500/2,000-transaction samples report `batch_metadata.transactions_truncated`; a missing upstream count yields null. Spending analysis exposes failed sections in `errors`.
 - Recurring reads return scheduled occurrences for a date range, not a complete stream inventory. Missing date bounds use the supplied date's month; no dates means the current month.
 - `update_recurring_transaction` changes a merchant-wide schedule through upstream `update_reoccuring`. Use the merchant ID and current name, not a stream or transaction ID. Check nested mutation errors before reporting success.
-- Rule mutations call Monarch's GraphQL directly (`createTransactionRuleV2`, `updateTransactionRuleV2`, `deleteTransactionRule`) because the community client lacks them. The opt-in round trip in `tests/test_integration.py` (`MONARCH_RUN_RULE_WRITES=true`) passed live on 2026-09-21. It covered category and review-status actions only; re-sent splits, goals, and owners are untested live.
-  - Update deletes any action left out of the input, so edits read the rule, merge changes, and send it all back.
+- Rule mutations call Monarch's GraphQL directly (`createTransactionRuleV2`, `updateTransactionRuleV2`, `deleteTransactionRule`), because the community client lacks them. The opt-in round trip in `tests/test_integration.py` (`MONARCH_RUN_RULE_WRITES=true`) passed live on 2026-09-21. It only tested category and review-status actions. Re-sent splits, goals, and owners have not been tested live.
+  - Update deletes any action left out of the input. So edits read the rule, apply the changes, and send the whole rule back.
   - Update reportedly ignores rules without a merchant, statement, or amount criterion. Create and update both require one.
   - `setMerchantAction` takes a merchant name, not an ID.
   - An `errors` object whose fields are all null still means Monarch rejected the change.

@@ -224,17 +224,17 @@ Rules default to 25 per page (maximum 100); history defaults to 100 (maximum 1,0
 Use `limit`, `offset`, and returned `next_offset` to continue; `total_count` covers all
 matching records. Rule details remain available with `verbose=True`.
 
-A rule can set a category, merchant name, tags, review status, or hide transactions
-from reports. Every rule needs a merchant, statement text, or amount criterion, because
-Monarch ignores edits to rules without one.
+A rule can set a category, merchant name, tags, or review status. It can also hide
+transactions from reports. Each rule must look for a merchant name, statement text, or
+amount. Monarch ignores edits to rules that don't.
 
-When you edit a rule, anything you leave out stays the same. Pass `[]` or `""` to
-clear a value. Monarch replaces the whole rule on each edit, so the server sends back
-the current rule with your changes. That keeps settings the tools can't edit, such as
+When you edit a rule, anything you leave out stays the same. To clear a value, pass
+`[]` or `""`. Monarch replaces the whole rule on every edit, so the server sends back
+the full rule with your changes. That keeps settings the tools can't edit, such as
 owners, goals, and splits.
 
-`apply_to_existing_transactions=True` also changes matching past transactions. That is
-hard to undo.
+`apply_to_existing_transactions=True` also changes past transactions that match. That
+is hard to undo, so check what matches with `search_transactions` first.
 
 Overviews and spending analysis default to compact summaries; `verbose=True` restores
 full sections. Transaction samples are capped at 500 and 2,000 respectively, even
