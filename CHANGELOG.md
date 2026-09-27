@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.5.1 (2026-09-27)
+
+Thanks to [@samyk](https://github.com/samyk) for the rule tools ([#22](https://github.com/jamiew/monarch-mcp/pull/22)).
 
 - Added `create_transaction_rule`, `update_transaction_rule`, and `delete_transaction_rule`. Create and update can also run the rule on past transactions.
 - Every rule needs a merchant, statement text, or amount criterion, because Monarch ignores edits to rules without one.
