@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fixed Ctrl-C sometimes hanging the server on Python 3.10.
+
 ## 0.5.1 (2026-09-27)
 
 Thanks to [@samyk](https://github.com/samyk) for the rule tools ([#22](https://github.com/jamiew/monarch-mcp/pull/22)).

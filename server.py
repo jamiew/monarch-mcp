@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import signal
 import stat
 import sys
 import time
@@ -2936,7 +2937,21 @@ async def main() -> None:
     """Start stdio immediately; authenticate on the first request that needs Monarch."""
     log.info("server_starting", session_file=str(session_file), auth_state=auth_state.value)
 
+    # Python 3.10 raises KeyboardInterrupt inside whatever loop callback is running. If that
+    # is a future wakeup, the waiting task never resumes and shutdown hangs. Cancelling the
+    # main task instead lets every await unwind normally, like asyncio.run does in 3.11+.
+    interrupted = False
+    main_task = asyncio.current_task()
+
+    def interrupt() -> None:
+        nonlocal interrupted
+        interrupted = True
+        if main_task is not None:
+            main_task.cancel()
+
     try:
+        if sys.platform != "win32":
+            asyncio.get_running_loop().add_signal_handler(signal.SIGINT, interrupt)
         if sys.platform == "win32" or stat.S_ISREG(os.fstat(sys.stdin.fileno()).st_mode):
             # Windows pipe handles and regular files need the SDK's file transport.
             await mcp.run_stdio_async()
@@ -2961,6 +2976,10 @@ async def main() -> None:
     except (BrokenPipeError, ConnectionResetError):
         log.info("client_disconnected")
     except KeyboardInterrupt:
+        log.info("interrupted")
+    except asyncio.CancelledError:
+        if not interrupted:
+            raise
         log.info("interrupted")
     except Exception as e:
         log.error("server_error", error=str(e))
