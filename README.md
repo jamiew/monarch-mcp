@@ -181,7 +181,7 @@ Then point your client at the local copy with absolute paths (find them with `wh
 
 ## Tools
 
-The server exposes these 28 tools.
+The server exposes these 29 tools.
 
 | Tool | Description |
 |------|-------------|
@@ -198,6 +198,7 @@ The server exposes these 28 tools.
 | `update_transaction` | Update transaction fields or assign ownership |
 | `update_transactions_bulk` | Update fields or owners with per-item success/failure |
 | `get_transaction_splits` | Read a transaction's splits |
+| `get_transaction_details` | Resolve split parent and leg IDs; return split flags, category ID, and resolved transaction ID |
 | `update_transaction_splits` | Replace all splits; an empty list removes them |
 | `get_budgets` | Budget data and spending analysis |
 | `get_cashflow` | Income and expense analysis |
