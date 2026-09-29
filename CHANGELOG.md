@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.5.2 (2026-09-28)
+
+Thanks to [@prerak-proof](https://github.com/prerak-proof) for transaction details ([#23](https://github.com/jamiew/monarch-mcp/pull/23)).
 
 - Fixed Ctrl-C sometimes freezing the server on Python 3.10.
 - Added `get_transaction_details` to resolve split legs to their parent IDs before reading or replacing splits. Returns split flags, split transaction IDs, category ID, and the resolved transaction ID (which can change when a pending transaction redirects to its posted replacement).

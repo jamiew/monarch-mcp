@@ -24,7 +24,7 @@ Comparison checked September 14, 2026. Other forks overlap on financial tools; t
 
 Install [`uv`](https://docs.astral.sh/uv/), then configure your MCP client to run `uvx monarch-mcp-jamiew`. You'll need your Monarch email and password, plus an [MFA secret](#getting-your-mfa-secret) for TOTP-based 2FA.
 
-These features are included in [0.5.1](https://github.com/jamiew/monarch-mcp/releases/tag/v0.5.1), available through [PyPI](https://pypi.org/project/monarch-mcp-jamiew/).
+These features are included in [0.5.2](https://github.com/jamiew/monarch-mcp/releases/tag/v0.5.2), available through [PyPI](https://pypi.org/project/monarch-mcp-jamiew/).
 
 ### Standard config
 
@@ -348,3 +348,4 @@ uv run scripts/eval_session.py analyze            # analyze new entries
 
 Forked from [colvint/monarch-money-mcp](https://github.com/colvint/monarch-money-mcp). API access uses [bradleyseanf/monarchmoneycommunity](https://github.com/bradleyseanf/monarchmoneycommunity), based on [hammem/monarchmoney](https://github.com/hammem/monarchmoney). Source installs pin a commit; PyPI installs use the published library.
 
+Contributors: [@caseypugh](https://github.com/caseypugh) (transaction splits), [@seanperkins](https://github.com/seanperkins) (spending summary pagination), [@rajatbhagat](https://github.com/rajatbhagat) (setup docs), [@samyk](https://github.com/samyk) (transaction rules), and [@prerak-proof](https://github.com/prerak-proof) (transaction details).
