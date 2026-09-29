@@ -501,6 +501,49 @@ class TransactionSplitsResult(MMModel):
     splits: list[JsonValue]
 
 
+class TransactionDetailsResult(MMModel):
+    transaction_id: str
+    amount: float | None
+    merchant: str | None
+    category_id: str | None
+    has_split_transactions: bool
+    is_split_transaction: bool
+    parent_transaction_id: str | None
+    split_transaction_ids: list[str]
+
+
+class TransactionReference(BaseModel):
+    id: str = Field(min_length=1)
+
+
+class TransactionMerchant(BaseModel):
+    name: str | None = None
+
+
+class TransactionSplitsPayload(TransactionReference):
+    splitTransactions: list[JsonValue]
+
+
+class TransactionDetailsPayload(TransactionReference):
+    splitTransactions: list[TransactionReference]
+    amount: float | None
+    merchant: TransactionMerchant | None
+    category: TransactionReference | None
+    hasSplitTransactions: bool
+    isSplitTransaction: bool
+    originalTransaction: TransactionReference | None
+
+
+def _require_transaction(result: object) -> object:
+    """Reject missing transactions before validating the requested fields."""
+    if not isinstance(result, dict):
+        raise ValueError("Monarch returned an invalid transaction response")
+    transaction = result.get("getTransaction")
+    if transaction is None:
+        raise ValueError("Monarch returned no transaction")
+    return transaction
+
+
 class UpdateSplitsResult(MMModel):
     transaction_id: str
     has_split_transactions: bool
@@ -1879,20 +1922,45 @@ async def get_transaction_splits(transaction_id: str) -> TransactionSplitsResult
     amount, category, merchant, and notes. An unsplit transaction has an empty list.
     """
     await ensure_authenticated()
+    result = await api_call_with_retry("get_transaction_splits", transaction_id=transaction_id)
+    transaction = TransactionSplitsPayload.model_validate(_require_transaction(convert_dates_to_strings(result)))
+    return TransactionSplitsResult(
+        transaction_id=transaction.id,
+        has_split_transactions=bool(transaction.splitTransactions),
+        splits=transaction.splitTransactions,
+    )
 
-    try:
-        result = await api_call_with_retry("get_transaction_splits", transaction_id=transaction_id)
-        result = convert_dates_to_strings(result)
-        transaction = result.get("getTransaction") or {} if isinstance(result, dict) else {}
-        splits = transaction.get("splitTransactions") or []
-        return TransactionSplitsResult(
-            transaction_id=transaction_id,
-            has_split_transactions=bool(splits),
-            splits=splits,
-        )
-    except Exception as e:
-        log.error("Failed to get transaction splits", error=str(e), transaction_id=transaction_id)
-        raise
+
+@mcp.tool(annotations=READONLY, title="Get Transaction Details")
+@track_usage
+async def get_transaction_details(transaction_id: str) -> TransactionDetailsResult:
+    """Get one transaction's split linkage, amount, merchant, and category_id.
+
+    Compact get_transactions/search_transactions results omit split flags.
+    Verbose results identify split legs with isSplitTransaction but do not
+    expose their parent IDs. This tool returns a leg's parent_transaction_id
+    or a parent's has_split_transactions flag and split_transaction_ids. Use
+    these IDs to fetch details for individual legs; an unsplit transaction
+    or a split leg returns an empty list.
+
+    Use this before get_transaction_splits or update_transaction_splits when
+    you need the parent ID. transaction_id is the resolved ID returned by
+    Monarch; it may differ from the requested ID when a pending transaction
+    redirects to its posted replacement. Missing transactions raise an error.
+    """
+    await ensure_authenticated()
+    result = await api_call_with_retry("get_transaction_details", transaction_id=transaction_id)
+    txn = TransactionDetailsPayload.model_validate(_require_transaction(convert_dates_to_strings(result)))
+    return TransactionDetailsResult(
+        transaction_id=txn.id,
+        amount=txn.amount,
+        merchant=txn.merchant.name if txn.merchant else None,
+        category_id=txn.category.id if txn.category else None,
+        has_split_transactions=txn.hasSplitTransactions,
+        is_split_transaction=txn.isSplitTransaction,
+        parent_transaction_id=txn.originalTransaction.id if txn.originalTransaction else None,
+        split_transaction_ids=[split.id for split in txn.splitTransactions],
+    )
 
 
 @mcp.tool(annotations=WRITE_IDEMPOTENT, title="Update Transaction Splits")
@@ -1901,7 +1969,8 @@ async def update_transaction_splits(transaction_id: str, splits: list[Transactio
     """Replace a transaction's entire set of splits, or remove all splits with [].
 
     Args:
-        transaction_id: Parent transaction ID from get_transactions or search_transactions.
+        transaction_id: Parent transaction ID. For a split leg from list/search,
+            resolve parent_transaction_id with get_transaction_details first.
         splits: Complete replacement list. Each leg accepts:
             - amount (required): Negative for expenses, positive for income.
               Amounts must sum to the parent's amount or Monarch rejects the update.

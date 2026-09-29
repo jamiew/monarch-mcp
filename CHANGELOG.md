@@ -3,6 +3,8 @@
 ## Unreleased
 
 - Fixed Ctrl-C sometimes freezing the server on Python 3.10.
+- Added `get_transaction_details` to resolve split legs to their parent IDs before reading or replacing splits. Returns split flags, split transaction IDs, category ID, and the resolved transaction ID (which can change when a pending transaction redirects to its posted replacement).
+- Transaction split reads now reject missing or malformed transactions instead of reporting them as unsplit.
 
 ## 0.5.1 (2026-09-27)
 
