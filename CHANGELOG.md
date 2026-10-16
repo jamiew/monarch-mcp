@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Added an optional Streamable HTTP transport (`--transport http`) at `/mcp`. It always requires a bearer token of at least 32 characters in `MONARCH_MCP_AUTH_TOKEN`. It is stateless and returns JSON.
+- Added an experimental Cloudflare Python Worker in `worker/`. It keeps the Monarch session token in KV. Deployment to Cloudflare has not been tested yet.
+
 ## 0.5.2 (2026-09-28)
 
 Thanks to [@prerak-proof](https://github.com/prerak-proof) for transaction details ([#23](https://github.com/jamiew/monarch-mcp/pull/23)).
