@@ -179,6 +179,33 @@ Then point your client at the local copy with absolute paths (find them with `wh
 3. Copy the TOTP secret key, not the rotating six-digit code
 4. Use this as your `MONARCH_MFA_SECRET`
 
+### Remote HTTP (homelab or Cloudflare)
+
+**Unreleased:** install from source until the next PyPI release.
+
+The server can also serve Streamable HTTP at `/mcp`. HTTP always requires a bearer token in `MONARCH_MCP_AUTH_TOKEN`, at least 32 characters. `/healthz` is the only path open without it, and it returns no data.
+
+```bash
+export MONARCH_MCP_AUTH_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+uv run --env-file .env python server.py --transport http   # http://127.0.0.1:8000/mcp
+```
+
+`--host`, `--port` and `--transport` also read `MONARCH_MCP_HOST`, `MONARCH_MCP_PORT` and `MONARCH_MCP_TRANSPORT`. The listener is plain HTTP, so keep it on loopback and put TLS in front of it.
+
+On a homelab machine with [Tailscale](https://tailscale.com/kb/1312/serve), keep the default `127.0.0.1` and run `tailscale serve --bg 8000`. Only your tailnet can then reach `https://<machine>.<tailnet>.ts.net/mcp`. Do not use `tailscale funnel`, which makes the server public.
+
+For Cloudflare Workers, see [worker/README.md](worker/README.md).
+
+Connect a client with the token in a header:
+
+```bash
+claude mcp add --transport http monarch https://<host>/mcp --header "Authorization: Bearer $MONARCH_MCP_AUTH_TOKEN"
+```
+
+Clients that only speak stdio, such as Claude Desktop config files, can use [`mcp-remote`](https://www.npmjs.com/package/mcp-remote): `npx mcp-remote https://<host>/mcp --header "Authorization:${AUTH_HEADER}"`, with `AUTH_HEADER="Bearer <token>"` in the server's `env`. The server does not provide OAuth yet, so connectors that require OAuth cannot use it.
+
+HTTP mode is stateless and returns JSON responses. It does not stream progress notifications.
+
 ## Tools
 
 The server exposes these 29 tools.

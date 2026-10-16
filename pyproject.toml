@@ -33,7 +33,9 @@ dependencies = [
     "monarchmoneycommunity>=1.6.0",
     "pydantic>=2.13.5",
     "python-dateutil>=2.9.0.post0",
+    "starlette>=0.48.0",
     "structlog>=26.1.0",
+    "uvicorn>=0.31.1 ; sys_platform != 'emscripten'",
 ]
 
 [project.urls]

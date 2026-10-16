@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Expose Monarch Money financial data and account updates through MCP."""
 
+import argparse
 import asyncio
 import contextlib
 import functools
+import hmac
 import io
 import json
 import logging
@@ -28,6 +30,8 @@ from dateutil.relativedelta import relativedelta
 from gql import GraphQLRequest, gql
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.stdio import stdio_server
+from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import (
     Completion,
     CompletionArgument,
@@ -38,6 +42,8 @@ from mcp.types import (
 )
 from monarchmoney import MonarchMoney, RequireMFAException
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, JsonValue, TypeAdapter, model_validator
+from starlette.responses import JSONResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 JsonSerializable = str | int | float | bool | None | list["JsonSerializable"] | dict[str, "JsonSerializable"]
 
@@ -3055,8 +3061,108 @@ async def main() -> None:
         raise
 
 
-def run() -> None:
-    """Await main() from the synchronous console-script entry point."""
+HTTP_AUTH_TOKEN_ENV = "MONARCH_MCP_AUTH_TOKEN"
+MIN_HTTP_AUTH_TOKEN_LENGTH = 32
+HTTP_MCP_PATH = "/mcp"
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def http_auth_token() -> str:
+    """Return the HTTP bearer token. HTTP never serves financial data without a strong one."""
+    token = os.getenv(HTTP_AUTH_TOKEN_ENV, "")
+    if len(token) < MIN_HTTP_AUTH_TOKEN_LENGTH:
+        raise ValueError(
+            f"{HTTP_AUTH_TOKEN_ENV} must be at least {MIN_HTTP_AUTH_TOKEN_LENGTH} characters for HTTP. "
+            "Generate one with: python -c 'import secrets; print(secrets.token_urlsafe(32))'"
+        )
+    return token
+
+
+def _bearer_matches(scope: Scope, expected: bytes) -> bool:
+    for name, value in scope.get("headers", []):
+        if name == b"authorization":
+            scheme, _, supplied = value.partition(b" ")
+            return scheme.lower() == b"bearer" and hmac.compare_digest(supplied.strip(), expected)
+    return False
+
+
+def create_http_app(auth_token: str) -> ASGIApp:
+    """Serve stateless Streamable HTTP at /mcp behind a bearer token.
+
+    Each request gets its own session manager: the SDK manager can run only once, and the
+    Workers ASGI adapter repeats the lifespan for every request. The bearer token replaces
+    the SDK's Host/Origin checks, because a DNS-rebinding page cannot attach it.
+    """
+    expected = auth_token.encode()
+    security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "lifespan":
+            while True:
+                message = await receive()
+                if message["type"] == "lifespan.startup":
+                    await send({"type": "lifespan.startup.complete"})
+                elif message["type"] == "lifespan.shutdown":
+                    await send({"type": "lifespan.shutdown.complete"})
+                    return
+        if scope["type"] != "http":
+            return
+
+        path = scope["path"].rstrip("/")
+        if path == "/healthz":
+            await JSONResponse({"status": "ok"})(scope, receive, send)
+        elif not _bearer_matches(scope, expected):
+            response = JSONResponse({"error": "unauthorized"}, status_code=401, headers={"WWW-Authenticate": "Bearer"})
+            await response(scope, receive, send)
+        elif path != HTTP_MCP_PATH:
+            await JSONResponse({"error": "not found"}, status_code=404)(scope, receive, send)
+        else:
+            manager = StreamableHTTPSessionManager(
+                app=mcp._mcp_server, json_response=True, stateless=True, security_settings=security
+            )
+            async with manager.run():
+                await manager.handle_request(scope, receive, send)
+
+    return app
+
+
+async def main_http(host: str, port: int, auth_token: str) -> None:
+    """Serve MCP over HTTP with uvicorn. Cloudflare Workers use worker/src/entry.py instead."""
+    import uvicorn  # The SDK skips uvicorn on Pyodide, so import it only here.
+
+    if host not in LOOPBACK_HOSTS:
+        log.warning("http_non_loopback", host=host, hint="use Tailscale or a TLS proxy; this listener is plain HTTP")
+    log.info("server_starting", transport="http", host=host, port=port, path=HTTP_MCP_PATH)
+    config = uvicorn.Config(create_http_app(auth_token), host=host, port=port, log_level="warning", server_header=False)
+    await uvicorn.Server(config).serve()
+
+
+def _parse_args(argv: list[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Monarch Money MCP server")
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "http"],
+        default=os.getenv("MONARCH_MCP_TRANSPORT", "stdio"),
+        help="stdio (default) or Streamable HTTP at /mcp with bearer auth",
+    )
+    parser.add_argument("--host", default=os.getenv("MONARCH_MCP_HOST", "127.0.0.1"))
+    parser.add_argument("--port", type=int, default=os.getenv("MONARCH_MCP_PORT", "8000"))
+    args = parser.parse_args(argv)
+    if args.transport == "http":
+        try:
+            args.auth_token = http_auth_token()
+        except ValueError as e:
+            parser.error(str(e))
+    return args
+
+
+def run(argv: list[str] | None = None) -> None:
+    """Run the selected transport from the synchronous console-script entry point."""
+    args = _parse_args(argv)
+    if args.transport == "http":
+        with contextlib.suppress(KeyboardInterrupt):
+            asyncio.run(main_http(args.host, args.port, args.auth_token))
+        return
 
     try:
         asyncio.run(main())
