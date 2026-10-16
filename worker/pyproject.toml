@@ -1,0 +1,22 @@
+[project]
+name = "monarch-mcp-worker"
+version = "0.1.0"
+description = "Cloudflare Python Worker for the Monarch Money MCP server"
+requires-python = ">=3.13"
+# Mirrors the root runtime dependencies. mcp[cli] tools are not needed in a Worker.
+dependencies = [
+    "anyio>=4.9,<5",
+    "gql>=4.0.0",
+    "mcp>=1.30.0,<2",
+    "monarchmoneycommunity>=1.6.0",
+    "pydantic>=2.13.5",
+    "python-dateutil>=2.9.0.post0",
+    "starlette>=0.48.0",
+    "structlog>=26.1.0",
+]
+
+[dependency-groups]
+dev = [
+    "workers-py",
+    "workers-runtime-sdk",
+]

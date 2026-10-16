@@ -53,6 +53,10 @@ That command contacts Monarch. Ordinary tests use synthetic data and skip live c
 
 `server.py` contains the FastMCP server, response models, authentication, tools, resources, and prompts. It uses `mcp.server.fastmcp.FastMCP`, JSON-RPC over stdio, and structlog on stderr. Reserve stdout for the protocol.
 
+HTTP is opt-in (`--transport http`). `create_http_app()` serves stateless JSON Streamable HTTP at `/mcp`. Every path except `/healthz` requires `MONARCH_MCP_AUTH_TOKEN` (32+ characters) as a bearer token. HTTP never runs unauthenticated. The token replaces the SDK's Host/Origin checks, so Tailscale and Workers hostnames work. Each request builds its own `StreamableHTTPSessionManager`, because a manager runs only once and the Workers ASGI adapter repeats the lifespan for every request.
+
+`worker/` is an experimental Cloudflare Python Worker. `worker/src/server.py` symlinks the root file. `entry.py` copies Worker secrets into `os.environ` and mirrors the session token between the in-memory session file and KV. The sandbox could not reach the Pyodide package index, so Pyodide resolution and live Workers behavior are unverified.
+
 - Tools use `@mcp.tool()` and `@track_usage`, return Pydantic models, and advertise read/write annotations and titles. FastMCP emits structured content with a text fallback.
 - Monarch responses are GraphQL envelopes, not usually bare lists. Use `extract_list(response, key)` or `extract_transactions_list()` before counting or processing rows.
 - Use `JsonValue` for evolving upstream payloads and explicit models for shapes constructed here. Convert dates to ISO strings before serialization.
