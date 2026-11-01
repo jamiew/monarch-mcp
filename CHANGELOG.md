@@ -5,6 +5,9 @@
 Thanks to [@mrtweak77](https://github.com/mrtweak77) for diagnosing the refresh bug ([#25](https://github.com/jamiew/monarch-mcp/issues/25)).
 
 - Fixed `refresh_accounts`, which always failed because it never passed account IDs to Monarch. It now requests a refresh for every account.
+- Fixed `create_manual_account`, which always failed because it never sent the account subtype or net worth setting. It now takes `account_sub_type` and an optional `include_in_net_worth`, sends the starting balance, and fails when Monarch does not return the new account.
+- Tests now check every mocked Monarch call against the client library's real method signatures.
+- Added `get_transaction_details` to the MCP Registry tool list in `server.json`.
 
 ## 0.5.2 (2026-09-28)
 

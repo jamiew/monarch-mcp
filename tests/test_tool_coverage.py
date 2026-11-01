@@ -45,6 +45,7 @@ TOOL_CALLS: list[Any] = [
     ),
     pytest.param(lambda: server.update_transaction(transaction_id="txn_1", notes="memo"), id="update_transaction"),
     pytest.param(lambda: server.get_transaction_splits(transaction_id="txn_1"), id="get_transaction_splits"),
+    pytest.param(lambda: server.get_transaction_details(transaction_id="txn_1"), id="get_transaction_details"),
     pytest.param(
         lambda: server.update_transaction_splits(
             transaction_id="txn_1",
@@ -54,6 +55,9 @@ TOOL_CALLS: list[Any] = [
     ),
     pytest.param(lambda: server.get_account_holdings(account_id="acc_1"), id="get_account_holdings"),
     pytest.param(lambda: server.get_account_history(account_id="acc_1"), id="get_account_history"),
+    pytest.param(lambda: server.get_all_holdings(), id="get_all_holdings"),
+    pytest.param(lambda: server.get_transaction_rules(), id="get_transaction_rules"),
+    pytest.param(lambda: server.get_household_members(), id="get_household_members"),
     pytest.param(lambda: server.get_institutions(), id="get_institutions"),
     pytest.param(lambda: server.get_recurring_transactions(), id="get_recurring_transactions"),
     pytest.param(
@@ -75,7 +79,9 @@ TOOL_CALLS: list[Any] = [
     pytest.param(lambda: server.delete_transaction_rule(rule_id="rule_1"), id="delete_transaction_rule"),
     pytest.param(lambda: server.set_budget_amount(category_id="cat_1", amount=500.0), id="set_budget_amount"),
     pytest.param(
-        lambda: server.create_manual_account(account_name="Savings", account_type="savings", balance=1000.0),
+        lambda: server.create_manual_account(
+            account_name="House", account_type="other_asset", account_sub_type="other", balance=1000.0
+        ),
         id="create_manual_account",
     ),
     pytest.param(lambda: server.get_spending_summary(), id="get_spending_summary"),
@@ -109,6 +115,14 @@ class TestToolFailurePropagation:
         mock_api.side_effect = RuntimeError("upstream API failure")
         with pytest.raises(RuntimeError, match="upstream API failure"):
             await make_coro()
+
+    @pytest.mark.asyncio
+    async def test_every_tool_runs_through_checked_api(self) -> None:
+        # mock_api checks each client call against the library signature, so new
+        # tools belong in TOOL_CALLS. Batch tools catch errors and have their own tests.
+        batch_tools = {"update_transactions_bulk", "get_complete_financial_overview", "analyze_spending_patterns"}
+        covered = {param.id for param in TOOL_CALLS} | batch_tools
+        assert {tool.name for tool in await server.mcp.list_tools()} == covered
 
 
 class TestReadToolSuccess:
@@ -263,6 +277,38 @@ class TestReadToolSuccess:
         refresh = gql.await_args_list[-1].kwargs
         assert refresh["operation"] == "Common_ForceRefreshAccountsMutation"
         assert refresh["variables"] == {"input": {"accountIds": ["a1", "a2"]}}
+
+    @pytest.mark.asyncio
+    async def test_create_manual_account_sends_type_subtype_and_balance(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client = MonarchMoney()
+        gql = AsyncMock(return_value={"createManualAccount": {"account": {"id": "acc_9"}, "errors": None}})
+        monkeypatch.setattr(client, "gql_call", gql)
+        monkeypatch.setattr(server, "mm_client", client)
+
+        result = await server.create_manual_account(
+            account_name="House", account_type="other_asset", account_sub_type="other", balance=250000.0
+        )
+
+        assert result.account == {"id": "acc_9"}
+        assert gql.await_args.kwargs["variables"] == {
+            "input": {
+                "type": "other_asset",
+                "subtype": "other",
+                "includeInNetWorth": True,
+                "name": "House",
+                "displayBalance": 250000.0,
+            }
+        }
+
+    @pytest.mark.asyncio
+    async def test_create_manual_account_rejects_missing_account(self, mock_api: AsyncMock) -> None:
+        mock_api.return_value = {
+            "createManualAccount": {"account": None, "errors": {"message": "Invalid subtype", "code": "BAD_INPUT"}}
+        }
+        with pytest.raises(ValueError, match="Invalid subtype"):
+            await server.create_manual_account(
+                account_name="House", account_type="other_asset", account_sub_type="nope", balance=1.0
+            )
 
 
 class TestResourceSuccess:

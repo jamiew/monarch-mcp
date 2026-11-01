@@ -48,6 +48,7 @@ That command contacts Monarch. Ordinary tests use synthetic data and skip live c
 - Type function parameters and returns. Do not add `Any` or type assertions; validate external input with Pydantic and narrow unions at runtime. Existing untyped library boundaries are not a reason to spread `Any`.
 - Catch specific exceptions rather than adding broad `Exception` handlers. Validate before mutation and preserve useful errors.
 - Test observable behavior and failure boundaries. Avoid assertions about wording, implementation details, or hardcoded tool counts.
+- The `mock_api` fixture binds every call against the real `MonarchMoney` method signature. Bare `AsyncMock` clients accept anything, which hid broken `refresh_accounts` and `create_manual_account` calls. Add new tools to `TOOL_CALLS` in `tests/test_tool_coverage.py`.
 
 ## Architecture and contracts
 
