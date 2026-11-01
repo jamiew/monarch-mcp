@@ -103,12 +103,12 @@ Source changes marked **Unreleased** are not available through PyPI until publis
 
 ## Upstream library and forks
 
-**Community and parent rechecked 2026-09-20; sibling survey 2026-09-14.** Keep `monarchmoneycommunity`; no inspected sibling is a safer replacement.
+**Community rechecked 2026-11-01; parent 2026-09-20; sibling survey 2026-09-14.** Keep `monarchmoneycommunity`; no inspected sibling is a safer replacement.
 
 | Repository | Verified revision/activity | Assessment |
 |---|---|---|
 | [hammem/monarchmoney](https://github.com/hammem/monarchmoney) | `98a6e0d`, 2025-11-03 | No new merged fixes. Domain and cookie-auth PRs remain open. |
-| [bradleyseanf/monarchmoneycommunity](https://github.com/bradleyseanf/monarchmoneycommunity) | `dev` `d30f2859`; PyPI 1.6.0, 2026-09-20 | Stable now includes all-holdings, expanded rules, household lookup/ownership updates, and proxy support. |
+| [bradleyseanf/monarchmoneycommunity](https://github.com/bradleyseanf/monarchmoneycommunity) | `dev` `2f9730ea`; PyPI 1.7.1, 2026-11-01 | 1.7.x adds goals, merchant deletion, category-only rule methods, and read/export getters, including `get_recurring_transaction_streams`. Existing methods are unchanged. |
 | [keithah/monarchmoney-enhanced](https://github.com/keithah/monarchmoney-enhanced) | `3c7d442`, 2026-08-13; PyPI 0.11.0 | Dependency maintenance, but feature-stale. Old API domain and divergent service/public queries. |
 | [tommyzed/monarchmoney-i18n-transactions](https://github.com/tommyzed/monarchmoney-i18n-transactions) | `9b5acb9`, 2026-09-14 | Active currency/import app, not a replacement client. Ordinary recurring getter. |
 | [jribnik/monarchmoney-enhanced](https://github.com/jribnik/monarchmoney-enhanced) | PR branches, 2026-07-28 | Proposed rules/transaction schema fixes, not a maintained release. |
@@ -116,9 +116,9 @@ Source changes marked **Unreleased** are not available through PyPI until publis
 
 Discovery covered the parent's 15 most-starred and 15 newest forks, 30 community children, and nine enhanced children. Push dates alone can reflect inherited commits.
 
-**Pin policy:** track verified community `dev` HEAD by exact SHA. Current pin: `d30f285998a8a64db7f8e923f6742e095645c2b4`, identical in source to v1.6.0. Update its comment date when changing it. Published floor: `>=1.6.0`; tools must work with that release. Since the old pin, production changes add rule fields and bounded duplicate scans; typed budgets are optional. None fixes history date arguments or transaction/budget date serialization.
+**Pin policy:** track verified community `dev` HEAD by exact SHA. Current pin: `2f9730ea46150e544dec9684ee180dfec7675ca4`, identical in source to v1.7.1. Update its comment date when changing it. Published floor: `>=1.6.0`; tools must work with that release. 1.7.x only adds methods and widens `gql_call` to accept `GraphQLRequest`; it requires `gql==4.4.0`. Its rule methods only set categories and refuse goals, splits, and review status, so keep the direct rule mutations here. None fixes history date arguments or transaction/budget date serialization.
 
-**Recurring candidates:** [parent PR #165](https://github.com/hammem/monarchmoney/pull/165) and enhanced's service implement `recurringTransactionStreams` with liability forecasts. These queries were not live-validated. Enhanced's paid/late summaries and review/disable mutations also need validation before adoption. A larger method list is not evidence of working coverage.
+**Recurring candidates:** community 1.7.x `get_recurring_transaction_streams`, [parent PR #165](https://github.com/hammem/monarchmoney/pull/165), and enhanced's service implement `recurringTransactionStreams` with liability forecasts. These queries were not live-validated here. Enhanced's paid/late summaries and review/disable mutations also need validation before adoption. A larger method list is not evidence of working coverage.
 
 Other stable candidates include transaction details/tags, duplicate detection, cashflow summaries, and receipt uploads. Add them for a user need, not coverage alone.
 

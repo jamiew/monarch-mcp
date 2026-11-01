@@ -149,5 +149,5 @@ exclude_lines = [
 ]
 
 [tool.uv.sources]
-# Exact dev HEAD, checked 2026-09-20. Same source tree as the published 1.6.0 release.
-monarchmoneycommunity = { git = "https://github.com/bradleyseanf/monarchmoneycommunity", rev = "d30f285998a8a64db7f8e923f6742e095645c2b4" }
+# Exact dev HEAD, checked 2026-11-01. Same source tree as the published 1.7.1 release.
+monarchmoneycommunity = { git = "https://github.com/bradleyseanf/monarchmoneycommunity", rev = "2f9730ea46150e544dec9684ee180dfec7675ca4" }

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Source installs now use `monarchmoneycommunity` 1.7.1 (and `gql` 4.4.0). It only adds new client methods, so no tool behavior changes. PyPI installs still accept 1.6.0 or later.
+
 ## 0.5.3 (2026-11-01)
 
 Thanks to [@mrtweak77](https://github.com/mrtweak77) for diagnosing the `refresh_accounts` bug ([#25](https://github.com/jamiew/monarch-mcp/issues/25)).
