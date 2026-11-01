@@ -2673,7 +2673,10 @@ async def refresh_accounts() -> RefreshResult:
     await ensure_authenticated()
 
     try:
-        result = await api_call_with_retry("request_accounts_refresh")
+        # The library requires the ids; this is the same lookup its
+        # request_accounts_refresh_and_wait does, without the wait.
+        accounts = extract_list(await api_call_with_retry("get_accounts"), "accounts")
+        result = await api_call_with_retry("request_accounts_refresh", [a["id"] for a in accounts])
         result = convert_dates_to_strings(result)
         log.info("Account refresh requested")
         return RefreshResult(result=result)

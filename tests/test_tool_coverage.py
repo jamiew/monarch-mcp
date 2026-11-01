@@ -8,6 +8,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from monarchmoney import MonarchMoney
 
 import server
 
@@ -244,10 +245,24 @@ class TestReadToolSuccess:
         assert mock_api.await_count == 2
 
     @pytest.mark.asyncio
-    async def test_refresh_accounts_returns_result(self, mock_api: AsyncMock) -> None:
-        mock_api.return_value = {"status": "refresh_requested"}
+    async def test_refresh_accounts_sends_every_account_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A real client, so the library's required account_ids argument is enforced.
+        client = MonarchMoney()
+        gql = AsyncMock(
+            side_effect=[
+                {"accounts": [{"id": "a1"}, {"id": "a2"}]},
+                {"forceRefreshAccounts": {"success": True, "errors": None}},
+            ]
+        )
+        monkeypatch.setattr(client, "gql_call", gql)
+        monkeypatch.setattr(server, "mm_client", client)
+
         result = await server.refresh_accounts()
-        assert result.result["status"] == "refresh_requested"
+
+        assert result.result is True
+        refresh = gql.await_args_list[-1].kwargs
+        assert refresh["operation"] == "Common_ForceRefreshAccountsMutation"
+        assert refresh["variables"] == {"input": {"accountIds": ["a1", "a2"]}}
 
 
 class TestResourceSuccess:
