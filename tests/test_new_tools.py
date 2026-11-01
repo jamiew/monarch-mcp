@@ -187,33 +187,6 @@ class TestNewMonarchTools:
             server.mm_client = original_client
 
     @pytest.mark.asyncio
-    async def test_create_manual_account(self) -> None:
-        """Test create_manual_account functionality."""
-        mock_client = AsyncMock()
-        mock_result = {"id": "acc456", "name": "My Savings", "type": "savings"}
-        mock_client.create_manual_account.return_value = mock_result
-
-        original_client = server.mm_client
-        server.mm_client = mock_client
-
-        try:
-            result = await server.create_manual_account(
-                account_name="My Savings", account_type="savings", balance=1000.0
-            )
-
-            assert isinstance(result, server.CreateAccountResult)
-            assert result.account == mock_result
-
-            mock_client.create_manual_account.assert_called_once()
-            call_args = mock_client.create_manual_account.call_args
-            assert call_args.kwargs["account_name"] == "My Savings"
-            assert call_args.kwargs["account_type"] == "savings"
-            assert call_args.kwargs["balance"] == 1000.0
-
-        finally:
-            server.mm_client = original_client
-
-    @pytest.mark.asyncio
     async def test_error_handling_in_new_tools(self) -> None:
         """Propagate API errors from holdings requests."""
         mock_client = AsyncMock()

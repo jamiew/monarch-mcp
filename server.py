@@ -2529,19 +2529,42 @@ async def set_budget_amount(category_id: str, amount: float) -> SetBudgetResult:
 
 @mcp.tool(annotations=WRITE_CREATE, title="Create Manual Account")
 @track_usage
-async def create_manual_account(account_name: str, account_type: str, balance: float) -> CreateAccountResult:
-    """Create a manual account with account_name, Monarch account_type, and balance."""
+async def create_manual_account(
+    account_name: str,
+    account_type: str,
+    account_sub_type: str,
+    balance: float,
+    include_in_net_worth: bool = True,
+) -> CreateAccountResult:
+    """Create a manually tracked account and return its new ID.
+
+    Args:
+        account_name: Display name for the account.
+        account_type: Monarch account type, such as loan, other_asset, or other_liability.
+        account_sub_type: Subtype within that type, such as mortgage, auto, or line_of_credit.
+        balance: Starting balance.
+        include_in_net_worth: Whether the account counts toward net worth.
+    """
     await ensure_authenticated()
 
     try:
         result = await api_call_with_retry(
-            "create_manual_account", account_name=account_name, account_type=account_type, balance=balance
+            "create_manual_account",
+            account_type=account_type,
+            account_sub_type=account_sub_type,
+            is_in_net_worth=include_in_net_worth,
+            account_name=account_name,
+            account_balance=balance,
         )
-        result = convert_dates_to_strings(result)
-        log.info("Manual account created", name=account_name, type=account_type)
-        return CreateAccountResult(account=result)
+        payload = result.get("createManualAccount") if isinstance(result, dict) else None
+        account = payload.get("account") if isinstance(payload, dict) else None
+        if not isinstance(account, dict) or not account.get("id"):
+            errors = payload.get("errors") if isinstance(payload, dict) else None
+            raise ValueError(f"Monarch rejected the manual account: {errors}")
+        log.info("Manual account created", type=account_type, sub_type=account_sub_type)
+        return CreateAccountResult(account=convert_dates_to_strings(account))
     except Exception as e:
-        log.error("Failed to create manual account", error=str(e), name=account_name)
+        log.error("Failed to create manual account", error=str(e), type=account_type)
         raise
 
 
