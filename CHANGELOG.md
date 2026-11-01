@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+Thanks to [@mrtweak77](https://github.com/mrtweak77) for diagnosing the refresh bug ([#25](https://github.com/jamiew/monarch-mcp/issues/25)).
+
+- Fixed `refresh_accounts`, which always failed because it never passed account IDs to Monarch. It now requests a refresh for every account.
+
 ## 0.5.2 (2026-09-28)
 
 Thanks to [@prerak-proof](https://github.com/prerak-proof) for transaction details ([#23](https://github.com/jamiew/monarch-mcp/pull/23)).
