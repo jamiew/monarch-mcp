@@ -1,14 +1,17 @@
 """Shared pytest fixtures for the test suite."""
 
 import inspect
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from mcp.types import CallToolResult
 from monarchmoney import MonarchMoney
 
 import server
+
+CallTool = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
 @pytest.fixture(autouse=True)
@@ -48,3 +51,17 @@ def mock_api(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
 
     monkeypatch.setattr(server, "api_call_with_retry", checked_call)
     return api
+
+
+@pytest.fixture
+def call_tool() -> CallTool:
+    """Call a tool through MCPServer's argument validation and return its structured content."""
+
+    async def call(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        result = await server.mcp.call_tool(name, arguments)
+        assert isinstance(result, CallToolResult)
+        assert not result.is_error
+        assert result.structured_content is not None
+        return result.structured_content
+
+    return call

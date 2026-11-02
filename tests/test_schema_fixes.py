@@ -1,13 +1,15 @@
-"""Transaction behavior through FastMCP and the real client, with offline GraphQL."""
+"""Transaction behavior through MCPServer and the real client, with offline GraphQL."""
 
 import json
 from unittest.mock import AsyncMock
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 from monarchmoney import MonarchMoney
 from pydantic import JsonValue
 
 import server
+from tests.conftest import CallTool
 
 
 @pytest.fixture
@@ -20,7 +22,9 @@ def graphql(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
 
 
 @pytest.mark.parametrize("bulk", [False, True], ids=["single", "bulk"])
-async def test_updates_preserve_omitted_fields_and_apply_false_and_empty_values(graphql: AsyncMock, bulk: bool) -> None:
+async def test_updates_preserve_omitted_fields_and_apply_false_and_empty_values(
+    graphql: AsyncMock, call_tool: CallTool, bulk: bool
+) -> None:
     transaction: dict[str, JsonValue] = {
         "id": "txn_123",
         "name": "Corner Deli",
@@ -52,7 +56,7 @@ async def test_updates_preserve_omitted_fields_and_apply_false_and_empty_values(
         result = await server.update_transactions_bulk(json.dumps([arguments]))
         assert result.summary.succeeded == 1
     else:
-        _, structured = await server.mcp._tool_manager.call_tool("update_transaction", arguments, convert_result=True)
+        structured = await call_tool("update_transaction", arguments)
         assert structured["transaction"] == {"updateTransaction": {"errors": [], "transaction": transaction}}
 
     assert transaction == {
@@ -70,7 +74,7 @@ async def test_updates_preserve_omitted_fields_and_apply_false_and_empty_values(
         result = await server.update_transactions_bulk(json.dumps([arguments]))
         assert result.summary.succeeded == 1
     else:
-        await server.mcp._tool_manager.call_tool("update_transaction", arguments)
+        await call_tool("update_transaction", arguments)
 
     assert transaction == {
         "id": "txn_123",
@@ -84,7 +88,9 @@ async def test_updates_preserve_omitted_fields_and_apply_false_and_empty_values(
 
 
 @pytest.mark.parametrize("tool_name", ["get_transactions", "search_transactions"])
-async def test_pending_filter_distinguishes_posted_pending_and_unfiltered(graphql: AsyncMock, tool_name: str) -> None:
+async def test_pending_filter_distinguishes_posted_pending_and_unfiltered(
+    graphql: AsyncMock, call_tool: CallTool, tool_name: str
+) -> None:
     rows: list[JsonValue] = [
         {"id": "txn_posted", "pending": False, "merchant": {"name": "Corner Deli"}},
         {"id": "txn_pending", "pending": True, "merchant": {"name": "Corner Deli"}},
@@ -109,9 +115,7 @@ async def test_pending_filter_distinguishes_posted_pending_and_unfiltered(graphq
         ({"is_pending": True}, [rows[1]]),
         ({"is_pending": None}, rows),
     ]:
-        _, structured = await server.mcp._tool_manager.call_tool(
-            tool_name, {**arguments, **filter_arguments}, convert_result=True
-        )
+        structured = await call_tool(tool_name, {**arguments, **filter_arguments})
         assert structured["transactions"] == expected
         if tool_name == "search_transactions":
             assert structured["search_metadata"]["result_count"] == len(expected)
@@ -120,7 +124,7 @@ async def test_pending_filter_distinguishes_posted_pending_and_unfiltered(graphq
 
 
 async def test_empty_merchant_name_fails_before_creation(graphql: AsyncMock) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ToolError):
         await server.create_transaction(
             amount=-50.00, merchant_name="", account_id="acc_123", date="2024-01-15", category_id="cat_456"
         )
