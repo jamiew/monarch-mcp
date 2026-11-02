@@ -25,7 +25,7 @@ uv run mypy server.py
 uv run pytest tests/ -v --tb=short
 ```
 
-Use `uv run ruff format .` to format and `uv add` / `uv remove` to change dependencies. CI selects Python 3.10 through 3.13 explicitly and uses locked installs.
+Use `uv run ruff format .` to format and `uv add` / `uv remove` to change dependencies. CI selects Python 3.10 through 3.15 explicitly and uses locked installs.
 
 Live integration tests are opt-in and never load `.env` or saved sessions themselves:
 
