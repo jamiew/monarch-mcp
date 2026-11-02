@@ -4,6 +4,7 @@ from copy import deepcopy
 from unittest.mock import AsyncMock
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import JsonValue
 
 import server
@@ -96,13 +97,13 @@ async def test_rules_pages_preserve_priority_and_compact_without_mutation(mock_a
 
 @pytest.mark.parametrize("arguments", [{"limit": 0}, {"limit": 101}, {"offset": -1}])
 async def test_rules_reject_invalid_paging_before_api(mock_api: AsyncMock, arguments: dict[str, int]) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ToolError):
         await server.get_transaction_rules(**arguments)
     mock_api.assert_not_awaited()
 
 
 @pytest.mark.parametrize("arguments", [{"limit": 0}, {"limit": 1001}, {"offset": -1}])
 async def test_history_rejects_invalid_paging_before_api(mock_api: AsyncMock, arguments: dict[str, int]) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ToolError):
         await server.get_account_history("acc_001", **arguments)
     mock_api.assert_not_awaited()

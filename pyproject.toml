@@ -29,8 +29,8 @@ classifiers = [
 dependencies = [
     "anyio>=4.9,<5",
     "gql>=4.0.0",
-    "mcp[cli]>=1.30.0,<2",
-    "monarchmoneycommunity>=1.6.0",
+    "mcp[cli]>=2.3.0,<3",
+    "monarchmoneycommunity>=1.7.1",
     "pydantic>=2.13.5",
     "python-dateutil>=2.9.0.post0",
     "structlog>=26.1.0",
@@ -149,5 +149,5 @@ exclude_lines = [
 ]
 
 [tool.uv.sources]
-# Exact dev HEAD, checked 2026-11-01. Same source tree as the published 1.7.1 release.
+# Exact dev HEAD, checked 2026-11-02. Same source tree as the published 1.7.1 release.
 monarchmoneycommunity = { git = "https://github.com/bradleyseanf/monarchmoneycommunity", rev = "2f9730ea46150e544dec9684ee180dfec7675ca4" }

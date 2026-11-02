@@ -3,7 +3,9 @@
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from mcp.types import CompletionArgument, PromptReference, ResourceTemplateReference
+from mcp.client import Client
+from mcp.shared.exceptions import MCPError
+from mcp.types import CompletionArgument, PromptReference, ResourceTemplateReference, TextContent
 
 import server
 
@@ -127,7 +129,7 @@ class TestResourceTemplates:
     @pytest.mark.asyncio
     async def test_templates_are_registered(self) -> None:
         templates = await server.mcp.list_resource_templates()
-        uris = {t.uriTemplate for t in templates}
+        uris = {t.uri_template for t in templates}
         assert "accounts://{account_id}/holdings" in uris
         assert "accounts://{account_id}/history" in uris
 
@@ -150,6 +152,22 @@ class TestResourceTemplates:
                 result = await server.account_history_resource(account_id="acc_9")
                 mock_api.assert_awaited_once_with("get_account_history", account_id="acc_9")
                 assert "100" in result
+
+    @pytest.mark.asyncio
+    async def test_template_read_through_protocol(self, mock_api: AsyncMock) -> None:
+        mock_api.return_value = [{"symbol": "AAPL"}]
+        async with Client(server.mcp) as client:
+            result = await client.read_resource("accounts://acc_1/holdings")
+        mock_api.assert_awaited_once_with("get_account_holdings", account_id="acc_1")
+        assert "AAPL" in str(result.contents[0])
+
+    @pytest.mark.asyncio
+    async def test_blank_account_id_is_rejected_before_api(self, mock_api: AsyncMock) -> None:
+        # RFC 6570 matching lets {account_id} capture an empty string.
+        async with Client(server.mcp) as client:
+            with pytest.raises(MCPError, match="account_id must not be blank"):
+                await client.read_resource("accounts:///holdings")
+        mock_api.assert_not_awaited()
 
 
 class TestCompletions:
@@ -186,6 +204,14 @@ class TestCompletions:
         assert completion is not None
         assert completion.values == []
 
+    @pytest.mark.asyncio
+    async def test_completion_through_protocol(self, mock_api: AsyncMock) -> None:
+        mock_api.return_value = {"accounts": [{"id": "acc_123"}, {"id": "acc_999"}]}
+        ref = ResourceTemplateReference(type="ref/resource", uri="accounts://{account_id}/history")
+        async with Client(server.mcp) as client:
+            result = await client.complete(ref, {"name": "account_id", "value": "999"})
+        assert result.completion.values == ["acc_999"]
+
 
 class TestProgressReporting:
     """Batch tools report progress through an injected Context."""
@@ -220,3 +246,55 @@ class TestProgressReporting:
         last_progress = ctx.report_progress.await_args_list[-1].args[0]
         assert first_progress == 0
         assert last_progress == ctx.report_progress.await_args_list[-1].args[1]
+
+    @pytest.mark.asyncio
+    async def test_injected_context_reports_progress_to_client(self, mock_api: AsyncMock) -> None:
+        responses = {
+            "get_transactions": {"allTransactions": {"results": [], "totalCount": 0}},
+            "get_budgets": {"budgetData": {"totalsByMonth": []}},
+        }
+        mock_api.side_effect = lambda method, **kwargs: responses[method]
+        updates: list[tuple[float, float | None]] = []
+
+        async def on_progress(progress: float, total: float | None, message: str | None) -> None:
+            updates.append((progress, total))
+
+        async with Client(server.mcp) as client:
+            result = await client.call_tool(
+                "analyze_spending_patterns",
+                {"lookback_months": 2, "include_forecasting": False},
+                progress_callback=on_progress,
+            )
+        assert not result.is_error
+        assert updates[0] == (0, 2)
+        assert updates[-1] == (2, 2)
+
+
+class TestToolErrors:
+    """The model sees anticipated failure messages but not internal error details."""
+
+    @pytest.mark.asyncio
+    async def test_validation_message_reaches_client(self, mock_api: AsyncMock) -> None:
+        async with Client(server.mcp) as client:
+            result = await client.call_tool("get_transaction_rules", {"limit": 0})
+        assert result.is_error
+        assert isinstance(result.content[0], TextContent)
+        assert "limit must be 1" in result.content[0].text
+        mock_api.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unexpected_error_text_stays_on_server(self, mock_api: AsyncMock) -> None:
+        mock_api.side_effect = KeyError("internal detail")
+        async with Client(server.mcp) as client:
+            result = await client.call_tool("get_accounts", {})
+        assert result.is_error
+        assert isinstance(result.content[0], TextContent)
+        assert "internal detail" not in result.content[0].text
+
+    @pytest.mark.asyncio
+    async def test_resource_auth_failure_message_reaches_client(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        failure = ValueError("MONARCH_EMAIL and MONARCH_PASSWORD environment variables are required")
+        monkeypatch.setattr(server, "ensure_authenticated", AsyncMock(side_effect=failure))
+        async with Client(server.mcp) as client:
+            with pytest.raises(MCPError, match="MONARCH_EMAIL"):
+                await client.read_resource("accounts://list")

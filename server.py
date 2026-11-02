@@ -13,20 +13,24 @@ import signal
 import stat
 import sys
 import time
-import uuid
 import warnings
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from datetime import date, datetime, timedelta
 from enum import Enum
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import Any, Literal, ParamSpec, TypeVar
 
+import aiohttp
 import structlog
 from anyio import AsyncFile
 from dateutil import parser as date_parser
 from dateutil.relativedelta import relativedelta
 from gql import GraphQLRequest, gql
-from mcp.server.fastmcp import Context, FastMCP
+from gql.transport.exceptions import TransportError, TransportServerError
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ResourceError, ToolError
 from mcp.server.stdio import stdio_server
 from mcp.types import (
     Completion,
@@ -36,149 +40,160 @@ from mcp.types import (
     ResourceTemplateReference,
     ToolAnnotations,
 )
-from monarchmoney import MonarchMoney, RequireMFAException
+from monarchmoney import LoginFailedException, MonarchMoney, RequestFailedException, RequireMFAException
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, JsonValue, TypeAdapter, model_validator
 
 JsonSerializable = str | int | float | bool | None | list["JsonSerializable"] | dict[str, "JsonSerializable"]
 
 # Tools communicate only with the Monarch Money API.
-READONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
-WRITE_IDEMPOTENT = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
-WRITE_CREATE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False)
+READONLY = ToolAnnotations(read_only_hint=True, open_world_hint=False)
+WRITE_IDEMPOTENT = ToolAnnotations(
+    read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False
+)
+WRITE_CREATE = ToolAnnotations(
+    read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False
+)
 WRITE_SIDE_EFFECT = ToolAnnotations(
-    readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False
+    read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False
 )
-WRITE_DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False)
+WRITE_DESTRUCTIVE = ToolAnnotations(
+    read_only_hint=False, destructive_hint=True, idempotent_hint=True, open_world_hint=False
+)
 WRITE_CREATE_DESTRUCTIVE = ToolAnnotations(
-    readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False
+    read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=False
 )
 
 
-def parse_flexible_date(date_input: str) -> date:
-    """Parse named periods, relative dates, and dateutil-supported date strings."""
+def _named_period(date_input: str, today: date) -> tuple[date, date] | None:
+    """Return the first and last day of a named period, or None for other input."""
+    if date_input in ("today", "now"):
+        return today, today
+    if date_input == "yesterday":
+        day = today - timedelta(days=1)
+        return day, day
+    if date_input in ("this month", "current month"):
+        start = today.replace(day=1)
+        return start, start + relativedelta(months=1, days=-1)
+    if date_input in ("last month", "previous month"):
+        start = today.replace(day=1) - relativedelta(months=1)
+        return start, start + relativedelta(months=1, days=-1)
+    if date_input in ("this year", "current year"):
+        return date(today.year, 1, 1), date(today.year, 12, 31)
+    if date_input in ("last year", "previous year"):
+        return date(today.year - 1, 1, 1), date(today.year - 1, 12, 31)
+    if date_input == "this week":
+        start = today - timedelta(days=today.weekday())
+        return start, start + timedelta(days=6)
+    if date_input == "last week":
+        # Earlier releases treated this as the single day a week ago.
+        day = today - timedelta(days=7)
+        return day, day
+    return None
+
+
+def _parsed_period(date_input: str, today: date) -> tuple[date, date]:
+    """Parse a date, widening year-only and month-only input to the whole period."""
+    # Parsing with two defaults reveals omitted fields: "2024-02" fills day 1 and
+    # day 29 (dateutil clamps to the month's end), while a full date is unaffected.
+    first = date_parser.parse(date_input, default=datetime(today.year, 1, 1)).date()
+    last = date_parser.parse(date_input, default=datetime(today.year, 12, 31)).date()
+    whole_month = first.day == 1 and last == first + relativedelta(months=1, days=-1)
+    whole_year = first == date(first.year, 1, 1) and last == date(first.year, 12, 31)
+    if first == last or whole_month or whole_year:
+        return first, last
+    # Other omissions, such as "15" or "monday", resolve relative to today.
+    day = date_parser.parse(date_input, default=datetime(today.year, today.month, today.day)).date()
+    return day, day
+
+
+def parse_date_period(date_input: str) -> tuple[date, date]:
+    """Resolve a date phrase to the first and last day it covers.
+
+    Named periods ("last month") and partial dates ("2024", "2024-02", "January 2024")
+    cover several days; full dates, "today", and relative dates cover one.
+    """
     if not date_input:
         raise ValueError("Date input cannot be empty")
 
     date_input = date_input.lower().strip()
     today = date.today()
 
-    if date_input in ["today", "now"]:
-        return today
-    elif date_input == "yesterday":
-        return today - timedelta(days=1)
-    elif date_input in ["this month", "current month"]:
-        return date(today.year, today.month, 1)
-    elif date_input in ["last month", "previous month"]:
-        if today.month == 1:
-            return date(today.year - 1, 12, 1)
-        else:
-            return date(today.year, today.month - 1, 1)
-    elif date_input in ["this year", "current year"]:
-        return date(today.year, 1, 1)
-    elif date_input in ["last year", "previous year"]:
-        return date(today.year - 1, 1, 1)
-    elif date_input == "last week":
-        return today - timedelta(days=7)
-    elif date_input == "this week":
-        # Start of this week (Monday)
-        days_since_monday = today.weekday()
-        return today - timedelta(days=days_since_monday)
+    named = _named_period(date_input, today)
+    if named is not None:
+        return named
 
     relative_pattern = re.match(r"(\d+)\s+(days?|weeks?|months?|years?)\s+ago", date_input)
     if relative_pattern:
         amount = int(relative_pattern.group(1))
         unit = relative_pattern.group(2).rstrip("s")
-
         try:
             if unit == "day":
-                return today - timedelta(days=amount)
+                day = today - timedelta(days=amount)
             elif unit == "week":
-                return today - timedelta(weeks=amount)
+                day = today - timedelta(weeks=amount)
             elif unit == "month":
-                result = today - relativedelta(months=amount)
-                return result.date() if hasattr(result, "date") else result
-            elif unit == "year":
-                result = today - relativedelta(years=amount)
-                return result.date() if hasattr(result, "date") else result
+                day = today - relativedelta(months=amount)
+            else:
+                day = today - relativedelta(years=amount)
         except (ValueError, OverflowError) as e:
             log.warning("Invalid relative date calculation", input=date_input, amount=amount, unit=unit, error=str(e))
             raise ValueError(f"Invalid relative date: {date_input}") from e
+        return day, day
 
     try:
-        parsed_datetime = date_parser.parse(date_input)
-        parsed_date = parsed_datetime.date()
-
-        min_date = date(1900, 1, 1)
-        max_date = date(today.year + 50, 12, 31)
-
-        if parsed_date < min_date or parsed_date > max_date:
-            log.warning("Date outside reasonable range", input=date_input, parsed_date=parsed_date.isoformat())
-            raise ValueError(f"Date {parsed_date.isoformat()} is outside reasonable range (1900-{today.year + 50})")
-
-        return parsed_date
-
+        first, last = _parsed_period(date_input, today)
     except (ValueError, TypeError, OverflowError) as e:
         log.warning("Failed to parse date with dateutil", input=date_input, error=str(e))
 
         suggestions = [
-            "Try formats like: 2024-01-15, Jan 15 2024, 15/01/2024",
+            "Try formats like: 2024-01-15, Jan 15 2024, 01/15/2024 (month first), 2024-01, 2024",
             "Or natural language: today, yesterday, last month, this year",
             "Or relative: 30 days ago, 6 months ago, 1 year ago",
         ]
         suggestion_text = ". ".join(suggestions)
         raise ValueError(f"Could not parse date '{date_input}'. {suggestion_text}") from e
 
+    min_date = date(1900, 1, 1)
+    max_date = date(today.year + 50, 12, 31)
+    if first < min_date or last > max_date:
+        log.warning("Date outside reasonable range", input=date_input, parsed_date=first.isoformat())
+        raise ValueError(f"Date {first.isoformat()} is outside reasonable range (1900-{today.year + 50})")
+
+    return first, last
+
+
+def parse_flexible_date(date_input: str) -> date:
+    """Parse a start date: the first day of a named period or partial date."""
+    return parse_date_period(date_input)[0]
+
+
+def parse_flexible_end_date(date_input: str) -> date:
+    """Parse an end date: the last day of a named period or partial date."""
+    return parse_date_period(date_input)[1]
+
 
 def build_date_filter(start_date: str | None, end_date: str | None) -> dict[str, str]:
     """Build ISO date filters; reject unparseable or reversed ranges.
 
-    Monarch requires both dates or neither. A missing end defaults to today;
-    a missing start defaults to the first day of the end date's month.
+    Periods such as "last month" or "2024" start on their first day and end on
+    their last. Monarch requires both dates or neither. A missing end defaults
+    to today; a missing start to the first day of the end period's first month.
     """
-    filters: dict[str, str] = {}
+    if not start_date and not end_date:
+        return {}
 
-    if start_date and not end_date:
-        end_date = "today"
-        log.info("Auto-filling missing end_date with 'today'", start_date=start_date)
-    elif end_date and not start_date:
-        try:
-            parsed_end = parse_flexible_date(end_date)
-            today = date.today()
+    today = date.today()
+    end_first, end = parse_date_period(end_date) if end_date else (today, today)
+    start = parse_flexible_date(start_date) if start_date else end_first.replace(day=1)
 
-            if parsed_end < today or parsed_end.month != today.month or parsed_end.year != today.year:
-                start_date = date(parsed_end.year, parsed_end.month, 1).isoformat()
-                log.info(
-                    "Auto-filling missing start_date with first of end_date's month",
-                    end_date=end_date,
-                    calculated_start=start_date,
-                )
-            else:
-                start_date = "this month"
-                log.info("Auto-filling missing start_date with 'this month'", end_date=end_date)
-        except ValueError:
-            # Let the parsing below report the invalid end date.
-            start_date = "this month"
-            log.info("Auto-filling missing start_date with 'this month' (end_date parse pending)", end_date=end_date)
+    if start > end:
+        log.warning("Start date is after end date", start_date=start.isoformat(), end_date=end.isoformat())
+        raise ValueError(f"Start date ({start.isoformat()}) cannot be after end date ({end.isoformat()})")
 
-    if start_date:
-        parsed_date = parse_flexible_date(start_date)
-        filters["start_date"] = parsed_date.isoformat()
-        log.info("Parsed start_date", input=start_date, parsed=parsed_date.isoformat())
-
-    if end_date:
-        parsed_date = parse_flexible_date(end_date)
-        filters["end_date"] = parsed_date.isoformat()
-        log.info("Parsed end_date", input=end_date, parsed=parsed_date.isoformat())
-
-    if "start_date" in filters and "end_date" in filters:
-        start = date.fromisoformat(filters["start_date"])
-        end = date.fromisoformat(filters["end_date"])
-
-        if start > end:
-            log.warning("Start date is after end date", start_date=filters["start_date"], end_date=filters["end_date"])
-            raise ValueError(f"Start date ({filters['start_date']}) cannot be after end date ({filters['end_date']})")
-
-    return filters
+    log.info(
+        "Parsed date range", start_input=start_date, end_input=end_date, start=start.isoformat(), end=end.isoformat()
+    )
+    return {"start_date": start.isoformat(), "end_date": end.isoformat()}
 
 
 def convert_dates_to_strings(obj: Any) -> Any:
@@ -226,7 +241,7 @@ def extract_list(response: Any, key: str) -> list[Any]:
 
 def format_transactions_compact(transactions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Keep IDs, date, amount, merchant, statement name, category, account, and review
-    status, plus pending and notes when present. Public tools document these fields.
+    status, plus pending, notes, and tag names when present. Public tools document these fields.
     """
     compact: list[dict[str, Any]] = []
 
@@ -253,6 +268,12 @@ def format_transactions_compact(transactions: list[dict[str, Any]]) -> list[dict
         if txn.get("notes"):
             compact_txn["notes"] = txn.get("notes")
 
+        tags = txn.get("tags")
+        if isinstance(tags, list):
+            tag_names = [tag.get("name") for tag in tags if isinstance(tag, dict) and tag.get("name")]
+            if tag_names:
+                compact_txn["tags"] = tag_names
+
         compact.append(compact_txn)
 
     return compact
@@ -270,6 +291,7 @@ def _build_transaction_filters(
     is_split: bool | None = None,
     is_recurring: bool | None = None,
     is_pending: bool | None = None,
+    needs_review: bool | None = None,
 ) -> dict[str, Any]:
     """Build shared filters for transaction retrieval and search."""
     filters: dict[str, Any] = build_date_filter(start_date, end_date)
@@ -293,6 +315,8 @@ def _build_transaction_filters(
         filters["is_recurring"] = is_recurring
     if is_pending is not None:
         filters["is_pending"] = is_pending
+    if needs_review is not None:
+        filters["needs_review"] = needs_review
 
     return filters
 
@@ -343,11 +367,29 @@ logging.getLogger("gql.transport").setLevel(logging.ERROR)
 
 warnings.filterwarnings("ignore", category=UserWarning, module="gql.transport.aiohttp")
 
-current_session_id = str(uuid.uuid4())
-usage_patterns: dict[str, list[dict[str, Any]]] = {}
-
 P = ParamSpec("P")
 R = TypeVar("R")
+
+# MCPServer shows the model only ToolError and ResourceError text. These failures carry
+# messages meant for the caller: our validation (pydantic's ValidationError is a ValueError),
+# Monarch rejections, auth, network errors, and session-file errors such as a private
+# directory that can't be written. Anything else is a bug whose text may expose internals,
+# so the client gets a generic error and the details stay in the server log.
+ANTICIPATED_ERRORS: tuple[type[Exception], ...] = (
+    ValueError,
+    OSError,
+    asyncio.TimeoutError,
+    LoginFailedException,
+    RequestFailedException,
+    RequireMFAException,
+    TransportError,
+    aiohttp.ClientError,
+)
+
+
+def caller_message(error: Exception) -> str:
+    """Return text for the client; timeouts and some network errors have an empty str()."""
+    return str(error) or type(error).__name__
 
 
 def track_usage(func: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
@@ -363,14 +405,6 @@ def track_usage(func: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
 
         log.info("tool_call", tool=tool_name, args=safe_kwargs)
 
-        call_info = {
-            "session_id": current_session_id,
-            "tool_name": tool_name,
-            "timestamp": time.time(),
-            "args": list(args),
-            "kwargs": safe_kwargs,
-        }
-
         try:
             result = await func(*args, **kwargs)
             execution_time = time.time() - start_time
@@ -385,8 +419,6 @@ def track_usage(func: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
             result_chars = len(payload)
             result_kb = result_chars / 1024
 
-            call_info.update({"status": "success", "execution_time": execution_time, "result_size": result_chars})
-
             log.info(
                 "tool_success",
                 tool=tool_name,
@@ -395,23 +427,41 @@ def track_usage(func: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
                 result_kb=round(result_kb, 2),
             )
 
-            if tool_name not in usage_patterns:
-                usage_patterns[tool_name] = []
-            usage_patterns[tool_name].append(call_info)
-
             return result
 
         except Exception as e:
             execution_time = time.time() - start_time
-            call_info.update({"status": "error", "execution_time": execution_time, "error": str(e)})
 
             log.error("tool_error", tool=tool_name, time_s=round(execution_time, 3), error=str(e))
+            if isinstance(e, ANTICIPATED_ERRORS):
+                raise ToolError(caller_message(e)) from e
             raise
 
     return wrapper
 
 
-mcp = FastMCP("monarch-money")
+def resource_errors(func: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
+    """Surface anticipated resource failures to the client instead of a generic error."""
+
+    @functools.wraps(func)
+    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        try:
+            return await func(*args, **kwargs)
+        except ANTICIPATED_ERRORS as e:
+            raise ResourceError(caller_message(e)) from e
+
+    return wrapper
+
+
+def _server_version() -> str:
+    # Running server.py from a checkout without installing the package has no metadata.
+    try:
+        return package_version("monarch-mcp-jamiew")
+    except PackageNotFoundError:
+        return ""
+
+
+mcp = MCPServer("monarch-money", version=_server_version())
 
 
 # Structured output models give MCP clients schemas and machine-readable content.
@@ -432,6 +482,8 @@ class AccountsResult(MMModel):
 class TransactionsResult(MMModel):
     transactions: list[JsonValue]
     count: int
+    total_count: int | None = None
+    next_offset: int | None = None
     verbose: bool
 
 
@@ -444,6 +496,8 @@ class SearchMetadata(BaseModel):
 class SearchResult(MMModel):
     search_metadata: SearchMetadata
     transactions: list[JsonValue]
+    total_count: int | None = None
+    next_offset: int | None = None
 
 
 class BudgetsResult(MMModel):
@@ -472,6 +526,13 @@ class TransactionUpdatePayload(BaseModel):
 
 class TransactionUpdateEnvelope(BaseModel):
     updateTransaction: TransactionUpdatePayload
+
+
+def _require_nonzero_amount(amount: float | None) -> None:
+    # The client sends an amount only when it is truthy, so 0 would be dropped
+    # while the update still reported success.
+    if amount == 0:
+        raise ValueError("amount cannot be 0: Monarch's client ignores a zero amount")
 
 
 def _check_transaction_update(result: object) -> None:
@@ -882,6 +943,8 @@ class UpdateRecurringResult(MMModel):
 class SetBudgetResult(MMModel):
     category_id: str
     amount: float
+    month: str
+    apply_to_future: bool
     result: JsonValue
 
 
@@ -916,6 +979,7 @@ class SpendingSummaryResult(MMModel):
     group_by: str
     groups: dict[str, GroupSummary]
     totals: Totals
+    transfers_excluded: int = 0
 
 
 class FinancialOverview(MMModel):
@@ -987,10 +1051,42 @@ def _transactions_truncated(response: object, returned: int) -> bool | None:
     return None
 
 
+class _CategoryGroupRef(BaseModel):
+    type: str | None = None
+
+
+class _CategoryWithGroup(BaseModel):
+    id: str | None = None
+    group: _CategoryGroupRef | None = None
+
+
+def _transfer_category_ids(categories_response: object) -> set[str]:
+    """Return IDs of categories whose group type is "transfer", such as card payments.
+
+    Transactions from get_transactions carry only the category ID and name, so
+    the group type comes from get_transaction_categories.
+    """
+    categories = TypeAdapter(list[_CategoryWithGroup]).validate_python(extract_list(categories_response, "categories"))
+    return {c.id for c in categories if c.id and c.group is not None and c.group.type == "transfer"}
+
+
+def _is_transfer(txn: dict[str, Any], transfer_ids: set[str]) -> bool:
+    # Moving money between accounts is neither income nor spending; counting a
+    # card payment as an expense double-counts the purchases it pays for.
+    category = txn.get("category")
+    if not isinstance(category, dict):
+        return False
+    group = category.get("group")
+    if isinstance(group, dict) and group.get("type") == "transfer":
+        return True
+    return category.get("id") in transfer_ids
+
+
 # MCP resources
 
 
 @mcp.resource("categories://list", title="Transaction Categories")
+@resource_errors
 async def list_categories_resource() -> str:
     """Return Monarch's category JSON, including IDs for transaction updates."""
     await ensure_authenticated()
@@ -999,6 +1095,7 @@ async def list_categories_resource() -> str:
 
 
 @mcp.resource("accounts://list", title="Linked Accounts")
+@resource_errors
 async def list_accounts_resource() -> str:
     """Return Monarch's linked-account JSON with balances and institution details."""
     await ensure_authenticated()
@@ -1007,6 +1104,7 @@ async def list_accounts_resource() -> str:
 
 
 @mcp.resource("institutions://list", title="Linked Institutions")
+@resource_errors
 async def list_institutions_resource() -> str:
     """Return Monarch's connected-institution JSON."""
     await ensure_authenticated()
@@ -1014,17 +1112,27 @@ async def list_institutions_resource() -> str:
     return json.dumps(convert_dates_to_strings(institutions), indent=2)
 
 
+def _require_account_id(account_id: str) -> None:
+    # RFC 6570 templates match an empty {account_id}, as in accounts:///holdings.
+    if not account_id.strip():
+        raise ValueError("account_id must not be blank")
+
+
 @mcp.resource("accounts://{account_id}/holdings", title="Account Holdings")
+@resource_errors
 async def account_holdings_resource(account_id: str) -> str:
     """Return investment holdings for the account_id in the resource path."""
+    _require_account_id(account_id)
     await ensure_authenticated()
     holdings = await api_call_with_retry("get_account_holdings", account_id=account_id)
     return json.dumps(convert_dates_to_strings(holdings), indent=2)
 
 
 @mcp.resource("accounts://{account_id}/history", title="Account Balance History")
+@resource_errors
 async def account_history_resource(account_id: str) -> str:
     """Return balance history for the account_id in the resource path."""
+    _require_account_id(account_id)
     await ensure_authenticated()
     history = await api_call_with_retry("get_account_history", account_id=account_id)
     return json.dumps(convert_dates_to_strings(history), indent=2)
@@ -1133,10 +1241,10 @@ async def handle_completion(
     - resource-template ``account_id`` argument -> account IDs
     """
     if isinstance(ref, PromptReference) and argument.name == "category":
-        return Completion(values=await _category_name_completions(argument.value), hasMore=False)
+        return Completion(values=await _category_name_completions(argument.value), has_more=False)
 
     if isinstance(ref, ResourceTemplateReference) and argument.name == "account_id":
-        return Completion(values=await _account_id_completions(argument.value), hasMore=False)
+        return Completion(values=await _account_id_completions(argument.value), has_more=False)
 
     return None
 
@@ -1145,7 +1253,6 @@ class AuthState(Enum):
     """Track authentication state to prevent duplicate initialization attempts."""
 
     NOT_INITIALIZED = "not_initialized"
-    INITIALIZING = "initializing"
     AUTHENTICATED = "authenticated"
     FAILED = "failed"
 
@@ -1157,6 +1264,12 @@ auth_error: str | None = None
 auth_failed_at: float | None = None
 AUTH_RETRY_COOLDOWN_SECONDS = 60
 
+# The library's 10-second default is too short for year-long reads and merchant lists.
+CLIENT_TIMEOUT_SECONDS = 30
+# Bounds a whole write, including a re-login and retry after an expired session,
+# so it must outlast a single request that the client's own timeout already limits.
+WRITE_TIMEOUT_SECONDS = 60
+
 # Default to the home directory because MCP clients may launch from read-only "/".
 # MONARCH_SESSION_DIR overrides this location.
 _session_dir_env = os.getenv("MONARCH_SESSION_DIR")
@@ -1164,46 +1277,41 @@ session_dir = Path(_session_dir_env).expanduser() if _session_dir_env else Path.
 session_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
 session_file = session_dir / "session.pickle"
 
+AUTH_STATUS_CODES = frozenset({401, 403})
+# Fallback for errors without a status, such as upstream's "HTTP Code 401: Unauthorized".
+# Bare numbers are not enough: "Transaction 1984015 not found" or "amount 403.20" are not auth errors.
+_AUTH_ERROR_TEXT = re.compile(
+    r"unauthori[sz]ed|forbidden|invalid credentials|bad credentials|authentication failed|auth failed"
+    r"|not authenticated|invalid token|token expired|session (?:has )?expired"
+    r"|\b(?:http|status)(?: code)?\s*[:=]?\s*40[13]\b"
+)
+
+
+def _error_chain(error: BaseException) -> Iterator[BaseException]:
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = current.__cause__ or current.__context__
+
 
 def is_auth_error(error: Exception) -> bool:
-    """Match auth-error text, excluding known network and library error patterns."""
-    error_str = str(error).lower()
-
-    false_positives = [
-        "connector",
-        "aiohttp",
-        "transport",
-        "connection refused",
-        "connection reset",
-        "timeout",
-    ]
-
-    if any(fp in error_str for fp in false_positives):
-        return False
-
-    auth_indicators = [
-        "401",
-        "403",
-        "unauthorized",
-        "forbidden",
-        "invalid credentials",
-        "bad credentials",
-        "authentication failed",
-        "auth failed",
-        "not authenticated",
-        "invalid token",
-        "token expired",
-        "session expired",
-        "session has expired",
-    ]
-
-    return any(indicator in error_str for indicator in auth_indicators)
+    """Detect a rejected session, preferring the HTTP status over message text."""
+    for err in _error_chain(error):
+        if isinstance(err, TransportServerError) and err.code is not None:
+            return err.code in AUTH_STATUS_CODES
+        if isinstance(err, aiohttp.ClientResponseError):
+            return err.status in AUTH_STATUS_CODES
+        if isinstance(err, (TimeoutError, asyncio.TimeoutError, aiohttp.ClientConnectionError)):
+            return False
+    return _AUTH_ERROR_TEXT.search(str(error).lower()) is not None
 
 
 def clear_session(reason: str = "unknown") -> None:
     """Reset the client and auth state, and remove session files.
 
-    Use after auth failures or forced login. Log the supplied reason.
+    Use after auth failures or forced login, while holding auth_lock. Log the supplied reason.
     """
     global mm_client, auth_state, auth_error, auth_failed_at
 
@@ -1225,59 +1333,68 @@ def clear_session(reason: str = "unknown") -> None:
                 log.warning("session_file_clear_failed", path=str(path), error=str(e))
 
 
+def _get_auth_lock() -> asyncio.Lock:
+    # Created lazily because the lock must belong to the running event loop.
+    global auth_lock
+    if auth_lock is None:
+        auth_lock = asyncio.Lock()
+    return auth_lock
+
+
+async def _reauthenticate(failed_client: MonarchMoney, reason: str) -> None:
+    """Replace the client whose session was rejected, unless another call already has.
+
+    Calls in flight with an expired session all fail together. Only the first one
+    to take the lock clears the session; the rest reuse the new login, because
+    Monarch rejects a second login with the same TOTP code.
+    """
+    async with _get_auth_lock():
+        if mm_client is failed_client:
+            clear_session(reason=reason)
+        else:
+            log.info("auth_already_refreshed")
+    await ensure_authenticated()
+
+
 async def api_call_with_retry(method_name: str, *args: Any, max_retries: int = 3, **kwargs: Any) -> Any:
     """Call a client method, retrying recognized auth failures after reauthentication.
 
     max_retries excludes the initial attempt. Other errors propagate immediately.
     """
-    global auth_state, mm_client
-
-    last_error: Exception | None = None
-
     for attempt in range(max_retries + 1):
-        try:
-            if mm_client is None:
+        client = mm_client
+        if client is None:
+            # Another call may have cleared an expired session and be logging in again.
+            await ensure_authenticated()
+            client = mm_client
+            if client is None:
                 raise ValueError("mm_client is not initialized")
 
-            method = getattr(mm_client, method_name)
-            return await method(*args, **kwargs)
-
+        try:
+            return await getattr(client, method_name)(*args, **kwargs)
         except Exception as e:
-            last_error = e
-
-            if is_auth_error(e):
-                if attempt < max_retries:
-                    backoff_delay = 2**attempt
-                    log.warning(
-                        "api_auth_error",
-                        attempt=attempt + 1,
-                        max_attempts=max_retries + 1,
-                        error=str(e),
-                        backoff_s=backoff_delay,
-                    )
-
-                    clear_session(reason=f"authentication failure during API call (attempt {attempt + 1})")
-
-                    if backoff_delay > 0:
-                        await asyncio.sleep(backoff_delay)
-
-                    await ensure_authenticated()
-                    log.info("api_retry_after_reauth", attempt=attempt + 2, max_attempts=max_retries + 1)
-
-                    continue
-                else:
-                    log.error("api_auth_retries_exhausted", max_retries=max_retries, error=str(e))
-                    raise
-            else:
+            if not is_auth_error(e):
                 raise
+            if attempt >= max_retries:
+                log.error("api_auth_retries_exhausted", max_retries=max_retries, error=str(e))
+                raise
+            log.warning("api_auth_error", attempt=attempt + 1, max_attempts=max_retries + 1, error=str(e))
+            await _reauthenticate(client, reason=f"authentication failure during API call (attempt {attempt + 1})")
+            log.info("api_retry_after_reauth", attempt=attempt + 2, max_attempts=max_retries + 1)
 
-    if last_error:
-        raise last_error
     raise RuntimeError("api_call_with_retry completed without result or error")
 
 
+def _new_client() -> MonarchMoney:
+    return MonarchMoney(timeout=CLIENT_TIMEOUT_SECONDS)
+
+
 async def initialize_client() -> None:
-    """Load a cached session or log in. The first API call detects expired sessions."""
+    """Load a cached session or log in. The first API call detects expired sessions.
+
+    The client is published only once it holds a session, so concurrent calls never
+    use a half-initialized client.
+    """
     global mm_client, auth_state, auth_error, auth_failed_at
 
     email = os.getenv("MONARCH_EMAIL")
@@ -1292,97 +1409,100 @@ async def initialize_client() -> None:
         raise ValueError(error_msg)
 
     log.info("auth_init")
-    mm_client = MonarchMoney()
 
     force_login = os.getenv("MONARCH_FORCE_LOGIN") == "true"
     if session_file.exists() and not force_login:
+        client = _new_client()
         try:
             stdout_capture = io.StringIO()
             stderr_capture = io.StringIO()
             with contextlib.redirect_stdout(stdout_capture), contextlib.redirect_stderr(stderr_capture):
-                mm_client.load_session(str(session_file))
-
-            log.info("auth_session_loaded", session_file=str(session_file))
-            auth_state = AuthState.AUTHENTICATED
-            return
-
+                client.load_session(str(session_file))
         except Exception as e:
             log.warning("auth_session_load_failed", error=str(e))
             if is_auth_error(e):
                 clear_session(reason="invalid session file")
+        else:
+            mm_client = client
+            auth_state = AuthState.AUTHENTICATED
+            log.info("auth_session_loaded", session_file=str(session_file))
+            return
 
-    else:
-        if force_login:
-            log.info("auth_force_login")
-            clear_session(reason="forced login requested")
+    elif force_login:
+        log.info("auth_force_login")
+        clear_session(reason="forced login requested")
 
     max_retries = 2
     retry_delay = 3
 
     for attempt in range(max_retries):
+        client = _new_client()
         try:
-            # clear_session() discards the client, including between login attempts.
-            if mm_client is None:
-                mm_client = MonarchMoney()
             log.info("auth_login_attempt", attempt=attempt + 1, max_retries=max_retries, mfa=bool(mfa_secret))
             # Disable the library's default .mm session storage; save to our path only.
             if mfa_secret:
-                await mm_client.login(
+                await client.login(
                     email, password, mfa_secret_key=mfa_secret, use_saved_session=False, save_session=False
                 )
             else:
-                await mm_client.login(email, password, use_saved_session=False, save_session=False)
+                await client.login(email, password, use_saved_session=False, save_session=False)
 
             # Suppress library output so it cannot corrupt the stdio protocol.
             stdout_capture = io.StringIO()
             stderr_capture = io.StringIO()
             with contextlib.redirect_stdout(stdout_capture), contextlib.redirect_stderr(stderr_capture):
-                mm_client.save_session(str(session_file))
+                client.save_session(str(session_file))
 
             if session_file.exists():
                 session_file.chmod(0o600)
 
-            auth_state = AuthState.AUTHENTICATED
-            auth_error = None
-            log.info("auth_success")
-            return
-
         except RequireMFAException as e:
-            error_msg = "Multi-factor authentication required but MONARCH_MFA_SECRET not set"
-            log.error("auth_mfa_required")
+            # Monarch answers a rejected TOTP code the same way as a missing one.
+            if mfa_secret:
+                error_msg = (
+                    "Monarch rejected the multi-factor code. Check that MONARCH_MFA_SECRET is the "
+                    "account's TOTP secret and that the system clock is accurate."
+                )
+            else:
+                error_msg = "Monarch requires multi-factor authentication but MONARCH_MFA_SECRET is not set"
+            log.error("auth_mfa_required", mfa_secret_set=bool(mfa_secret))
             auth_state = AuthState.FAILED
             auth_error = error_msg
+            auth_failed_at = time.time()
             raise ValueError(error_msg) from e
 
         except Exception as e:
             if attempt < max_retries - 1:
                 log.warning("auth_attempt_failed", attempt=attempt + 1, error=str(e), is_auth=is_auth_error(e))
-                if is_auth_error(e):
-                    clear_session(reason=f"auth failure on attempt {attempt + 1}")
                 await asyncio.sleep(retry_delay)
             else:
-                error_msg = f"Authentication failed after {max_retries} attempts: {e}"
                 log.error("auth_failed", error=str(e), max_retries=max_retries)
                 auth_state = AuthState.FAILED
                 auth_error = str(e)
                 auth_failed_at = time.time()
                 raise
 
+        else:
+            mm_client = client
+            auth_state = AuthState.AUTHENTICATED
+            auth_error = None
+            log.info("auth_success")
+            return
+
 
 async def ensure_authenticated() -> None:
-    """Initialize once under a lock, respecting the cooldown after timed failures."""
-    global mm_client, auth_state, auth_lock, auth_error, auth_failed_at
+    """Initialize once under a lock, respecting the cooldown after timed failures.
 
-    # Initialize lock on first call (must be done in async context)
-    if auth_lock is None:
-        auth_lock = asyncio.Lock()
+    Cancelling a call mid-login leaves the state unauthenticated, so the next call retries.
+    """
+    global auth_state, auth_error, auth_failed_at
 
     if auth_state == AuthState.AUTHENTICATED and mm_client is not None:
         return
 
     log.info("auth_needed", state=auth_state.value)
 
-    async with auth_lock:
+    async with _get_auth_lock():
         if auth_state == AuthState.AUTHENTICATED and mm_client is not None:
             return
 
@@ -1406,14 +1526,6 @@ async def ensure_authenticated() -> None:
                 error_msg = f"Authentication previously failed: {auth_error or 'unknown error'}"
                 raise ValueError(error_msg)
 
-        if auth_state == AuthState.INITIALIZING:
-            log.warning("auth_already_initializing")
-            await asyncio.sleep(1)
-            if auth_state == AuthState.AUTHENTICATED:
-                return
-            raise ValueError("Authentication is taking too long")
-
-        auth_state = AuthState.INITIALIZING
         try:
             await initialize_client()
             log.info("auth_lazy_init_success")
@@ -1460,6 +1572,7 @@ async def get_transactions(
     is_recurring: bool | None = None,
     verbose: bool = False,
     is_pending: bool | None = None,
+    needs_review: bool | None = None,
 ) -> TransactionsResult:
     """Fetch one page of transactions.
 
@@ -1479,13 +1592,16 @@ async def get_transactions(
         is_split: True for split transactions, False for non-split transactions.
         is_recurring: True for recurring transactions, False for non-recurring ones.
         is_pending: True for pending transactions, False for posted transactions.
+        needs_review: True for transactions flagged for review, False for reviewed ones.
         verbose: False returns compact fields; True preserves the full API objects.
 
     Boolean filters default to None (no restriction). Results contain transactions,
-    count (this page only), and verbose. Use offset to fetch further pages.
+    count (this page), total_count (all matches; null if Monarch omits it), and
+    next_offset (null when no more pages). Pass next_offset as offset for the next page.
 
     Compact fields: id, date, amount, merchant, plaidName, category, categoryId,
-    account, needsReview; pending appears only when true, notes only when nonempty.
+    account, needsReview; pending appears only when true, notes only when nonempty,
+    tags (tag names) only when the transaction has tags.
     Amounts are negative for expenses and positive for income. Use id for updates.
     merchant is the display name; plaidName preserves the original statement text.
     category and account are names, not nested objects.
@@ -1509,6 +1625,7 @@ async def get_transactions(
             is_split,
             is_recurring,
             is_pending,
+            needs_review,
         )
 
         response = await api_call_with_retry("get_transactions", limit=limit, offset=offset, **filters)
@@ -1518,11 +1635,18 @@ async def get_transactions(
         if not verbose and isinstance(transactions, list):
             transactions = format_transactions_compact(transactions)
 
+        total_count, next_offset = _transaction_paging(response, offset, limit, len(transactions))
         log.info("Transactions retrieved", count=len(transactions))
         # model_validate (not the constructor) sidesteps mypy's list invariance:
         # list[dict[str, Any]] is not assignable to the model's list[JsonValue].
         return TransactionsResult.model_validate(
-            {"transactions": transactions, "count": len(transactions), "verbose": verbose}
+            {
+                "transactions": transactions,
+                "count": len(transactions),
+                "total_count": total_count,
+                "next_offset": next_offset,
+                "verbose": verbose,
+            }
         )
     except Exception as e:
         log.error("Failed to fetch transactions", error=str(e), limit=limit, start_date=start_date)
@@ -1547,6 +1671,7 @@ async def search_transactions(
     is_recurring: bool | None = None,
     verbose: bool = False,
     is_pending: bool | None = None,
+    needs_review: bool | None = None,
 ) -> SearchResult:
     """Search one page of transactions using Monarch's text search.
 
@@ -1567,11 +1692,13 @@ async def search_transactions(
         is_split: Filter by split status.
         is_recurring: Filter by recurring status.
         is_pending: True for pending transactions, False for posted transactions.
+        needs_review: True for transactions flagged for review, False for reviewed ones.
         verbose: False uses get_transactions' compact fields; True keeps full API objects.
 
-    Boolean filters default to None (no restriction). Returns matching transactions
-    and search_metadata with the query, this page's result_count, and applied filters.
-    Use offset for further pages; result_count is not the total number of matches.
+    Boolean filters default to None (no restriction). Returns matching transactions,
+    search_metadata with the query, this page's result_count, and applied filters,
+    plus total_count (all matches; null if Monarch omits it) and next_offset (null
+    when no more pages). Pass next_offset as offset for the next page.
     """
     await ensure_authenticated()
 
@@ -1592,6 +1719,7 @@ async def search_transactions(
             is_split,
             is_recurring,
             is_pending,
+            needs_review,
         )
         filters["search"] = query_str
 
@@ -1608,9 +1736,17 @@ async def search_transactions(
             filters_applied={k: v for k, v in filters.items() if k != "search"},
         )
 
+        total_count, next_offset = _transaction_paging(response, offset, limit, len(transactions))
         log.info("Search complete", query=query_str, result_count=len(transactions))
         # model_validate (not the constructor) sidesteps mypy's list invariance.
-        return SearchResult.model_validate({"search_metadata": metadata, "transactions": transactions})
+        return SearchResult.model_validate(
+            {
+                "search_metadata": metadata,
+                "transactions": transactions,
+                "total_count": total_count,
+                "next_offset": next_offset,
+            }
+        )
 
     except Exception as e:
         log.error("Failed to search transactions", error=str(e), query=query)
@@ -1732,13 +1868,16 @@ async def create_transaction(
                 notes=notes or "",
                 update_balance=update_balance,
             ),
-            timeout=30.0,
+            timeout=WRITE_TIMEOUT_SECONDS,
         )
         result = convert_dates_to_strings(result)
         return TransactionResult(transaction=result)
     except asyncio.TimeoutError as e:
         log.error("create_transaction_timeout")
-        raise ValueError("Transaction creation timed out after 30 seconds. Please try again.") from e
+        raise ValueError(
+            "Transaction creation timed out, so its outcome is unknown: Monarch may have created it. "
+            "Check get_transactions before retrying to avoid a duplicate."
+        ) from e
     except ValueError:
         raise
     except Exception as e:
@@ -1764,7 +1903,7 @@ async def update_transaction(
 
     Args:
         transaction_id: Transaction ID from get_transactions or search_transactions.
-        amount: New amount.
+        amount: New nonzero amount. Monarch's client cannot set an amount of 0.
         merchant_name: New display name, not the read-only plaidName statement text.
             The API ignores empty names.
         category_id: New category ID from get_transaction_categories.
@@ -1783,6 +1922,7 @@ async def update_transaction(
     to change a merchant's recurring schedule.
     """
     parsed_date = datetime.strptime(date, "%Y-%m-%d").date() if date is not None else None
+    _require_nonzero_amount(amount)
     await ensure_authenticated()
 
     try:
@@ -1814,14 +1954,14 @@ async def update_transaction(
 
         result = await asyncio.wait_for(
             api_call_with_retry("update_transaction", **updates),
-            timeout=30.0,
+            timeout=WRITE_TIMEOUT_SECONDS,
         )
         _check_transaction_update(result)
         result = convert_dates_to_strings(result)
         return TransactionResult(transaction=result)
     except asyncio.TimeoutError as e:
         log.error("update_transaction_timeout", transaction_id=transaction_id)
-        raise ValueError("Transaction update timed out after 30 seconds. Please try again.") from e
+        raise ValueError("Transaction update timed out. Please try again.") from e
     except Exception as e:
         log.error("update_transaction_failed", transaction_id=transaction_id, error=str(e))
         raise
@@ -1841,7 +1981,7 @@ async def update_transactions_bulk(updates: str) -> BulkUpdateResult:
             value; empty owner_user_id makes the transaction Shared.
 
     Items reject unknown fields and wrong types without coercion; amounts must
-    be finite numbers and flags must be booleans. Invalid items fail individually;
+    be finite nonzero numbers and flags must be booleans. Invalid items fail individually;
     valid items still run. The batch is not atomic and does not roll back successes.
 
     Example:
@@ -1874,11 +2014,12 @@ async def update_transactions_bulk(updates: str) -> BulkUpdateResult:
             try:
                 update = BulkTransactionUpdate.model_validate(update_data)
                 update_params = update.model_dump(exclude_none=True)
+                _require_nonzero_amount(update.amount)
                 if update.date is not None:
                     update_params["date"] = datetime.strptime(update.date, "%Y-%m-%d").date().isoformat()
 
                 result = await asyncio.wait_for(
-                    api_call_with_retry("update_transaction", **update_params), timeout=30.0
+                    api_call_with_retry("update_transaction", **update_params), timeout=WRITE_TIMEOUT_SECONDS
                 )
                 _check_transaction_update(result)
 
@@ -1888,7 +2029,7 @@ async def update_transactions_bulk(updates: str) -> BulkUpdateResult:
                 return BulkItemResult(
                     transaction_id=txn_id,
                     status="error",
-                    error="Update timed out after 30 seconds",
+                    error="Update timed out",
                 )
             except Exception as e:
                 return BulkItemResult(transaction_id=txn_id, status="error", error=str(e))
@@ -2002,7 +2143,7 @@ async def update_transaction_splits(transaction_id: str, splits: list[Transactio
 
         result = await asyncio.wait_for(
             api_call_with_retry("update_transaction_splits", transaction_id=transaction_id, split_data=split_data),
-            timeout=30.0,
+            timeout=WRITE_TIMEOUT_SECONDS,
         )
         result = convert_dates_to_strings(result)
 
@@ -2011,7 +2152,9 @@ async def update_transaction_splits(transaction_id: str, splits: list[Transactio
         if errors:
             raise ValueError(f"Monarch rejected the split update: {errors}")
 
-        transaction = payload.get("transaction") or {}
+        transaction = payload.get("transaction")
+        if not isinstance(transaction, dict):
+            raise ValueError("Monarch returned no updated transaction")
         result_splits = transaction.get("splitTransactions") or []
         message = (
             f"Removed all splits from transaction {transaction_id}"
@@ -2026,7 +2169,7 @@ async def update_transaction_splits(transaction_id: str, splits: list[Transactio
         )
     except asyncio.TimeoutError as e:
         log.error("update_transaction_splits_timeout", transaction_id=transaction_id)
-        raise ValueError("Split update timed out after 30 seconds. Please try again.") from e
+        raise ValueError("Split update timed out. Please try again.") from e
     except Exception as e:
         log.error("update_transaction_splits_failed", transaction_id=transaction_id, error=str(e))
         raise
@@ -2438,19 +2581,20 @@ async def get_recurring_transactions(start_date: str | None = None, end_date: st
     """Get scheduled recurring occurrences, not the posted transaction history.
 
     Dates accept ISO dates or natural language such as "today" or "last month".
-    With neither date, fetch the current calendar month. With only one date,
-    use the beginning or end of that date's month for the missing bound.
+    With neither date, fetch the current calendar month. With only a start, end on
+    that month's last day. With only an end, start on the first day of that period.
 
     The recurring.recurringTransactionItems list includes each occurrence's date,
     amount, account, category, transactionId (when matched), and stream containing
     the merchant ID, frequency, and expected amount. isPast describes the date,
     not whether a bill was paid. Use get_transactions(is_recurring=True) for
-    recorded transactions instead.
+    recorded transactions instead. Use get_recurring_streams for the full list of streams.
     """
     start = parse_flexible_date(start_date) if start_date is not None else None
-    end = parse_flexible_date(end_date) if end_date is not None else None
+    end = parse_flexible_end_date(end_date) if end_date is not None else None
     if start is None:
-        start = (end or date.today()).replace(day=1)
+        # A period end such as "2024" starts at the period's first month, not its last.
+        start = (parse_date_period(end_date)[0] if end_date is not None else date.today()).replace(day=1)
     if end is None:
         end = start.replace(day=1) + relativedelta(months=1) - timedelta(days=1)
     filters = build_date_filter(start.isoformat(), end.isoformat())
@@ -2513,15 +2657,36 @@ async def update_recurring_transaction(
 
 @mcp.tool(annotations=WRITE_IDEMPOTENT, title="Set Budget Amount")
 @track_usage
-async def set_budget_amount(category_id: str, amount: float) -> SetBudgetResult:
-    """Set amount for a category_id from get_transaction_categories."""
+async def set_budget_amount(
+    category_id: str, amount: float, month: str | None = None, apply_to_future: bool = False
+) -> SetBudgetResult:
+    """Set a category's monthly budget amount.
+
+    Args:
+        category_id: Category ID from get_transaction_categories.
+        amount: Budget amount; 0 clears the budget for that month.
+        month: Any date in the target month; ISO or natural language. Defaults to the current month.
+        apply_to_future: True also applies the amount to later months.
+    """
+    month_start = _first_of_month(month)
     await ensure_authenticated()
 
     try:
-        result = await api_call_with_retry("set_budget_amount", category_id=category_id, amount=amount)
+        result = await api_call_with_retry(
+            "set_budget_amount",
+            category_id=category_id,
+            amount=amount,
+            start_date=month_start,
+            apply_to_future=apply_to_future,
+        )
         result = convert_dates_to_strings(result)
-        log.info("Budget amount updated", category_id=category_id, amount=amount)
-        return SetBudgetResult(category_id=category_id, amount=amount, result=result)
+        payload = result.get("updateOrCreateBudgetItem") if isinstance(result, dict) else None
+        if not isinstance(payload, dict) or payload.get("budgetItem") is None:
+            raise ValueError("Monarch did not confirm the budget update")
+        log.info("Budget amount updated", category_id=category_id, amount=amount, month=month_start)
+        return SetBudgetResult(
+            category_id=category_id, amount=amount, month=month_start, apply_to_future=apply_to_future, result=result
+        )
     except Exception as e:
         log.error("Failed to set budget amount", error=str(e), category_id=category_id)
         raise
@@ -2540,8 +2705,9 @@ async def create_manual_account(
 
     Args:
         account_name: Display name for the account.
-        account_type: Monarch account type, such as loan, other_asset, or other_liability.
-        account_sub_type: Subtype within that type, such as mortgage, auto, or line_of_credit.
+        account_type: Monarch account type name, such as loan, other_asset, or other_liability.
+            The accounts://types resource lists valid types and subtypes.
+        account_sub_type: Subtype name within that type, such as mortgage, auto, or line_of_credit.
         balance: Starting balance.
         include_in_net_worth: Whether the account counts toward net worth.
     """
@@ -2581,7 +2747,9 @@ async def get_spending_summary(
             to today; a missing start to the first day of the end date's month.
         group_by: 'category', 'account', or 'month'; other values produce one group.
 
-    Fetches all matching pages. Expenses are positive magnitudes.
+    Fetches all matching pages. Expenses are positive magnitudes. Transfers
+    (categories in Monarch's transfer group, such as credit card payments) are
+    left out and counted in transfers_excluded. period holds the resolved ISO dates.
     """
     await ensure_authenticated()
 
@@ -2589,6 +2757,7 @@ async def get_spending_summary(
         log.info("Generating spending summary", start_date=start_date, end_date=end_date, group_by=group_by)
 
         filters = build_date_filter(start_date, end_date)
+        transfer_ids = _transfer_category_ids(await api_call_with_retry("get_transaction_categories"))
         page_size = 1000
         offset = 0
         transactions: list[dict[str, Any]] = []
@@ -2620,7 +2789,11 @@ async def get_spending_summary(
             "totals": {"income": 0, "expenses": 0, "net": 0},
         }
 
+        transfers_excluded = 0
         for txn in transactions:
+            if _is_transfer(txn, transfer_ids):
+                transfers_excluded += 1
+                continue
             amount = float(txn.get("amount", 0))
 
             totals: dict[str, float] = summary["totals"]
@@ -2666,13 +2839,14 @@ async def get_spending_summary(
 
         totals_data: dict[str, float] = summary["totals"]
         result = SpendingSummaryResult(
-            period=Period(start=start_date, end=end_date),
+            period=Period(start=filters.get("start_date"), end=filters.get("end_date")),
             group_by=group_by,
             groups={
                 key: GroupSummary(income=g["income"], expenses=g["expenses"], net=g["net"], count=int(g["count"]))
                 for key, g in sorted_groups.items()
             },
             totals=Totals(income=totals_data["income"], expenses=totals_data["expenses"], net=totals_data["net"]),
+            transfers_excluded=transfers_excluded,
         )
 
         log.info(
@@ -2723,6 +2897,8 @@ async def get_complete_financial_overview(
     and a transaction summary. Raw transactions/categories are null unless verbose.
     Use their dedicated tools for details. batch_metadata.transactions_truncated
     is true if more transactions exist, false for a complete page, null if unknown.
+    Summary income and expenses leave out transfers such as card payments;
+    transfers_excluded counts them, or is null when categories could not be read.
     """
     await ensure_authenticated()
 
@@ -2775,33 +2951,41 @@ async def get_complete_financial_overview(
         else:
             results["cashflow"] = {"error": str(cashflow)}
 
+        transfer_ids: set[str] | None = None
+        if not isinstance(categories, Exception):
+            try:
+                transfer_ids = _transfer_category_ids(categories)
+            except ValueError as error:
+                log.warning("overview_transfer_categories_unreadable", error=str(error))
+
         if not isinstance(transactions, Exception):
             transactions_list = extract_transactions_list(transactions)
             results["transactions"] = convert_dates_to_strings(transactions_list) if verbose else None
-            if isinstance(transactions_list, list):
-                results["transaction_summary"] = {
-                    "total_count": len(transactions_list),
-                    "total_income": sum(
-                        float(t.get("amount", 0)) for t in transactions_list if float(t.get("amount", 0)) > 0
-                    ),
-                    "total_expenses": sum(
-                        abs(float(t.get("amount", 0))) for t in transactions_list if float(t.get("amount", 0)) < 0
-                    ),
-                    "unique_categories": len(
-                        {
-                            t.get("category", {}).get("name", "Unknown")
-                            for t in transactions_list
-                            if isinstance(t.get("category"), dict)
-                        }
-                    ),
-                    "unique_accounts": len(
-                        {
-                            t["account"]["id"]
-                            for t in transactions_list
-                            if isinstance(t.get("account"), dict) and t["account"].get("id")
-                        }
-                    ),
-                }
+            amounts = [
+                float(t.get("amount", 0))
+                for t in transactions_list
+                if transfer_ids is None or not _is_transfer(t, transfer_ids)
+            ]
+            results["transaction_summary"] = {
+                "total_count": len(transactions_list),
+                "total_income": sum(amount for amount in amounts if amount > 0),
+                "total_expenses": sum(abs(amount) for amount in amounts if amount < 0),
+                "transfers_excluded": len(transactions_list) - len(amounts) if transfer_ids is not None else None,
+                "unique_categories": len(
+                    {
+                        t.get("category", {}).get("name", "Unknown")
+                        for t in transactions_list
+                        if isinstance(t.get("category"), dict)
+                    }
+                ),
+                "unique_accounts": len(
+                    {
+                        t["account"]["id"]
+                        for t in transactions_list
+                        if isinstance(t.get("account"), dict) and t["account"].get("id")
+                    }
+                ),
+            }
         else:
             results["transactions"] = {"error": str(transactions)}
 
@@ -2856,10 +3040,12 @@ async def analyze_spending_patterns(
         verbose: Include full budget details instead of monthly budget totals.
 
     Requests one page of up to 2000 transactions, without pagination; analysis can
-    be incomplete for larger periods. Forecasts average up to three month buckets
-    in response order, not necessarily the latest three calendar months. The
-    confidence label is fixed, not a statistical measure. Failed transaction or
-    budget requests appear in errors; successful analysis sections remain available.
+    be incomplete for larger periods. Transfers such as card payments are left out
+    of every section and counted in metadata.transfers_excluded (null when categories
+    could not be read). Forecasts average the latest three complete calendar months
+    with transactions, excluding the current month. The confidence label is fixed,
+    not a statistical measure. Failed transaction, category, or budget requests
+    appear in errors; successful analysis sections remain available.
     metadata.transactions_truncated reports whether more transactions exist
     (null when unknown). Fetch narrower date ranges with get_transactions for detail.
     """
@@ -2867,7 +3053,7 @@ async def analyze_spending_patterns(
 
     try:
         if ctx is not None:
-            await ctx.report_progress(0, 2, "Fetching transactions and budgets…")
+            await ctx.report_progress(0, 2, "Fetching transactions, categories, and budgets…")
 
         end_date = datetime.now().date()
         start_date = end_date - relativedelta(months=lookback_months)
@@ -2878,13 +3064,26 @@ async def analyze_spending_patterns(
         budgets_task = api_call_with_retry(
             "get_budgets", start_date=start_date.isoformat(), end_date=end_date.isoformat()
         )
-        api_results: list[object] = await asyncio.gather(transactions_task, budgets_task, return_exceptions=True)
-        transactions, budgets = api_results
+        categories_task = api_call_with_retry("get_transaction_categories")
+        api_results: list[object] = await asyncio.gather(
+            transactions_task, budgets_task, categories_task, return_exceptions=True
+        )
+        transactions, budgets, categories = api_results
         errors: dict[str, str] = {}
         if isinstance(transactions, Exception):
             errors["transactions"] = str(transactions)
         if isinstance(budgets, Exception):
             errors["budgets"] = str(budgets)
+
+        transfer_ids: set[str] | None = None
+        if isinstance(categories, Exception):
+            errors["categories"] = str(categories)
+        else:
+            try:
+                transfer_ids = _transfer_category_ids(categories)
+            except ValueError as error:
+                errors["categories"] = str(error)
+        transfers_excluded = 0
 
         if ctx is not None:
             await ctx.report_progress(1, 2, "Computing trends, category and account analysis…")
@@ -2906,9 +3105,13 @@ async def analyze_spending_patterns(
 
             monthly_data: dict[str, dict[str, float]] = {}
             category_totals: dict[str, dict[str, float]] = {}
+            category_expense_counts: dict[str, int] = {}
             account_usage: dict[str, dict[str, float]] = {}
 
             for txn in transactions_list:
+                if transfer_ids is not None and _is_transfer(txn, transfer_ids):
+                    transfers_excluded += 1
+                    continue
                 txn_date = txn.get("date", "")
                 amount = float(txn.get("amount", 0))
                 category_name = (
@@ -2935,7 +3138,10 @@ async def analyze_spending_patterns(
 
                 if category_name not in category_totals:
                     category_totals[category_name] = {"total": 0.0, "transactions": 0.0, "avg_amount": 0.0}
-                category_totals[category_name]["total"] += abs(amount) if amount < 0 else 0.0
+                    category_expense_counts[category_name] = 0
+                if amount < 0:
+                    category_totals[category_name]["total"] += abs(amount)
+                    category_expense_counts[category_name] += 1
                 category_totals[category_name]["transactions"] += 1
 
                 if account_name not in account_usage:
@@ -2943,11 +3149,10 @@ async def analyze_spending_patterns(
                 account_usage[account_name]["total_volume"] += abs(amount)
                 account_usage[account_name]["transactions"] += 1
 
-            for category in category_totals:
-                if category_totals[category]["transactions"] > 0:
-                    category_totals[category]["avg_amount"] = (
-                        category_totals[category]["total"] / category_totals[category]["transactions"]
-                    )
+            # Average expense size; income and refunds would otherwise dilute it.
+            for category, expense_count in category_expense_counts.items():
+                if expense_count > 0:
+                    category_totals[category]["avg_amount"] = category_totals[category]["total"] / expense_count
 
             analysis["monthly_trends"] = dict(sorted(monthly_data.items()))
             analysis["category_analysis"] = dict(
@@ -2957,21 +3162,33 @@ async def analyze_spending_patterns(
                 sorted(account_usage.items(), key=lambda x: x[1]["total_volume"], reverse=True)
             )
 
-            if include_forecasting and monthly_data:
-                recent_months = list(monthly_data.values())[-3:]
-                if recent_months:
-                    avg_monthly_expenses = sum(m["expenses"] for m in recent_months) / len(recent_months)
-                    avg_monthly_income = sum(m["income"] for m in recent_months) / len(recent_months)
+            # Upstream returns newest first, so pick months by key, not response order.
+            # Leave out partial months: the current one, the first one when the window
+            # starts mid-month, and the oldest one when the 2,000-row page was truncated.
+            current_month = end_date.strftime("%Y-%m")
+            first_month = start_date.strftime("%Y-%m")
+            complete_months = sorted(
+                key
+                for key in monthly_data
+                if key != "Unknown" and key < current_month and (key > first_month or start_date.day == 1)
+            )
+            if _transactions_truncated(transactions, len(transactions_list)) and complete_months:
+                complete_months = complete_months[1:]
+            if include_forecasting and complete_months:
+                forecast_months = complete_months[-3:]
+                recent_months = [monthly_data[key] for key in forecast_months]
+                avg_monthly_expenses = sum(m["expenses"] for m in recent_months) / len(recent_months)
+                avg_monthly_income = sum(m["income"] for m in recent_months) / len(recent_months)
 
-                    next_month = (end_date + relativedelta(months=1)).strftime("%Y-%m")
-                    analysis["forecast"] = {
-                        "next_month": next_month,
-                        "predicted_expenses": round(avg_monthly_expenses, 2),
-                        "predicted_income": round(avg_monthly_income, 2),
-                        "predicted_net": round(avg_monthly_income - avg_monthly_expenses, 2),
-                        "confidence": "medium",
-                        "note": "Forecast based on 3-month spending average",
-                    }
+                next_month = (end_date + relativedelta(months=1)).strftime("%Y-%m")
+                analysis["forecast"] = {
+                    "next_month": next_month,
+                    "predicted_expenses": round(avg_monthly_expenses, 2),
+                    "predicted_income": round(avg_monthly_income, 2),
+                    "predicted_net": round(avg_monthly_income - avg_monthly_expenses, 2),
+                    "confidence": "medium",
+                    "note": f"Forecast averages complete months {', '.join(forecast_months)}",
+                }
 
         if not isinstance(budgets, Exception):
             try:
@@ -2981,7 +3198,8 @@ async def analyze_spending_patterns(
 
         txn_count = len(transactions_list) if not isinstance(transactions, Exception) else 0
         analysis["metadata"] = {
-            "api_calls_made": 2,
+            "api_calls_made": 3,
+            "transfers_excluded": transfers_excluded if transfer_ids is not None else None,
             "total_transactions_analyzed": txn_count,
             "analysis_timestamp": datetime.now().isoformat(),
             "transactions_truncated": (
@@ -3006,8 +3224,638 @@ async def analyze_spending_patterns(
         raise
 
 
+# Community client 1.7.x reads and mutations.
+
+_JSON_OBJECT: TypeAdapter[dict[str, JsonValue]] = TypeAdapter(dict[str, JsonValue])
+_JSON_LIST: TypeAdapter[list[JsonValue]] = TypeAdapter(list[JsonValue])
+_HEX_COLOR = re.compile(r"#[0-9A-Fa-f]{6}")
+DUPLICATE_SCAN_PAGE_SIZE = 500
+DUPLICATE_SCAN_MAX_PAGES = 10
+
+
+def _json_object(value: object) -> dict[str, JsonValue]:
+    return _JSON_OBJECT.validate_python(convert_dates_to_strings(value))
+
+
+def _obj(value: JsonValue) -> dict[str, JsonValue]:
+    return value if isinstance(value, dict) else {}
+
+
+def _objects(value: JsonValue) -> list[dict[str, JsonValue]]:
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+def _require_text(value: str, name: str) -> str:
+    if not value.strip():
+        raise ValueError(f"{name} must not be blank")
+    return value.strip()
+
+
+def _first_of_month(month: str | None) -> str:
+    return (parse_flexible_date(month) if month is not None else date.today()).replace(day=1).isoformat()
+
+
+def _has_errors(errors: JsonValue) -> bool:
+    """Monarch payload errors: a nonempty list, or an object with any set field."""
+    if isinstance(errors, list):
+        return bool(errors)
+    if isinstance(errors, dict):
+        return any(value not in (None, []) for key, value in errors.items() if key != "__typename")
+    return bool(errors)
+
+
+def _mutation_payload(result: object, key: str, action: str) -> dict[str, JsonValue]:
+    """Return the named mutation payload, raising on a missing payload or errors."""
+    payload = _json_object(result).get(key) if isinstance(result, dict) else None
+    if not isinstance(payload, dict):
+        raise ValueError(f"Monarch returned an invalid {action} response")
+    if _has_errors(payload.get("errors")):
+        raise ValueError(f"Monarch rejected the {action}: {payload['errors']}")
+    return payload
+
+
+def _transaction_paging(response: object, offset: int, limit: int, returned: int) -> tuple[int | None, int | None]:
+    """Return (total_count, next_offset) for one transaction page."""
+    total: int | None = None
+    if isinstance(response, dict):
+        transactions = response.get("allTransactions")
+        if isinstance(transactions, dict):
+            count = transactions.get("totalCount")
+            if isinstance(count, int) and not isinstance(count, bool):
+                total = count
+    # Without a total, a full page is the only hint that more rows exist.
+    more = offset + returned < total if total is not None else returned > 0 and returned == limit
+    return total, offset + returned if more else None
+
+
+def _compact_stream(item: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    stream = _obj(item.get("stream"))
+    merchant = _obj(stream.get("merchant"))
+    forecast = _obj(item.get("nextForecastedTransaction"))
+    category = _obj(item.get("category"))
+    account = _obj(item.get("account"))
+    return {
+        "id": stream.get("id"),
+        "name": stream.get("name"),
+        "merchant": {"id": merchant.get("id"), "name": merchant.get("name")} if merchant else None,
+        "frequency": stream.get("frequency"),
+        "amount": stream.get("amount"),
+        "is_approximate": stream.get("isApproximate"),
+        "is_active": stream.get("isActive"),
+        "review_status": stream.get("reviewStatus"),
+        "recurring_type": stream.get("recurringType"),
+        "base_date": stream.get("baseDate"),
+        "next_date": forecast.get("date"),
+        "next_amount": forecast.get("amount"),
+        "category": category.get("name"),
+        "category_id": category.get("id"),
+        "account": account.get("displayName"),
+        "account_id": account.get("id"),
+    }
+
+
+_GOAL_FIELDS = (
+    "id",
+    "name",
+    "type",
+    "status",
+    "targetAmount",
+    "currentBalance",
+    "progress",
+    "targetDate",
+    "plannedMonthlyContribution",
+    "forecastedCompletionDate",
+    "archivedAt",
+)
+
+
+def _goal_archived(goal: JsonValue) -> bool:
+    return isinstance(goal, dict) and (goal.get("archivedAt") is not None or goal.get("status") == "archived")
+
+
+def _compact_account(account: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    return {
+        "id": account.get("id"),
+        "name": account.get("displayName"),
+        "balance": account.get("displayBalance"),
+        "current_balance": account.get("currentBalance"),
+        "type": _obj(account.get("type")).get("name"),
+        "subtype": _obj(account.get("subtype")).get("name"),
+        "include_in_net_worth": account.get("includeInNetWorth"),
+        "hide_from_summary_list": account.get("hideFromList"),
+        "hide_transactions_from_reports": account.get("hideTransactionsFromReports"),
+    }
+
+
+class RecurringStreamsResult(MMModel):
+    streams: list[JsonValue]
+    count: int
+    verbose: bool
+
+
+class MerchantsResult(MMModel):
+    merchants: list[JsonValue]
+    count: int
+    total_count: int | None
+    offset: int
+    next_offset: int | None
+    verbose: bool
+
+
+class TransactionTagsResult(MMModel):
+    tags: list[JsonValue]
+    count: int
+
+
+class NetWorthHistoryResult(MMModel):
+    start_date: str
+    end_date: str
+    by_account_type: bool
+    history: list[JsonValue]
+    count: int
+    account_types: list[JsonValue] | None = None
+
+
+class DuplicateTransactionsResult(MMModel):
+    start_date: str
+    end_date: str
+    groups: list[JsonValue]
+    count: int
+    transactions_in_range: int | None
+    scan_truncated: bool | None
+
+
+class SavingsGoalsResult(MMModel):
+    goals: list[JsonValue]
+    count: int
+    verbose: bool
+
+
+class CreditScoreHistoryResult(MMModel):
+    enrolled: bool
+    users: list[JsonValue]
+    snapshots: list[JsonValue]
+    count: int
+
+
+class SetTransactionTagsResult(MMModel):
+    transaction_id: str
+    tag_ids: list[str]
+
+
+class CreateTagResult(MMModel):
+    tag: JsonValue
+
+
+class UpdateAccountResult(MMModel):
+    account: JsonValue
+
+
+class DeleteTransactionResult(MMModel):
+    transaction_id: str
+    deleted: bool
+
+
+class DeleteMerchantResult(MMModel):
+    merchant_id: str
+    move_to_merchant_id: str | None
+    deleted: bool
+
+
+class SavingsGoalBudgetResult(MMModel):
+    goal_id: str
+    month: str
+    amount: float
+    apply_to_future: bool
+
+
+@mcp.resource("accounts://types", title="Account Types")
+@resource_errors
+async def account_types_resource() -> str:
+    """Return valid account types and subtypes for creating manual accounts."""
+    await ensure_authenticated()
+    options = await api_call_with_retry("get_account_type_options")
+    return json.dumps(convert_dates_to_strings(options), indent=2)
+
+
+@mcp.tool(annotations=READONLY, title="Get Recurring Streams")
+@track_usage
+async def get_recurring_streams(
+    active_only: bool = True, include_liabilities: bool = True, verbose: bool = False
+) -> RecurringStreamsResult:
+    """List every recurring stream (merchant schedule) with its next forecast.
+
+    Args:
+        active_only: True skips paused streams.
+        include_liabilities: True includes credit-report liability streams such as loans and cards.
+        verbose: True returns the full upstream objects.
+
+    Compact rows: id, name, merchant {id, name}, frequency, amount, is_approximate,
+    is_active, review_status, recurring_type, base_date, next_date, next_amount,
+    category, category_id, account, account_id. merchant.id and merchant.name feed
+    update_recurring_transaction. Forecasts are expectations, not posted transactions.
+    """
+    await ensure_authenticated()
+    response = await api_call_with_retry("get_recurring_transaction_streams", include_liabilities=include_liabilities)
+    items = _JSON_LIST.validate_python(convert_dates_to_strings(extract_list(response, "recurringTransactionStreams")))
+    if active_only:
+        items = [item for item in items if _obj(_obj(item).get("stream")).get("isActive") is not False]
+    streams: list[JsonValue] = items if verbose else [_compact_stream(item) for item in _objects(items)]
+    return RecurringStreamsResult(streams=streams, count=len(streams), verbose=verbose)
+
+
+@mcp.tool(annotations=READONLY, title="Get Merchants")
+@track_usage
+async def get_merchants(limit: int = 100, offset: int = 0, verbose: bool = False) -> MerchantsResult:
+    """List a page of merchants with transaction and rule counts.
+
+    Args:
+        limit: 1–500 (default 100).
+        offset: Zero-based position. Follow next_offset until null.
+        verbose: True returns the full upstream objects.
+
+    Compact rows: id, name, transaction_count, rule_count, has_active_recurring_streams,
+    can_be_deleted. Merchant IDs feed delete_merchant. total_count is Monarch's
+    merchantCount, which may count a different set than the list; rely on next_offset.
+    """
+    if not 1 <= limit <= 500 or offset < 0:
+        raise ValueError("limit must be 1–500 and offset must be nonnegative")
+    await ensure_authenticated()
+    response = _json_object(await api_call_with_retry("get_merchants", limit=limit, offset=offset))
+    merchants = _JSON_LIST.validate_python(extract_list(response, "merchants"))
+    total = response.get("merchantCount")
+    if not verbose:
+        merchants = [
+            {
+                "id": merchant.get("id"),
+                "name": merchant.get("name"),
+                "transaction_count": merchant.get("transactionCount"),
+                "rule_count": merchant.get("ruleCount"),
+                "has_active_recurring_streams": merchant.get("hasActiveRecurringStreams"),
+                "can_be_deleted": merchant.get("canBeDeleted"),
+            }
+            for merchant in _objects(merchants)
+        ]
+    return MerchantsResult(
+        merchants=merchants,
+        count=len(merchants),
+        total_count=total if isinstance(total, int) and not isinstance(total, bool) else None,
+        offset=offset,
+        next_offset=offset + len(merchants) if merchants and len(merchants) == limit else None,
+        verbose=verbose,
+    )
+
+
+@mcp.tool(annotations=READONLY, title="Get Transaction Tags")
+@track_usage
+async def get_transaction_tags() -> TransactionTagsResult:
+    """List household transaction tags: id, name, color, transaction_count.
+
+    Tag IDs feed set_transaction_tags and the tag_ids filter of get_transactions.
+    """
+    await ensure_authenticated()
+    response = _json_object(await api_call_with_retry("get_transaction_tags"))
+    tags: list[JsonValue] = [
+        {
+            "id": tag.get("id"),
+            "name": tag.get("name"),
+            "color": tag.get("color"),
+            "transaction_count": tag.get("transactionCount"),
+        }
+        for tag in _objects(response.get("householdTransactionTags"))
+    ]
+    return TransactionTagsResult(tags=tags, count=len(tags))
+
+
+@mcp.tool(annotations=READONLY, title="Get Net Worth History")
+@track_usage
+async def get_net_worth_history(
+    start_date: str | None = None, end_date: str | None = None, by_account_type: bool = False
+) -> NetWorthHistoryResult:
+    """Get net worth over time: daily totals, or monthly balances per account type.
+
+    Args:
+        start_date: Inclusive start; ISO or natural language. Defaults to one year ago.
+        end_date: Inclusive end. Defaults to today.
+        by_account_type: False returns daily {date, balance} totals across all accounts.
+            True returns monthly {month, account_type, balance} rows plus account_types
+            with each type's group (asset or liability).
+    """
+    today = date.today()
+    start = parse_flexible_date(start_date) if start_date is not None else today - relativedelta(years=1)
+    end = parse_flexible_end_date(end_date) if end_date is not None else today
+    if start > end:
+        raise ValueError(f"Start date ({start.isoformat()}) cannot be after end date ({end.isoformat()})")
+    await ensure_authenticated()
+
+    if not by_account_type:
+        response = _json_object(
+            await api_call_with_retry("get_aggregate_snapshots", start_date=start.isoformat(), end_date=end.isoformat())
+        )
+        history: list[JsonValue] = [
+            {"date": row.get("date"), "balance": row.get("balance")}
+            for row in _objects(response.get("aggregateSnapshots"))
+        ]
+        return NetWorthHistoryResult(
+            start_date=start.isoformat(),
+            end_date=end.isoformat(),
+            by_account_type=False,
+            history=history,
+            count=len(history),
+        )
+
+    # Upstream takes only a start; months after end_date are dropped here.
+    response = _json_object(
+        await api_call_with_retry("get_account_snapshots_by_type", start_date=start.isoformat(), timeframe="month")
+    )
+    first_month, last_month = start.strftime("%Y-%m"), end.strftime("%Y-%m")
+    history = [
+        {"month": row.get("month"), "account_type": row.get("accountType"), "balance": row.get("balance")}
+        for row in _objects(response.get("snapshotsByAccountType"))
+        if isinstance(row.get("month"), str) and first_month <= str(row.get("month"))[:7] <= last_month
+    ]
+    account_types: list[JsonValue] = [
+        {"name": item.get("name"), "group": item.get("group")} for item in _objects(response.get("accountTypes"))
+    ]
+    return NetWorthHistoryResult(
+        start_date=start.isoformat(),
+        end_date=end.isoformat(),
+        by_account_type=True,
+        history=history,
+        count=len(history),
+        account_types=account_types,
+    )
+
+
+@mcp.tool(annotations=READONLY, title="Find Duplicate Transactions")
+@track_usage
+async def find_duplicate_transactions(
+    start_date: str | None = None, end_date: str | None = None, account_id: str | None = None
+) -> DuplicateTransactionsResult:
+    """Find possible duplicate transactions: same date, amount, statement name, and account.
+
+    Args:
+        start_date: Inclusive start; ISO or natural language. Defaults to 90 days before end_date.
+        end_date: Inclusive end. Defaults to today.
+        account_id: Optional account ID from get_accounts.
+
+    Groups are possible duplicates only; review before deleting. Each group lists
+    compact transactions oldest first. Hidden transactions and rows without a
+    statement name are skipped. scan_truncated is true when the range holds more
+    transactions than one scan reads; narrow the dates or account then.
+    """
+    today = date.today()
+    end = parse_flexible_end_date(end_date) if end_date is not None else today
+    start = parse_flexible_date(start_date) if start_date is not None else end - timedelta(days=90)
+    if start > end:
+        raise ValueError(f"Start date ({start.isoformat()}) cannot be after end date ({end.isoformat()})")
+    account_ids = [_require_text(account_id, "account_id")] if account_id is not None else []
+    await ensure_authenticated()
+
+    # The upstream scan does not say whether its page bound cut it short, so count first.
+    count_response = await api_call_with_retry(
+        "get_transactions", limit=1, start_date=start.isoformat(), end_date=end.isoformat(), account_ids=account_ids
+    )
+    total, _ = _transaction_paging(count_response, 0, 1, 0)
+    response = await api_call_with_retry(
+        "find_duplicate_transactions",
+        start_date=start.isoformat(),
+        end_date=end.isoformat(),
+        account_ids=account_ids or None,
+        page_size=DUPLICATE_SCAN_PAGE_SIZE,
+        max_pages=DUPLICATE_SCAN_MAX_PAGES,
+    )
+    groups: list[JsonValue] = []
+    for group in _objects(_JSON_LIST.validate_python(convert_dates_to_strings(response))):
+        transactions = _JSON_LIST.validate_python(format_transactions_compact(_objects(group.get("transactions"))))
+        groups.append(
+            {
+                "date": group.get("date"),
+                "amount": group.get("amount"),
+                "plaid_name": group.get("plaidName"),
+                "account_id": group.get("account_id"),
+                "account_name": group.get("account_name"),
+                "transactions": transactions,
+            }
+        )
+    return DuplicateTransactionsResult(
+        start_date=start.isoformat(),
+        end_date=end.isoformat(),
+        groups=groups,
+        count=len(groups),
+        transactions_in_range=total,
+        scan_truncated=total > DUPLICATE_SCAN_PAGE_SIZE * DUPLICATE_SCAN_MAX_PAGES if total is not None else None,
+    )
+
+
+@mcp.tool(annotations=READONLY, title="Get Savings Goals")
+@track_usage
+async def get_savings_goals(include_archived: bool = False, verbose: bool = False) -> SavingsGoalsResult:
+    """List savings goals with targets, balances, and progress.
+
+    Args:
+        include_archived: True also returns archived goals.
+        verbose: True returns the full upstream objects.
+
+    Compact goals keep whichever of these fields Monarch returns: id, name, type,
+    status, targetAmount, currentBalance, progress, targetDate,
+    plannedMonthlyContribution, forecastedCompletionDate, archivedAt.
+    Goal IDs feed set_savings_goal_budget_amount.
+    """
+    await ensure_authenticated()
+    response = await api_call_with_retry("get_savings_goals")
+    goals = _JSON_LIST.validate_python(convert_dates_to_strings(extract_list(response, "savingsGoals")))
+    if not include_archived:
+        goals = [goal for goal in goals if not _goal_archived(goal)]
+    if not verbose:
+        goals = [
+            {key: goal[key] for key in _GOAL_FIELDS if key in goal} if isinstance(goal, dict) else goal
+            for goal in goals
+        ]
+    return SavingsGoalsResult(goals=goals, count=len(goals), verbose=verbose)
+
+
+@mcp.tool(annotations=READONLY, title="Get Credit Score History")
+@track_usage
+async def get_credit_score_history() -> CreditScoreHistoryResult:
+    """Get household credit score snapshots, oldest first.
+
+    Returns enrolled (whether credit monitoring is set up), users [{id, name}],
+    and snapshots [{date, score, user_id}]; user_id matches a users entry.
+    """
+    await ensure_authenticated()
+    response = _json_object(await api_call_with_retry("get_credit_history"))
+    household = _obj(response.get("myHousehold"))
+    users: list[JsonValue] = [
+        {"id": user.get("id"), "name": user.get("displayName") or user.get("name")}
+        for user in _objects(household.get("users"))
+    ]
+    rows = [
+        {"date": row.get("reportedDate"), "score": row.get("score"), "user_id": _obj(row.get("user")).get("id")}
+        for row in _objects(response.get("creditScoreSnapshots"))
+    ]
+    rows.sort(key=lambda row: str(row["date"] or ""))
+    snapshots = _JSON_LIST.validate_python(rows)
+    return CreditScoreHistoryResult(
+        enrolled=response.get("spinwheelUser") is not None, users=users, snapshots=snapshots, count=len(snapshots)
+    )
+
+
+@mcp.tool(annotations=WRITE_IDEMPOTENT, title="Set Transaction Tags")
+@track_usage
+async def set_transaction_tags(transaction_id: str, tag_ids: list[str]) -> SetTransactionTagsResult:
+    """Replace all tags on a transaction; [] removes every tag. Returns the resulting tag IDs.
+
+    Args:
+        transaction_id: Transaction ID from get_transactions or search_transactions.
+        tag_ids: The complete tag list, as IDs from get_transaction_tags.
+    """
+    transaction_id = _require_text(transaction_id, "transaction_id")
+    tag_ids = [_require_text(tag_id, "tag_ids entries") for tag_id in tag_ids]
+    await ensure_authenticated()
+    result = await api_call_with_retry("set_transaction_tags", transaction_id=transaction_id, tag_ids=tag_ids)
+    transaction = _mutation_payload(result, "setTransactionTags", "tag update").get("transaction")
+    if not isinstance(transaction, dict):
+        raise ValueError("Monarch returned no transaction for the tag update")
+    # Monarch's response only includes tag IDs; names come from get_transaction_tags.
+    result_ids = [str(tag["id"]) for tag in _objects(transaction.get("tags")) if tag.get("id") is not None]
+    return SetTransactionTagsResult(transaction_id=transaction_id, tag_ids=result_ids)
+
+
+@mcp.tool(annotations=WRITE_CREATE, title="Create Transaction Tag")
+@track_usage
+async def create_transaction_tag(name: str, color: str = "#19D2A5") -> CreateTagResult:
+    """Create a household transaction tag and return it with its new ID.
+
+    Args:
+        name: Tag name.
+        color: Hex color as #RRGGBB.
+    """
+    name = _require_text(name, "name")
+    if not _HEX_COLOR.fullmatch(color):
+        raise ValueError("color must be a hex color like #19D2A5")
+    await ensure_authenticated()
+    result = await api_call_with_retry("create_transaction_tag", name=name, color=color)
+    tag = _mutation_payload(result, "createTransactionTag", "tag creation").get("tag")
+    if not isinstance(tag, dict) or not tag.get("id"):
+        raise ValueError("Monarch returned no tag")
+    return CreateTagResult(tag={key: value for key, value in tag.items() if key != "__typename"})
+
+
+@mcp.tool(annotations=WRITE_IDEMPOTENT, title="Update Account")
+@track_usage
+async def update_account(
+    account_id: str,
+    name: str | None = None,
+    balance: FiniteFloat | None = None,
+    include_in_net_worth: bool | None = None,
+    hide_from_summary_list: bool | None = None,
+    hide_transactions_from_reports: bool | None = None,
+) -> UpdateAccountResult:
+    """Update an account's settings, leaving omitted fields unchanged.
+
+    Args:
+        account_id: Account ID from get_accounts.
+        name: New display name.
+        balance: New balance; meant for manual accounts, since synced accounts refresh theirs.
+        include_in_net_worth: Whether the account counts toward net worth.
+        hide_from_summary_list: Whether to hide the account from the accounts list.
+        hide_transactions_from_reports: Whether to exclude its transactions from budgets and reports.
+
+    Provide at least one change. Returns the compact updated account.
+    """
+    account_id = _require_text(account_id, "account_id")
+    if name is not None:
+        name = _require_text(name, "name")
+    changes = (name, balance, include_in_net_worth, hide_from_summary_list, hide_transactions_from_reports)
+    if all(value is None for value in changes):
+        raise ValueError("Provide at least one account setting to change")
+    await ensure_authenticated()
+    result = await api_call_with_retry(
+        "update_account",
+        account_id=account_id,
+        account_name=name,
+        account_balance=balance,
+        include_in_net_worth=include_in_net_worth,
+        hide_from_summary_list=hide_from_summary_list,
+        hide_transactions_from_reports=hide_transactions_from_reports,
+    )
+    account = _mutation_payload(result, "updateAccount", "account update").get("account")
+    if not isinstance(account, dict) or not account.get("id"):
+        raise ValueError("Monarch returned no updated account")
+    return UpdateAccountResult(account=_compact_account(account))
+
+
+@mcp.tool(annotations=WRITE_DESTRUCTIVE, title="Delete Transaction")
+@track_usage
+async def delete_transaction(transaction_id: str) -> DeleteTransactionResult:
+    """Permanently delete a transaction by ID from get_transactions or find_duplicate_transactions."""
+    transaction_id = _require_text(transaction_id, "transaction_id")
+    await ensure_authenticated()
+    if await api_call_with_retry("delete_transaction", transaction_id=transaction_id) is not True:
+        raise ValueError("Monarch did not confirm the transaction deletion")
+    return DeleteTransactionResult(transaction_id=transaction_id, deleted=True)
+
+
+@mcp.tool(annotations=WRITE_DESTRUCTIVE, title="Delete Merchant")
+@track_usage
+async def delete_merchant(merchant_id: str, move_to_merchant_id: str | None = None) -> DeleteMerchantResult:
+    """Delete a merchant; irreversible.
+
+    Args:
+        merchant_id: Merchant ID from get_merchants.
+        move_to_merchant_id: Optional merchant ID from get_merchants. Moving merges the
+            deleted merchant's transactions into this merchant.
+    """
+    merchant_id = _require_text(merchant_id, "merchant_id")
+    if move_to_merchant_id is not None:
+        move_to_merchant_id = _require_text(move_to_merchant_id, "move_to_merchant_id")
+        if move_to_merchant_id == merchant_id:
+            raise ValueError("move_to_merchant_id must differ from merchant_id")
+    await ensure_authenticated()
+    result = await api_call_with_retry(
+        "delete_merchant", merchant_id=merchant_id, move_to_merchant_id=move_to_merchant_id
+    )
+    if _mutation_payload(result, "deleteMerchant", "merchant deletion").get("success") is not True:
+        raise ValueError("Monarch did not confirm the merchant deletion")
+    return DeleteMerchantResult(merchant_id=merchant_id, move_to_merchant_id=move_to_merchant_id, deleted=True)
+
+
+@mcp.tool(annotations=WRITE_IDEMPOTENT, title="Set Savings Goal Budget Amount")
+@track_usage
+async def set_savings_goal_budget_amount(
+    goal_id: str, amount: FiniteFloat, month: str | None = None, apply_to_future: bool = False
+) -> SavingsGoalBudgetResult:
+    """Set a savings goal's planned monthly contribution.
+
+    Args:
+        goal_id: Goal ID from get_savings_goals.
+        amount: Planned contribution for the month.
+        month: Any date in the target month; ISO or natural language. Defaults to the current month.
+        apply_to_future: True also applies the amount to later months.
+    """
+    goal_id = _require_text(goal_id, "goal_id")
+    month_start = _first_of_month(month)
+    await ensure_authenticated()
+    result = await api_call_with_retry(
+        "set_savings_goal_budget_amount",
+        goal_id=goal_id,
+        month=month_start,
+        amount=amount,
+        apply_to_future=apply_to_future,
+    )
+    if _mutation_payload(result, "setSavingsGoalBudgetAmount", "goal budget update").get("success") is not True:
+        raise ValueError("Monarch did not confirm the goal budget update")
+    return SavingsGoalBudgetResult(goal_id=goal_id, month=month_start, amount=amount, apply_to_future=apply_to_future)
+
+
 class _CancellableStdin(AsyncFile[str]):
-    """Keep SDK framing without its cancellation-shielded blocking pipe read."""
+    """Keep SDK framing without its cancellation-shielded blocking pipe read.
+
+    mcp 2.3's stdio_server still reads stdin in a worker thread that cancellation waits
+    on, so SIGINT hangs until the client closes stdin. Passing stdin also leaves fd 0 as
+    is; the SDK still diverts fd 1 to stderr while serving.
+    """
 
     def __init__(self, reader: asyncio.StreamReader) -> None:
         super().__init__(sys.stdin)
@@ -3060,10 +3908,10 @@ async def main() -> None:
                     transport, _ = await asyncio.get_running_loop().connect_read_pipe(
                         lambda: asyncio.StreamReaderProtocol(reader), pipe
                     )
+                    # MCPServer has no public way to serve custom streams.
+                    server = mcp._lowlevel_server
                     async with stdio_server(stdin=_CancellableStdin(reader)) as (read_stream, write_stream):
-                        await mcp._mcp_server.run(
-                            read_stream, write_stream, mcp._mcp_server.create_initialization_options()
-                        )
+                        await server.run(read_stream, write_stream, server.create_initialization_options())
                 finally:
                     if transport is not None:
                         transport.close()

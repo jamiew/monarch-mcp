@@ -8,6 +8,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 from monarchmoney import MonarchMoney
 
 import server
@@ -86,12 +87,31 @@ TOOL_CALLS: list[Any] = [
     ),
     pytest.param(lambda: server.get_spending_summary(), id="get_spending_summary"),
     pytest.param(lambda: server.refresh_accounts(), id="refresh_accounts"),
+    pytest.param(lambda: server.get_recurring_streams(), id="get_recurring_streams"),
+    pytest.param(lambda: server.get_merchants(), id="get_merchants"),
+    pytest.param(lambda: server.get_transaction_tags(), id="get_transaction_tags"),
+    pytest.param(lambda: server.get_net_worth_history(), id="get_net_worth_history"),
+    pytest.param(lambda: server.find_duplicate_transactions(), id="find_duplicate_transactions"),
+    pytest.param(lambda: server.get_savings_goals(), id="get_savings_goals"),
+    pytest.param(lambda: server.get_credit_score_history(), id="get_credit_score_history"),
+    pytest.param(
+        lambda: server.set_transaction_tags(transaction_id="txn_1", tag_ids=["tag_1"]), id="set_transaction_tags"
+    ),
+    pytest.param(lambda: server.create_transaction_tag(name="Travel"), id="create_transaction_tag"),
+    pytest.param(lambda: server.update_account(account_id="acc_1", name="Savings"), id="update_account"),
+    pytest.param(lambda: server.delete_transaction(transaction_id="txn_1"), id="delete_transaction"),
+    pytest.param(lambda: server.delete_merchant(merchant_id="merchant_1"), id="delete_merchant"),
+    pytest.param(
+        lambda: server.set_savings_goal_budget_amount(goal_id="goal_1", amount=100.0),
+        id="set_savings_goal_budget_amount",
+    ),
 ]
 
 RESOURCE_CALLS: list[Any] = [
     pytest.param(lambda: server.list_categories_resource(), id="list_categories_resource"),
     pytest.param(lambda: server.list_accounts_resource(), id="list_accounts_resource"),
     pytest.param(lambda: server.list_institutions_resource(), id="list_institutions_resource"),
+    pytest.param(lambda: server.account_types_resource(), id="account_types_resource"),
 ]
 
 
@@ -224,6 +244,8 @@ class TestReadToolSuccess:
         page_two = [{"amount": -10.0, "category": {"name": "Restaurants"}, "date": "2024-01-02"} for _ in range(500)]
 
         def _side_effect(method_name: str, *args: object, **kwargs: object) -> dict[str, object]:
+            if method_name == "get_transaction_categories":
+                return {"categories": []}
             assert method_name == "get_transactions"
             offset = kwargs.get("offset", 0)
             results = page_one if offset == 0 else page_two if offset == 1000 else []
@@ -235,7 +257,7 @@ class TestReadToolSuccess:
         assert result.groups["Restaurants"].count == 1500
         assert result.groups["Restaurants"].expenses == 15000.0
         assert result.totals.expenses == 15000.0
-        assert mock_api.await_count == 2
+        assert [call.args[0] for call in mock_api.await_args_list].count("get_transactions") == 2
 
     @pytest.mark.asyncio
     async def test_get_spending_summary_flat_list_response_paginates_on_short_page(self, mock_api: AsyncMock) -> None:
@@ -248,7 +270,9 @@ class TestReadToolSuccess:
         page_one = [{"amount": -1.0, "category": {"name": "Misc"}, "date": "2024-01-01"} for _ in range(1000)]
         page_two = [{"amount": -1.0, "category": {"name": "Misc"}, "date": "2024-01-02"} for _ in range(3)]
 
-        def _side_effect(method_name: str, *args: object, **kwargs: object) -> list[dict[str, object]]:
+        def _side_effect(method_name: str, *args: object, **kwargs: object) -> object:
+            if method_name == "get_transaction_categories":
+                return {"categories": []}
             offset = kwargs.get("offset", 0)
             return page_one if offset == 0 else page_two if offset == 1000 else []
 
@@ -256,7 +280,7 @@ class TestReadToolSuccess:
         result = await server.get_spending_summary(group_by="category")
 
         assert result.groups["Misc"].count == 1003
-        assert mock_api.await_count == 2
+        assert [call.args[0] for call in mock_api.await_args_list].count("get_transactions") == 2
 
     @pytest.mark.asyncio
     async def test_refresh_accounts_sends_every_account_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -305,7 +329,7 @@ class TestReadToolSuccess:
         mock_api.return_value = {
             "createManualAccount": {"account": None, "errors": {"message": "Invalid subtype", "code": "BAD_INPUT"}}
         }
-        with pytest.raises(ValueError, match="Invalid subtype"):
+        with pytest.raises(ToolError, match="Invalid subtype"):
             await server.create_manual_account(
                 account_name="House", account_type="other_asset", account_sub_type="nope", balance=1.0
             )
@@ -337,6 +361,7 @@ class TestBatchToolDegradation:
             {
                 "get_transactions": RuntimeError("transactions service down"),
                 "get_budgets": budgets,
+                "get_transaction_categories": {"categories": []},
             }
         )
         result = await server.analyze_spending_patterns(lookback_months=3, include_forecasting=True)
@@ -371,9 +396,10 @@ class TestBatchToolDegradation:
             {
                 "get_transactions": {"allTransactions": {"totalCount": 2, "results": transactions}},
                 "get_budgets": failure,
+                "get_transaction_categories": {"categories": []},
             }
         )
-        result = await server.analyze_spending_patterns(lookback_months=3, include_forecasting=True)
+        result = await server.analyze_spending_patterns(lookback_months=3, include_forecasting=False)
         assert result.monthly_trends == {
             "2024-01": {"income": 0, "expenses": 50, "net": -50, "transaction_count": 1},
             "2024-02": {"income": 0, "expenses": 75, "net": -75, "transaction_count": 1},
@@ -381,6 +407,5 @@ class TestBatchToolDegradation:
         assert result.category_analysis["Food"]["total"] == 125.0
         assert set(result.errors) == {"budgets"}
         assert result.budget_performance == {}
-        assert result.forecast["predicted_expenses"] == 62.5
         assert result.account_usage == {"Checking": {"total_volume": 125, "transactions": 2}}
         assert result.metadata["transactions_truncated"] is False

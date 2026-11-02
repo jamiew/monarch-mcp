@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased
+
+### New tools
+
+- Added 13 tools for features in `monarchmoneycommunity` 1.7: `get_recurring_streams`, `get_merchants`, `delete_merchant`, `get_transaction_tags`, `create_transaction_tag`, `set_transaction_tags`, `delete_transaction`, `find_duplicate_transactions`, `update_account`, `get_net_worth_history`, `get_credit_score_history`, `get_savings_goals`, and `set_savings_goal_budget_amount`. Reads were checked against a live account on 2026-11-02; writes are tested offline only.
+- Added the `accounts://types` resource, which lists valid types and subtypes for `create_manual_account`.
+- `get_transactions` and `search_transactions` take a `needs_review` filter and return `total_count` and `next_offset`. Compact rows include tag names when a transaction has tags.
+- `set_budget_amount` takes `month` and `apply_to_future`, and fails when Monarch returns no budget item.
+
+### Fixes
+
+- Spending summaries, the overview, and spending analysis no longer count transfers, such as card payments, as income and spending. Results report `transfers_excluded`.
+- A month or year, such as `2024-02`, `January 2024` or `last month`, now covers the whole period. Before, `2024-02` meant February 2 when today was the 2nd, and `last month` as an end date meant its first day.
+- The spending forecast now averages the last three complete months. It used the oldest ones. Category averages count only expenses.
+- `update_transaction` and bulk updates reject `amount=0`, which Monarch's client silently dropped.
+- Split updates fail when Monarch returns no transaction.
+- Authentication fixes:
+  - A cancelled call during login no longer blocks every later call.
+  - An expired session now causes one login, even when several calls fail at once. Repeated logins could reuse an MFA code and get rejected.
+  - Errors that only mention "401" or "403" in their text, such as an ID or amount, no longer trigger a re-login.
+  - A rejected MFA code gets an accurate message and retries after the cooldown instead of failing until restart.
+- Monarch requests now time out after 30 seconds instead of 10. Larger reads hit the old limit.
+- Create timeouts no longer say "try again", since the transaction may already exist.
+- The server no longer keeps every tool call's arguments in memory.
+
+### MCP SDK 2
+
+- Moved to MCP Python SDK 2.3 (`MCPServer`). It serves both the 2025 and 2026-07-28 protocol versions.
+- Tool errors now start with `Error executing tool <name>:`. Validation, Monarch, and network error messages still reach the model; other internal errors stay in the server log.
+- Resource templates reject a blank account ID.
+
+### Dependencies
+
+- PyPI installs now need `monarchmoneycommunity` 1.7.1 or later, since the new tools use its 1.7 methods. Source installs keep the same pinned commit.
+
 ## 0.5.4 (2026-11-01)
 
 - Source installs now use `monarchmoneycommunity` 1.7.1 (and `gql` 4.4.0). It only adds new client methods, so no tool behavior changes. PyPI installs still accept 1.6.0 or later.
