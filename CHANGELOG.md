@@ -34,6 +34,7 @@
 ### Dependencies
 
 - PyPI installs now need `monarchmoneycommunity` 1.7.1 or later, since the new tools use its 1.7 methods. Source installs keep the same pinned commit.
+- CI and package metadata now cover Python 3.10 through 3.15.
 
 ## 0.5.4 (2026-11-01)
 
