@@ -61,7 +61,7 @@ class TestServerInitialization:
     """Test server initialization and configuration."""
 
     def test_server_instance_creation(self) -> None:
-        """Test that FastMCP server instance is created properly."""
+        """Test that the MCPServer instance is created properly."""
         assert server.mcp is not None
         assert hasattr(server.mcp, "name")
 

@@ -5,7 +5,7 @@ Use an AI assistant to read and update your [Monarch Money](https://www.monarchm
 
 ## Why this fork?
 
-This FastMCP rewrite adds these tools to [colvint's original server](https://github.com/colvint/monarch-money-mcp):
+This rewrite adds these tools to [colvint's original server](https://github.com/colvint/monarch-money-mcp):
 
 - **Search and bulk edits:** `search_transactions` finds merchants or keywords; `update_transactions_bulk` edits transactions in parallel with per-item results.
 - **Spending analysis:** `get_spending_summary` groups totals by category, account, or month; `analyze_spending_patterns` compares months.
@@ -20,11 +20,13 @@ Unlike the original and [keithah's enhanced Python fork](https://github.com/keit
 
 Comparison checked September 14, 2026. Other forks overlap on financial tools; the enhanced Python fork exposes a broader library API. This project focuses on analysis workflows and MCP integration, not exposing every API method. See the [tool catalog](#tools).
 
+Monarch also relaunched its own [official MCP connector](https://www.monarch.com/blog/monarch-mcp) on October 21, 2026. It uses OAuth instead of your password, has weekly usage limits, and skips Finicity-connected accounts. Try it first if it covers what you need; this server runs locally and covers more write and analysis tools.
+
 ## Setup
 
 Install [`uv`](https://docs.astral.sh/uv/), then configure your MCP client to run `uvx monarch-mcp-jamiew`. You'll need your Monarch email and password, plus an [MFA secret](#getting-your-mfa-secret) for TOTP-based 2FA.
 
-These features are included in [0.5.4](https://github.com/jamiew/monarch-mcp/releases/tag/v0.5.4), available through [PyPI](https://pypi.org/project/monarch-mcp-jamiew/).
+Release [0.5.4](https://github.com/jamiew/monarch-mcp/releases/tag/v0.5.4) is on [PyPI](https://pypi.org/project/monarch-mcp-jamiew/). Changes listed under **Unreleased** in the [changelog](CHANGELOG.md) need a source install until the next release.
 
 ### Standard config
 
@@ -186,8 +188,8 @@ The server exposes these 29 tools.
 | Tool | Description |
 |------|-------------|
 | `get_accounts` | List accounts with balances |
-| `get_transactions` | Transactions with date/account/category and pending/posted filtering |
-| `search_transactions` | Search by merchant name or keyword, optionally pending/posted only |
+| `get_transactions` | Transactions with date/account/category, pending/posted, and needs-review filtering; returns `total_count` and `next_offset` |
+| `search_transactions` | Search by merchant name or keyword, with the same filters and paging |
 | `get_transaction_categories` | Category list (compact by default) |
 | `get_transaction_rules` | Page through compact automation rules in priority order |
 | `create_transaction_rule` | Create a rule that matches merchant, statement text, or amount |
@@ -208,12 +210,16 @@ The server exposes these 29 tools.
 | `get_institutions` | Linked financial institutions |
 | `get_recurring_transactions` | Scheduled occurrences within a date range |
 | `update_recurring_transaction` | Change a merchant's recurring schedule |
-| `set_budget_amount` | Set a budget category amount |
+| `set_budget_amount` | Set a category's monthly budget, optionally for future months too |
 | `create_manual_account` | Create a manually tracked account |
 | `refresh_accounts` | Trigger account data refresh |
-| `get_spending_summary` | Spending aggregated by category, account, or month |
+| `get_spending_summary` | Spending aggregated by category, account, or month, excluding transfers |
 | `get_complete_financial_overview` | Compact account, transaction, budget, and cashflow summaries; full sections opt-in |
-| `analyze_spending_patterns` | Monthly trends and forecasts, with compact budgets and explicit upstream errors |
+| `analyze_spending_patterns` | Monthly trends and a forecast from the last three complete months |
+
+Spending totals skip transfers, such as credit card payments, so money moving between your own accounts isn't counted twice. Each result reports `transfers_excluded`.
+
+Dates accept ISO dates or natural language. A month or year, such as `2024-02` or `last month`, covers the whole period: as an `end_date` it means the period's last day.
 
 Use `is_pending=True` for pending transactions or `False` for posted ones; omit it
 for both. Single and bulk updates accept `owner_user_id` from `get_household_members`.

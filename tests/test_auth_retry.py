@@ -213,7 +213,7 @@ class TestAuthenticationRetry:
 
         client = server.MonarchMoney(token="synthetic-session-token")
         monkeypatch.setattr(client, "_login_user", AsyncMock())
-        monkeypatch.setattr(server, "MonarchMoney", lambda: client)
+        monkeypatch.setattr(server, "MonarchMoney", lambda **_: client)
         monkeypatch.chdir(tmp_path)
         private_dir = tmp_path / "private"
         session_file = private_dir / "session.pickle"
@@ -251,7 +251,7 @@ class TestAuthenticationRetry:
         from server import api_call_with_retry
 
         auth_error_messages = [
-            "401 error occurred",
+            "Request failed with status 401",
             "Unauthorized access denied",
             "Session has expired",
             "Bad credentials provided",

@@ -4,6 +4,7 @@ import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 
 import server
 
@@ -126,10 +127,10 @@ class TestSearchTransactions:
     async def test_search_transactions_empty_query(self):
         """Test that empty query raises error."""
         with patch.object(server, "mm_client") as mock_client:
-            with pytest.raises(ValueError, match="Query parameter cannot be empty"):
+            with pytest.raises(ToolError, match="Query parameter cannot be empty"):
                 await server.search_transactions(query="")
 
-            with pytest.raises(ValueError, match="Query parameter cannot be empty"):
+            with pytest.raises(ToolError, match="Query parameter cannot be empty"):
                 await server.search_transactions(query="   ")
 
     async def test_search_transactions_verbose_format(self):

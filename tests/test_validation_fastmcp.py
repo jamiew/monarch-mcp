@@ -1,4 +1,4 @@
-"""Tests for FastMCP validation and parameter handling."""
+"""Tests for tool validation and parameter handling."""
 
 from unittest.mock import AsyncMock, patch
 
@@ -7,8 +7,8 @@ import pytest
 import server
 
 
-class TestFastMCPParameterValidation:
-    """Test that FastMCP functions handle parameters correctly."""
+class TestToolParameterValidation:
+    """Test that tool functions handle parameters correctly."""
 
     @pytest.mark.asyncio
     async def test_get_transactions_with_valid_parameters(self) -> None:

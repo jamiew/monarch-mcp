@@ -52,15 +52,16 @@ That command contacts Monarch. Ordinary tests use synthetic data and skip live c
 
 ## Architecture and contracts
 
-`server.py` contains the FastMCP server, response models, authentication, tools, resources, and prompts. It uses `mcp.server.fastmcp.FastMCP`, JSON-RPC over stdio, and structlog on stderr. Reserve stdout for the protocol.
+`server.py` contains the MCP server, response models, authentication, tools, resources, and prompts. It uses MCP Python SDK 2.x `MCPServer` (`mcp>=2.3,<3`), JSON-RPC over stdio, and structlog on stderr. Reserve stdout for the protocol. The SDK serves both 2025-era clients and the 2026-07-28 protocol.
 
-- Tools use `@mcp.tool()` and `@track_usage`, return Pydantic models, and advertise read/write annotations and titles. FastMCP emits structured content with a text fallback.
+- Tools use `@mcp.tool()` and `@track_usage`, return Pydantic models, and advertise read/write annotations and titles. The SDK emits structured content with a text fallback.
+- SDK 2 shows the model only `ToolError` messages; any other exception becomes `Error executing tool <name>`. `@track_usage` converts known failures (ValueError and Pydantic validation, timeouts, Monarch, gql, aiohttp) to `ToolError`, and `@resource_errors` does the same for resources. Raise `ValueError` with a useful message for expected failures; don't put secrets in it.
 - Monarch responses are GraphQL envelopes, not usually bare lists. Use `extract_list(response, key)` or `extract_transactions_list()` before counting or processing rows.
 - Use `JsonValue` for evolving upstream payloads and explicit models for shapes constructed here. Convert dates to ISO strings before serialization.
-- Authentication uses one `mm_client` and a lock. It starts lazily on the first data call; loading a session does not validate it immediately.
-- `api_call_with_retry()` retries recognized authentication failures with reauthentication. It is not a general network retry or rate-limit policy.
-- Three static resources expose accounts, categories, and institutions. Two resource templates expose account holdings/history. Four prompts support completions; batch analysis reports progress through `Context`.
-- POSIX pipe input uses a cancellable asyncio reader with SDK framing, so SIGINT works without EOF. On POSIX, SIGINT cancels the main task instead of raising `KeyboardInterrupt`. On Python 3.10, an interrupt inside a loop callback could lose a task wakeup and freeze shutdown. Windows and regular-file input keep the SDK transport; Windows signal behavior is not verified.
+- Authentication uses one `mm_client` and a lock. It starts lazily on the first data call; loading a session does not validate it immediately. A new client is published only after login succeeds. Requests use a 30-second client timeout; write tools wrap calls in a 60-second limit so they fire only when a re-login and retry run long.
+- `api_call_with_retry()` retries recognized authentication failures with reauthentication. A failed call remembers its client; under the lock it re-logs in only if that client is still current, so several failures from one expiry cause one login. `is_auth_error` uses HTTP status codes from gql/aiohttp errors and narrow text, never a bare "401"/"403" substring. It is not a general network retry or rate-limit policy.
+- Three static resources expose accounts, categories, and institutions. Two resource templates expose account holdings/history and reject blank IDs. Four prompts support completions; batch analysis reports progress through `Context`.
+- POSIX pipe input uses a cancellable asyncio reader with SDK framing, so SIGINT works without EOF. SDK 2's `stdio_server` still reads stdin on a worker thread and hangs on SIGINT with stdin open (checked on 3.10 and 3.13 with 2.3.0), so keep the workaround. It runs through the private `mcp._lowlevel_server`, since `MCPServer` has no public way to serve custom streams. On POSIX, SIGINT cancels the main task instead of raising `KeyboardInterrupt`. On Python 3.10, an interrupt inside a loop callback could lose a task wakeup and freeze shutdown. Windows and regular-file input keep the SDK transport; Windows signal behavior is not verified.
 
 See README for the tool catalog. Keep these less-obvious contracts intact:
 
@@ -71,7 +72,9 @@ See README for the tool catalog. Keep these less-obvious contracts intact:
 - Account-history dates filter snapshots locally before paging; upstream accepts only account_id. Rules and history return `count`, `total_count`, and `next_offset`. Transaction/budget requests need ISO strings, not Python dates.
 - Transaction accounts use `displayName`, not `name`; count distinct accounts by ID. Cashflow `summary` is an aggregate list with one nested `summary`; budgets use `budgetData.totalsByMonth`.
 - Overview and spending analysis default to compact sections, with `verbose=True` for full payloads. Their 500/2,000-transaction samples report `batch_metadata.transactions_truncated`; a missing upstream count yields null. Spending analysis exposes failed sections in `errors`.
-- Recurring reads return scheduled occurrences for a date range, not a complete stream inventory. Missing date bounds use the supplied date's month; no dates means the current month.
+- Spending summary, overview, and analysis exclude transfers by category group type (`expense`, `income`, `transfer`), read from `get_transaction_categories` because transactions don't carry it. They report `transfers_excluded`, null when categories can't be read. Upstream's default visibility already excludes hide-from-reports rows (checked live 2026-11-02); `hidden_from_reports=True` alone returns them.
+- Dates: a month, year, or named period covers the whole period. As a start it means the first day, as an end the last day (`parse_date_period`, `parse_flexible_end_date`, `build_date_filter`).
+- Recurring reads return scheduled occurrences for a date range. Missing date bounds use the supplied date's month; no dates means the current month.
 - `update_recurring_transaction` changes a merchant-wide schedule through upstream `update_reoccuring`. Use the merchant ID and current name, not a stream or transaction ID. Check nested mutation errors before reporting success.
 - Rule mutations call Monarch's GraphQL directly (`createTransactionRuleV2`, `updateTransactionRuleV2`, `deleteTransactionRule`), because the community client lacks them. The opt-in round trip in `tests/test_integration.py` (`MONARCH_RUN_RULE_WRITES=true`) passed live on 2026-09-21. It only tested category and review-status actions. Re-sent splits, goals, and owners have not been tested live.
   - Update deletes any action left out of the input. So edits read the rule, apply the changes, and send the whole rule back.
@@ -103,24 +106,24 @@ Source changes marked **Unreleased** are not available through PyPI until publis
 
 ## Upstream library and forks
 
-**Community rechecked 2026-11-01; parent 2026-09-20; sibling survey 2026-09-14.** Keep `monarchmoneycommunity`; no inspected sibling is a safer replacement.
+**Community, parent, and forks rechecked 2026-11-02.** Keep `monarchmoneycommunity`; no inspected sibling or new client is a safer replacement.
 
 | Repository | Verified revision/activity | Assessment |
 |---|---|---|
 | [hammem/monarchmoney](https://github.com/hammem/monarchmoney) | `98a6e0d`, 2025-11-03 | No new merged fixes. Domain and cookie-auth PRs remain open. |
-| [bradleyseanf/monarchmoneycommunity](https://github.com/bradleyseanf/monarchmoneycommunity) | `dev` `2f9730ea`; PyPI 1.7.1, 2026-11-01 | 1.7.x adds goals, merchant deletion, category-only rule methods, and read/export getters, including `get_recurring_transaction_streams`. Existing methods are unchanged. |
+| [bradleyseanf/monarchmoneycommunity](https://github.com/bradleyseanf/monarchmoneycommunity) | `dev` `2f9730ea`; PyPI 1.7.1, 2026-11-01 | 1.7.x adds goals, merchant deletion, category-only rule methods, and read/export getters. `main` has the same tree. Unreleased `refactor/2.0.0` (2026-10-31) splits modules but keeps `monarchmoney.py` signatures; not live-tested upstream. Draft [#100](https://github.com/bradleyseanf/monarchmoneycommunity/pull/100) moves sessions to JSON and stops leaking the token to the attachment host. |
 | [keithah/monarchmoney-enhanced](https://github.com/keithah/monarchmoney-enhanced) | `3c7d442`, 2026-08-13; PyPI 0.11.0 | Dependency maintenance, but feature-stale. Old API domain and divergent service/public queries. |
 | [tommyzed/monarchmoney-i18n-transactions](https://github.com/tommyzed/monarchmoney-i18n-transactions) | `9b5acb9`, 2026-09-14 | Active currency/import app, not a replacement client. Ordinary recurring getter. |
 | [jribnik/monarchmoney-enhanced](https://github.com/jribnik/monarchmoney-enhanced) | PR branches, 2026-07-28 | Proposed rules/transaction schema fixes, not a maintained release. |
 | [amaten69/monarchmoney-maten](https://github.com/amaten69/monarchmoney-maten) | `09bae1e`, 2026-08-17 | Transaction changes; no new recurring capability established. |
 
-Discovery covered the parent's 15 most-starred and 15 newest forks, 30 community children, and nine enhanced children. Push dates alone can reflect inherited commits.
+Discovery covered the parent's 15 most-starred and 15 newest forks, 30 community children, and nine enhanced children (2026-09-14), plus forks of the parent and community pushed after that (2026-11-02). Push dates alone can reflect inherited commits. New PyPI clients `monarch-money-mcp-cli` (macOS-only server) and `monarch-api` (sync, Python 3.11+) are not replacements.
+
+Monarch relaunched an [official MCP connector](https://www.monarch.com/blog/monarch-mcp) on 2026-10-21 (`https://api.monarch.com/mcp`, OAuth, weekly usage limits, no Finicity-connected accounts). It doesn't change the client choice here; the README points users to it.
 
 **Pin policy:** track verified community `dev` HEAD by exact SHA. Current pin: `2f9730ea46150e544dec9684ee180dfec7675ca4`, identical in source to v1.7.1. Update its comment date when changing it. Published floor: `>=1.6.0`; tools must work with that release. 1.7.x only adds methods and widens `gql_call` to accept `GraphQLRequest`; it requires `gql==4.4.0`. Its rule methods only set categories and refuse goals, splits, and review status, so keep the direct rule mutations here. None fixes history date arguments or transaction/budget date serialization.
 
-**Recurring candidates:** community 1.7.x `get_recurring_transaction_streams`, [parent PR #165](https://github.com/hammem/monarchmoney/pull/165), and enhanced's service implement `recurringTransactionStreams` with liability forecasts. These queries were not live-validated here. Enhanced's paid/late summaries and review/disable mutations also need validation before adoption. A larger method list is not evidence of working coverage.
-
-Other stable candidates include transaction details/tags, duplicate detection, cashflow summaries, and receipt uploads. Add them for a user need, not coverage alone.
+**Avoid for now:** `upload_attachment` sends the Monarch token to Cloudinary in token-login mode (until #100 lands). `create_transaction_category` computes its default rollover month at import, so always pass one. `delete_transaction_category` never sends its move-to category. `get_all_merchants` timed out at the 10-second client timeout. Enhanced's paid/late recurring summaries and review/disable mutations still need validation before adoption. A larger method list is not evidence of working coverage.
 
 To refresh this assessment:
 

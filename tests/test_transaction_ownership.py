@@ -5,10 +5,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 from aiohttp.payload import JsonPayload
+from mcp.server.mcpserver.exceptions import ToolError
 from monarchmoney import MonarchMoney
 from pydantic import JsonValue
 
 import server
+from tests.conftest import CallTool
 
 
 @pytest.fixture
@@ -49,7 +51,9 @@ def transactions(graphql: AsyncMock) -> dict[str, dict[str, JsonValue]]:
 
 
 @pytest.mark.parametrize("bulk", [False, True], ids=["single", "bulk"])
-async def test_owner_assignment_clear_and_omission(transactions: dict[str, dict[str, JsonValue]], bulk: bool) -> None:
+async def test_owner_assignment_clear_and_omission(
+    transactions: dict[str, dict[str, JsonValue]], call_tool: CallTool, bulk: bool
+) -> None:
     steps: list[tuple[dict[str, JsonValue], str | None]] = [
         ({"owner_user_id": "member_new"}, "member_new"),
         ({"notes": "Omitted owner"}, "member_new"),
@@ -63,9 +67,7 @@ async def test_owner_assignment_clear_and_omission(transactions: dict[str, dict[
             assert result.summary.succeeded == 1
             assert result.summary.failed == 0
         else:
-            _, structured = await server.mcp._tool_manager.call_tool(
-                "update_transaction", arguments, convert_result=True
-            )
+            structured = await call_tool("update_transaction", arguments)
             assert structured["transaction"] == {
                 "updateTransaction": {"errors": None, "transaction": transactions["txn_123"]}
             }
@@ -74,14 +76,16 @@ async def test_owner_assignment_clear_and_omission(transactions: dict[str, dict[
 
 
 @pytest.mark.parametrize("bulk", [False, True], ids=["single", "bulk"])
-async def test_date_update_survives_json_transport(transactions: dict[str, dict[str, JsonValue]], bulk: bool) -> None:
+async def test_date_update_survives_json_transport(
+    transactions: dict[str, dict[str, JsonValue]], call_tool: CallTool, bulk: bool
+) -> None:
     arguments = {"transaction_id": "txn_123", "date": "2026-09-01"}
     if bulk:
         result = await server.update_transactions_bulk(json.dumps([arguments]))
         assert result.summary.succeeded == 1
         assert result.summary.failed == 0
     else:
-        await server.mcp._tool_manager.call_tool("update_transaction", arguments)
+        await call_tool("update_transaction", arguments)
     assert transactions["txn_123"]["date"] == "2026-09-01"
 
 
@@ -134,7 +138,7 @@ async def test_mutation_failure_never_reports_success_and_is_isolated_in_bulk(
     graphql: AsyncMock, response: dict[str, JsonValue]
 ) -> None:
     graphql.return_value = response
-    with pytest.raises(ValueError):
+    with pytest.raises(ToolError):
         await server.update_transaction("txn_123", owner_user_id="member_new")
 
     valid_response = {"updateTransaction": {"errors": [], "transaction": {"id": "txn_valid"}}}

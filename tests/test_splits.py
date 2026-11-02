@@ -7,6 +7,7 @@ Uses the ``mock_api`` fixture (see conftest.py) so tests are offline: it patches
 from unittest.mock import AsyncMock
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import JsonValue, ValidationError
 
 import server
@@ -111,7 +112,7 @@ class TestUpdateTransactionSplits:
                 "transaction": None,
             }
         }
-        with pytest.raises(ValueError, match="Monarch rejected the split update"):
+        with pytest.raises(ToolError, match="Monarch rejected the split update"):
             await server.update_transaction_splits(
                 transaction_id="txn_1",
                 splits=[server.TransactionSplit(amount=-10.0, category_id="cat_1")],
@@ -210,7 +211,7 @@ class TestGetTransactionDetails:
 @pytest.mark.parametrize("response", [{}, {"getTransaction": None}, None, []])
 async def test_missing_transaction_raises(mock_api: AsyncMock, tool_name: str, response: JsonValue) -> None:
     mock_api.return_value = response
-    with pytest.raises(ValueError):
+    with pytest.raises(ToolError):
         await getattr(server, tool_name)(transaction_id="txn_missing")
 
 
@@ -226,8 +227,9 @@ async def test_missing_transaction_raises(mock_api: AsyncMock, tool_name: str, r
 )
 async def test_malformed_transaction_raises(mock_api: AsyncMock, tool_name: str, transaction: JsonValue) -> None:
     mock_api.return_value = {"getTransaction": transaction}
-    with pytest.raises(ValidationError):
+    with pytest.raises(ToolError) as error:
         await getattr(server, tool_name)(transaction_id="txn_1")
+    assert isinstance(error.value.__cause__, ValidationError)
 
 
 @pytest.mark.parametrize("split", [{}, {"id": ""}, {"id": None}, "invalid"])
@@ -244,5 +246,6 @@ async def test_details_rejects_invalid_split_ids(mock_api: AsyncMock, split: Jso
             "splitTransactions": [split],
         }
     }
-    with pytest.raises(ValidationError):
+    with pytest.raises(ToolError) as error:
         await server.get_transaction_details(transaction_id="txn_parent")
+    assert isinstance(error.value.__cause__, ValidationError)

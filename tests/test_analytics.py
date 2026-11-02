@@ -1,10 +1,12 @@
 """Tests for usage analytics and batch tools."""
 
 import json
+from datetime import date
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from aiohttp.payload import JsonPayload
+from dateutil.relativedelta import relativedelta
 from monarchmoney import MonarchMoney
 from pydantic import JsonValue
 
@@ -12,34 +14,18 @@ import server
 
 
 class TestUsageAnalytics:
-    """Test usage analytics and tracking functionality."""
+    """Tool calls are logged, not accumulated in memory."""
 
     @pytest.mark.asyncio
-    async def test_track_usage_decorator(self) -> None:
-        """Test that usage tracking decorator works correctly."""
-        server.usage_patterns.clear()
+    async def test_track_usage_logs_events_without_retaining_calls(self, mock_api: AsyncMock) -> None:
+        mock_api.return_value = [{"id": "acc_001", "displayName": "Test Account"}]
 
-        mock_client = AsyncMock()
-        mock_client.get_accounts.return_value = [{"id": "acc_001", "displayName": "Test Account"}]
+        with patch.object(server, "log") as log:
+            await server.get_accounts()
 
-        original_client = server.mm_client
-        server.mm_client = mock_client
-
-        try:
-            with patch.object(server, "ensure_authenticated", new_callable=AsyncMock):
-                await server.get_accounts()
-
-                assert "get_accounts" in server.usage_patterns
-                assert len(server.usage_patterns["get_accounts"]) == 1
-
-                call_info = server.usage_patterns["get_accounts"][0]
-                assert call_info["tool_name"] == "get_accounts"
-                assert call_info["status"] == "success"
-                assert "execution_time" in call_info
-                assert "session_id" in call_info
-
-        finally:
-            server.mm_client = original_client
+        events = [call.args[0] for call in log.info.call_args_list]
+        assert "tool_call" in events
+        assert "tool_success" in events
 
 
 @pytest.fixture
@@ -137,6 +123,7 @@ class TestBatchTools:
             "total_count": 3,
             "total_expenses": 75,
             "total_income": 3000,
+            "transfers_excluded": 0,
             "unique_categories": 2,
             "unique_accounts": 2,
         }
@@ -194,21 +181,23 @@ class TestBatchTools:
     @pytest.mark.parametrize("verbose", [False, True])
     async def test_analyze_spending_patterns(self, monkeypatch: pytest.MonkeyPatch, verbose: bool) -> None:
         """Exercise analysis through the real client's JSON request boundary."""
+        older = (date.today().replace(day=1) - relativedelta(months=2)).strftime("%Y-%m")
+        newer = (date.today().replace(day=1) - relativedelta(months=1)).strftime("%Y-%m")
         transactions: list[JsonValue] = [
             {
-                "date": "2026-08-15",
+                "date": f"{older}-15",
                 "amount": -100,
                 "category": {"name": "Food"},
                 "account": {"id": "acc_001", "displayName": "Checking"},
             },
             {
-                "date": "2026-08-20",
+                "date": f"{older}-20",
                 "amount": -50,
                 "category": {"name": "Transit"},
                 "account": {"id": "acc_002", "displayName": "Travel"},
             },
             {
-                "date": "2026-09-10",
+                "date": f"{newer}-10",
                 "amount": 3000,
                 "category": {"name": "Salary"},
                 "account": {"id": "acc_001", "displayName": "Checking"},
@@ -219,7 +208,7 @@ class TestBatchTools:
                 "totalsByMonth": [
                     {
                         "__typename": "BudgetTotals",
-                        "month": "2026-08-01",
+                        "month": f"{older}-01",
                         "plannedExpenses": 200,
                         "actualExpenses": 150,
                         "optional": None,
@@ -228,7 +217,7 @@ class TestBatchTools:
                 "monthlyAmountsByCategory": [
                     {
                         "category": {"id": "cat_001"},
-                        "monthlyAmounts": [{"month": "2026-08-01", "plannedCashFlowAmount": 200, "actualAmount": 100}],
+                        "monthlyAmounts": [{"month": f"{older}-01", "plannedCashFlowAmount": 200, "actualAmount": 100}],
                     }
                 ],
             }
@@ -236,6 +225,7 @@ class TestBatchTools:
         responses: dict[str, dict[str, JsonValue]] = {
             "GetTransactionsList": {"allTransactions": {"results": transactions, "totalCount": 4}},
             "GetJointPlanningData": budgets,
+            "GetCategories": {"categories": [{"id": "cat_001", "name": "Food", "group": {"type": "expense"}}]},
         }
 
         async def gql_call(
@@ -251,14 +241,14 @@ class TestBatchTools:
         monkeypatch.setattr(server, "mm_client", client)
 
         if verbose:
-            result = await server.analyze_spending_patterns(lookback_months=3, include_forecasting=True, verbose=True)
+            result = await server.analyze_spending_patterns(lookback_months=12, include_forecasting=True, verbose=True)
         else:
-            result = await server.analyze_spending_patterns(lookback_months=3, include_forecasting=True)
+            result = await server.analyze_spending_patterns(lookback_months=12, include_forecasting=True)
         analysis = json.loads(result.model_dump_json())
 
         assert analysis["monthly_trends"] == {
-            "2026-08": {"expenses": 150, "income": 0, "net": -150, "transaction_count": 2},
-            "2026-09": {"expenses": 0, "income": 3000, "net": 3000, "transaction_count": 1},
+            older: {"expenses": 150, "income": 0, "net": -150, "transaction_count": 2},
+            newer: {"expenses": 0, "income": 3000, "net": 3000, "transaction_count": 1},
         }
         assert analysis["category_analysis"]["Food"]["total"] == 100
         assert analysis["category_analysis"]["Transit"]["total"] == 50
@@ -271,11 +261,12 @@ class TestBatchTools:
         assert analysis["budget_performance"] == (
             budgets
             if verbose
-            else {"totalsByMonth": [{"month": "2026-08-01", "plannedExpenses": 200, "actualExpenses": 150}]}
+            else {"totalsByMonth": [{"month": f"{older}-01", "plannedExpenses": 200, "actualExpenses": 150}]}
         )
-        assert analysis["forecast"]["predicted_expenses"] == 75
-        assert analysis["forecast"]["predicted_income"] == 1500
-        assert analysis["forecast"]["predicted_net"] == 1425
+        # The page is truncated, so its oldest month may be partial and only the newer month counts.
+        assert analysis["forecast"]["predicted_expenses"] == 0
+        assert analysis["forecast"]["predicted_income"] == 3000
+        assert analysis["forecast"]["predicted_net"] == 3000
         assert analysis["errors"] == {}
 
     @pytest.mark.asyncio
@@ -308,21 +299,3 @@ class TestBatchTools:
             assert overview["budgets"] == overview_client.get_budgets.return_value
         else:
             assert overview["budgets"]["totalsByMonth"][0]["actualExpenses"] == 75
-
-
-class TestLoggingConfiguration:
-    """Test logging and analytics configuration."""
-
-    def test_analytics_tracking_configured(self) -> None:
-        """Test that usage analytics tracking is configured."""
-        assert hasattr(server, "current_session_id")
-        assert hasattr(server, "usage_patterns")
-        assert hasattr(server, "track_usage")
-
-        # Verify session ID is UUID format
-        import uuid
-
-        try:
-            uuid.UUID(server.current_session_id)
-        except ValueError:
-            pytest.fail("Session ID is not a valid UUID")

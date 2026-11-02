@@ -1,17 +1,18 @@
-"""Tests for FastMCP server implementation."""
+"""Tests for the MCPServer server implementation."""
 
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 
 import server
 
 
-class TestFastMCPServer:
-    """Test the FastMCP server implementation."""
+class TestMCPServer:
+    """Test the MCPServer server implementation."""
 
     def test_server_instance_creation(self) -> None:
-        """Test that FastMCP server instance is created properly."""
+        """Test that the MCPServer instance is created properly."""
         assert server.mcp is not None
         assert hasattr(server.mcp, "name")
 
@@ -51,7 +52,7 @@ class TestFastMCPServer:
                 "server.ensure_authenticated",
                 side_effect=ValueError("MONARCH_EMAIL and MONARCH_PASSWORD environment variables are required"),
             ):
-                with pytest.raises(ValueError, match="MONARCH_EMAIL and MONARCH_PASSWORD"):
+                with pytest.raises(ToolError, match="MONARCH_EMAIL and MONARCH_PASSWORD"):
                     await server.get_accounts()
         finally:
             server.mm_client = original_client
@@ -153,7 +154,7 @@ class TestFastMCPServer:
         server.mm_client = original_client
 
 
-class TestFastMCPComparisionWithOld:
+class TestToolSignatures:
     """Check core tool availability and parameter names."""
 
     def test_function_signatures_correct(self) -> None:

@@ -5,6 +5,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 
 
 class TestBulkTransactionUpdates:
@@ -80,7 +81,7 @@ class TestBulkTransactionUpdates:
         from server import update_transactions_bulk
 
         with patch("server.ensure_authenticated", new_callable=AsyncMock):
-            with pytest.raises(ValueError, match="Invalid JSON"):
+            with pytest.raises(ToolError, match="Invalid JSON"):
                 await update_transactions_bulk("not valid json {")
 
     @pytest.mark.asyncio
@@ -89,7 +90,7 @@ class TestBulkTransactionUpdates:
         from server import update_transactions_bulk
 
         with patch("server.ensure_authenticated", new_callable=AsyncMock):
-            with pytest.raises(ValueError, match="must be a JSON array"):
+            with pytest.raises(ToolError, match="must be a JSON array"):
                 await update_transactions_bulk('{"transaction_id": "123"}')
 
     @pytest.mark.asyncio

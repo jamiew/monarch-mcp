@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 from monarchmoney import MonarchMoney
 from pydantic import JsonValue
 
@@ -96,7 +97,7 @@ class TestNewMonarchTools:
     async def test_get_account_history_rejects_invalid_bounds_before_api(
         self, history_graphql: AsyncMock, start_date: str | None, end_date: str | None
     ) -> None:
-        with pytest.raises(ValueError):
+        with pytest.raises(ToolError):
             await server.get_account_history(account_id="acc_001", start_date=start_date, end_date=end_date)
         history_graphql.assert_not_awaited()
 
@@ -164,7 +165,7 @@ class TestNewMonarchTools:
     async def test_set_budget_amount(self) -> None:
         """Test set_budget_amount functionality."""
         mock_client = AsyncMock()
-        mock_result = {"category_id": "cat123", "amount": 500, "status": "updated"}
+        mock_result = {"updateOrCreateBudgetItem": {"budgetItem": {"id": "budget_1", "budgetAmount": 500}}}
         mock_client.set_budget_amount.return_value = mock_result
 
         original_client = server.mm_client
