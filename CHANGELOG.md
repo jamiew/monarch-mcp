@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.6.0 (2026-11-02)
+
 ### New tools
 
 - Added 13 tools for features in `monarchmoneycommunity` 1.7: `get_recurring_streams`, `get_merchants`, `delete_merchant`, `get_transaction_tags`, `create_transaction_tag`, `set_transaction_tags`, `delete_transaction`, `find_duplicate_transactions`, `update_account`, `get_net_worth_history`, `get_credit_score_history`, `get_savings_goals`, and `set_savings_goal_budget_amount`. Reads were checked against a live account on 2026-11-02; writes are tested offline only.

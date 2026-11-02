@@ -28,7 +28,7 @@ Monarch also relaunched its own [official MCP connector](https://www.monarch.com
 
 Install [`uv`](https://docs.astral.sh/uv/), then configure your MCP client to run `uvx monarch-mcp-jamiew`. You'll need your Monarch email and password, plus an [MFA secret](#getting-your-mfa-secret) for TOTP-based 2FA.
 
-Release [0.5.4](https://github.com/jamiew/monarch-mcp/releases/tag/v0.5.4) is on [PyPI](https://pypi.org/project/monarch-mcp-jamiew/). Changes listed under **Unreleased** in the [changelog](CHANGELOG.md) need a source install until the next release.
+Release [0.6.0](https://github.com/jamiew/monarch-mcp/releases/tag/v0.6.0) is on [PyPI](https://pypi.org/project/monarch-mcp-jamiew/). Changes listed under **Unreleased** in the [changelog](CHANGELOG.md) need a source install until the next release.
 
 ### Standard config
 
