@@ -10,7 +10,9 @@ This rewrite adds these tools to [colvint's original server](https://github.com/
 - **Search and bulk edits:** `search_transactions` finds merchants or keywords; `update_transactions_bulk` edits transactions in parallel with per-item results.
 - **Spending analysis:** `get_spending_summary` groups totals by category, account, or month; `analyze_spending_patterns` compares months.
 - **One-call overview:** `get_complete_financial_overview` combines accounts, budgets, cashflow, transactions, and categories.
-- **Splits and recurring schedules:** read and replace transaction splits, view scheduled occurrences, and edit merchant-wide recurrence.
+- **Splits and recurring schedules:** read and replace transaction splits, list every recurring stream with its next forecast, view scheduled occurrences, and edit merchant-wide recurrence.
+- **Cleanup tools:** find possible duplicates, delete transactions, merge merchants, and tag transactions.
+- **Net worth and goals:** daily net worth or monthly balances by account type, credit score history, and savings goals.
 
 Unlike the original and [keithah's enhanced Python fork](https://github.com/keithah/monarch-money-mcp-enhanced-python), this server also provides:
 
@@ -183,7 +185,7 @@ Then point your client at the local copy with absolute paths (find them with `wh
 
 ## Tools
 
-The server exposes these 29 tools.
+The server exposes these 42 tools.
 
 | Tool | Description |
 |------|-------------|
@@ -197,6 +199,7 @@ The server exposes these 29 tools.
 | `delete_transaction_rule` | Delete a rule; transactions it already changed stay as they are |
 | `get_household_members` | Household members and IDs for ownership updates |
 | `create_transaction` | Create a manual transaction |
+| `delete_transaction` | Permanently delete a transaction |
 | `update_transaction` | Update transaction fields or assign ownership |
 | `update_transactions_bulk` | Update fields or owners with per-item success/failure |
 | `get_transaction_splits` | Read a transaction's splits |
@@ -209,10 +212,22 @@ The server exposes these 29 tools.
 | `get_account_history` | Paginated balance history with inclusive, locally applied ISO date bounds |
 | `get_institutions` | Linked financial institutions |
 | `get_recurring_transactions` | Scheduled occurrences within a date range |
+| `get_recurring_streams` | Every recurring stream with its merchant ID and next forecast |
 | `update_recurring_transaction` | Change a merchant's recurring schedule |
+| `get_merchants` | Page through merchants with transaction and rule counts |
+| `delete_merchant` | Delete a merchant, optionally moving its transactions to another merchant |
+| `get_transaction_tags` | List household tags |
+| `create_transaction_tag` | Create a tag |
+| `set_transaction_tags` | Replace a transaction's tags; an empty list removes them |
 | `set_budget_amount` | Set a category's monthly budget, optionally for future months too |
-| `create_manual_account` | Create a manually tracked account |
+| `get_savings_goals` | Savings goals with targets, balances, and progress |
+| `set_savings_goal_budget_amount` | Set a goal's planned monthly contribution |
+| `create_manual_account` | Create a manually tracked account; valid types are in the `accounts://types` resource |
+| `update_account` | Rename an account, set its balance, or change net worth and visibility settings |
 | `refresh_accounts` | Trigger account data refresh |
+| `get_net_worth_history` | Daily net worth, or monthly balances by account type |
+| `get_credit_score_history` | Household credit score snapshots |
+| `find_duplicate_transactions` | Possible duplicates: same date, amount, statement name, and account |
 | `get_spending_summary` | Spending aggregated by category, account, or month, excluding transfers |
 | `get_complete_financial_overview` | Compact account, transaction, budget, and cashflow summaries; full sections opt-in |
 | `analyze_spending_patterns` | Monthly trends and a forecast from the last three complete months |
@@ -252,7 +267,8 @@ totals as complete; `null` means the upstream count was unavailable.
 
 `get_recurring_transactions(start_date, end_date)` returns a forecast, not posted history.
 Dates accept ISO or natural language. No dates selects this month; one date fills
-the missing bound from that month.
+the missing bound from that month. For the full list of recurring streams with each
+merchant ID, use `get_recurring_streams`; `active_only=False` adds inactive ones.
 
 Occurrences include stream, account, category, and a matched `transactionId` when
 available. `isPast` does not mean paid. Use `get_transactions(is_recurring=True)`

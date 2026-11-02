@@ -87,12 +87,31 @@ TOOL_CALLS: list[Any] = [
     ),
     pytest.param(lambda: server.get_spending_summary(), id="get_spending_summary"),
     pytest.param(lambda: server.refresh_accounts(), id="refresh_accounts"),
+    pytest.param(lambda: server.get_recurring_streams(), id="get_recurring_streams"),
+    pytest.param(lambda: server.get_merchants(), id="get_merchants"),
+    pytest.param(lambda: server.get_transaction_tags(), id="get_transaction_tags"),
+    pytest.param(lambda: server.get_net_worth_history(), id="get_net_worth_history"),
+    pytest.param(lambda: server.find_duplicate_transactions(), id="find_duplicate_transactions"),
+    pytest.param(lambda: server.get_savings_goals(), id="get_savings_goals"),
+    pytest.param(lambda: server.get_credit_score_history(), id="get_credit_score_history"),
+    pytest.param(
+        lambda: server.set_transaction_tags(transaction_id="txn_1", tag_ids=["tag_1"]), id="set_transaction_tags"
+    ),
+    pytest.param(lambda: server.create_transaction_tag(name="Travel"), id="create_transaction_tag"),
+    pytest.param(lambda: server.update_account(account_id="acc_1", name="Savings"), id="update_account"),
+    pytest.param(lambda: server.delete_transaction(transaction_id="txn_1"), id="delete_transaction"),
+    pytest.param(lambda: server.delete_merchant(merchant_id="merchant_1"), id="delete_merchant"),
+    pytest.param(
+        lambda: server.set_savings_goal_budget_amount(goal_id="goal_1", amount=100.0),
+        id="set_savings_goal_budget_amount",
+    ),
 ]
 
 RESOURCE_CALLS: list[Any] = [
     pytest.param(lambda: server.list_categories_resource(), id="list_categories_resource"),
     pytest.param(lambda: server.list_accounts_resource(), id="list_accounts_resource"),
     pytest.param(lambda: server.list_institutions_resource(), id="list_institutions_resource"),
+    pytest.param(lambda: server.account_types_resource(), id="account_types_resource"),
 ]
 
 

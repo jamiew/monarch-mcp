@@ -73,7 +73,20 @@
     { "name": "refresh_accounts", "description": "Request account refresh" },
     { "name": "get_spending_summary", "description": "Group spending by category, account, or month, excluding transfers" },
     { "name": "get_complete_financial_overview", "description": "Get compact financial summaries; full sections optional" },
-    { "name": "analyze_spending_patterns", "description": "Summarize trends with compact budgets and optional forecasts" }
+    { "name": "analyze_spending_patterns", "description": "Summarize trends with compact budgets and optional forecasts" },
+    { "name": "get_recurring_streams", "description": "List every recurring stream with its merchant ID and next forecast" },
+    { "name": "get_merchants", "description": "Page through merchants with transaction and rule counts" },
+    { "name": "delete_merchant", "description": "Delete a merchant, optionally moving its transactions to another merchant" },
+    { "name": "get_transaction_tags", "description": "List household transaction tags" },
+    { "name": "create_transaction_tag", "description": "Create a transaction tag" },
+    { "name": "set_transaction_tags", "description": "Replace a transaction's tags" },
+    { "name": "delete_transaction", "description": "Permanently delete a transaction" },
+    { "name": "find_duplicate_transactions", "description": "Find possible duplicate transactions" },
+    { "name": "update_account", "description": "Rename an account, set its balance, or change visibility settings" },
+    { "name": "get_net_worth_history", "description": "Daily net worth, or monthly balances by account type" },
+    { "name": "get_credit_score_history", "description": "Household credit score snapshots" },
+    { "name": "get_savings_goals", "description": "List savings goals with targets and progress" },
+    { "name": "set_savings_goal_budget_amount", "description": "Set a goal's planned monthly contribution" }
   ],
   "securityConsiderations": "Unofficial API access requires Monarch credentials with full read/write access. Protect credentials, session tokens, and logs, which may contain financial inputs and error details."
 }

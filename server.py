@@ -2588,7 +2588,7 @@ async def get_recurring_transactions(start_date: str | None = None, end_date: st
     amount, account, category, transactionId (when matched), and stream containing
     the merchant ID, frequency, and expected amount. isPast describes the date,
     not whether a bill was paid. Use get_transactions(is_recurring=True) for
-    recorded transactions instead.
+    recorded transactions instead. Use get_recurring_streams for the full list of streams.
     """
     start = parse_flexible_date(start_date) if start_date is not None else None
     end = parse_flexible_end_date(end_date) if end_date is not None else None
@@ -2706,6 +2706,7 @@ async def create_manual_account(
     Args:
         account_name: Display name for the account.
         account_type: Monarch account type name, such as loan, other_asset, or other_liability.
+            The accounts://types resource lists valid types and subtypes.
         account_sub_type: Subtype name within that type, such as mortgage, auto, or line_of_credit.
         balance: Starting balance.
         include_in_net_worth: Whether the account counts toward net worth.
@@ -3227,6 +3228,9 @@ async def analyze_spending_patterns(
 
 _JSON_OBJECT: TypeAdapter[dict[str, JsonValue]] = TypeAdapter(dict[str, JsonValue])
 _JSON_LIST: TypeAdapter[list[JsonValue]] = TypeAdapter(list[JsonValue])
+_HEX_COLOR = re.compile(r"#[0-9A-Fa-f]{6}")
+DUPLICATE_SCAN_PAGE_SIZE = 500
+DUPLICATE_SCAN_MAX_PAGES = 10
 
 
 def _json_object(value: object) -> dict[str, JsonValue]:
@@ -3282,6 +3286,567 @@ def _transaction_paging(response: object, offset: int, limit: int, returned: int
     # Without a total, a full page is the only hint that more rows exist.
     more = offset + returned < total if total is not None else returned > 0 and returned == limit
     return total, offset + returned if more else None
+
+
+def _compact_stream(item: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    stream = _obj(item.get("stream"))
+    merchant = _obj(stream.get("merchant"))
+    forecast = _obj(item.get("nextForecastedTransaction"))
+    category = _obj(item.get("category"))
+    account = _obj(item.get("account"))
+    return {
+        "id": stream.get("id"),
+        "name": stream.get("name"),
+        "merchant": {"id": merchant.get("id"), "name": merchant.get("name")} if merchant else None,
+        "frequency": stream.get("frequency"),
+        "amount": stream.get("amount"),
+        "is_approximate": stream.get("isApproximate"),
+        "is_active": stream.get("isActive"),
+        "review_status": stream.get("reviewStatus"),
+        "recurring_type": stream.get("recurringType"),
+        "base_date": stream.get("baseDate"),
+        "next_date": forecast.get("date"),
+        "next_amount": forecast.get("amount"),
+        "category": category.get("name"),
+        "category_id": category.get("id"),
+        "account": account.get("displayName"),
+        "account_id": account.get("id"),
+    }
+
+
+_GOAL_FIELDS = (
+    "id",
+    "name",
+    "type",
+    "status",
+    "targetAmount",
+    "currentBalance",
+    "progress",
+    "targetDate",
+    "plannedMonthlyContribution",
+    "forecastedCompletionDate",
+    "archivedAt",
+)
+
+
+def _goal_archived(goal: JsonValue) -> bool:
+    return isinstance(goal, dict) and (goal.get("archivedAt") is not None or goal.get("status") == "archived")
+
+
+def _compact_account(account: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    return {
+        "id": account.get("id"),
+        "name": account.get("displayName"),
+        "balance": account.get("displayBalance"),
+        "current_balance": account.get("currentBalance"),
+        "type": _obj(account.get("type")).get("name"),
+        "subtype": _obj(account.get("subtype")).get("name"),
+        "include_in_net_worth": account.get("includeInNetWorth"),
+        "hide_from_summary_list": account.get("hideFromList"),
+        "hide_transactions_from_reports": account.get("hideTransactionsFromReports"),
+    }
+
+
+class RecurringStreamsResult(MMModel):
+    streams: list[JsonValue]
+    count: int
+    verbose: bool
+
+
+class MerchantsResult(MMModel):
+    merchants: list[JsonValue]
+    count: int
+    total_count: int | None
+    offset: int
+    next_offset: int | None
+    verbose: bool
+
+
+class TransactionTagsResult(MMModel):
+    tags: list[JsonValue]
+    count: int
+
+
+class NetWorthHistoryResult(MMModel):
+    start_date: str
+    end_date: str
+    by_account_type: bool
+    history: list[JsonValue]
+    count: int
+    account_types: list[JsonValue] | None = None
+
+
+class DuplicateTransactionsResult(MMModel):
+    start_date: str
+    end_date: str
+    groups: list[JsonValue]
+    count: int
+    transactions_in_range: int | None
+    scan_truncated: bool | None
+
+
+class SavingsGoalsResult(MMModel):
+    goals: list[JsonValue]
+    count: int
+    verbose: bool
+
+
+class CreditScoreHistoryResult(MMModel):
+    enrolled: bool
+    users: list[JsonValue]
+    snapshots: list[JsonValue]
+    count: int
+
+
+class SetTransactionTagsResult(MMModel):
+    transaction_id: str
+    tag_ids: list[str]
+
+
+class CreateTagResult(MMModel):
+    tag: JsonValue
+
+
+class UpdateAccountResult(MMModel):
+    account: JsonValue
+
+
+class DeleteTransactionResult(MMModel):
+    transaction_id: str
+    deleted: bool
+
+
+class DeleteMerchantResult(MMModel):
+    merchant_id: str
+    move_to_merchant_id: str | None
+    deleted: bool
+
+
+class SavingsGoalBudgetResult(MMModel):
+    goal_id: str
+    month: str
+    amount: float
+    apply_to_future: bool
+
+
+@mcp.resource("accounts://types", title="Account Types")
+@resource_errors
+async def account_types_resource() -> str:
+    """Return valid account types and subtypes for creating manual accounts."""
+    await ensure_authenticated()
+    options = await api_call_with_retry("get_account_type_options")
+    return json.dumps(convert_dates_to_strings(options), indent=2)
+
+
+@mcp.tool(annotations=READONLY, title="Get Recurring Streams")
+@track_usage
+async def get_recurring_streams(
+    active_only: bool = True, include_liabilities: bool = True, verbose: bool = False
+) -> RecurringStreamsResult:
+    """List every recurring stream (merchant schedule) with its next forecast.
+
+    Args:
+        active_only: True skips paused streams.
+        include_liabilities: True includes credit-report liability streams such as loans and cards.
+        verbose: True returns the full upstream objects.
+
+    Compact rows: id, name, merchant {id, name}, frequency, amount, is_approximate,
+    is_active, review_status, recurring_type, base_date, next_date, next_amount,
+    category, category_id, account, account_id. merchant.id and merchant.name feed
+    update_recurring_transaction. Forecasts are expectations, not posted transactions.
+    """
+    await ensure_authenticated()
+    response = await api_call_with_retry("get_recurring_transaction_streams", include_liabilities=include_liabilities)
+    items = _JSON_LIST.validate_python(convert_dates_to_strings(extract_list(response, "recurringTransactionStreams")))
+    if active_only:
+        items = [item for item in items if _obj(_obj(item).get("stream")).get("isActive") is not False]
+    streams: list[JsonValue] = items if verbose else [_compact_stream(item) for item in _objects(items)]
+    return RecurringStreamsResult(streams=streams, count=len(streams), verbose=verbose)
+
+
+@mcp.tool(annotations=READONLY, title="Get Merchants")
+@track_usage
+async def get_merchants(limit: int = 100, offset: int = 0, verbose: bool = False) -> MerchantsResult:
+    """List a page of merchants with transaction and rule counts.
+
+    Args:
+        limit: 1–500 (default 100).
+        offset: Zero-based position. Follow next_offset until null.
+        verbose: True returns the full upstream objects.
+
+    Compact rows: id, name, transaction_count, rule_count, has_active_recurring_streams,
+    can_be_deleted. Merchant IDs feed delete_merchant. total_count is Monarch's
+    merchantCount, which may count a different set than the list; rely on next_offset.
+    """
+    if not 1 <= limit <= 500 or offset < 0:
+        raise ValueError("limit must be 1–500 and offset must be nonnegative")
+    await ensure_authenticated()
+    response = _json_object(await api_call_with_retry("get_merchants", limit=limit, offset=offset))
+    merchants = _JSON_LIST.validate_python(extract_list(response, "merchants"))
+    total = response.get("merchantCount")
+    if not verbose:
+        merchants = [
+            {
+                "id": merchant.get("id"),
+                "name": merchant.get("name"),
+                "transaction_count": merchant.get("transactionCount"),
+                "rule_count": merchant.get("ruleCount"),
+                "has_active_recurring_streams": merchant.get("hasActiveRecurringStreams"),
+                "can_be_deleted": merchant.get("canBeDeleted"),
+            }
+            for merchant in _objects(merchants)
+        ]
+    return MerchantsResult(
+        merchants=merchants,
+        count=len(merchants),
+        total_count=total if isinstance(total, int) and not isinstance(total, bool) else None,
+        offset=offset,
+        next_offset=offset + len(merchants) if merchants and len(merchants) == limit else None,
+        verbose=verbose,
+    )
+
+
+@mcp.tool(annotations=READONLY, title="Get Transaction Tags")
+@track_usage
+async def get_transaction_tags() -> TransactionTagsResult:
+    """List household transaction tags: id, name, color, transaction_count.
+
+    Tag IDs feed set_transaction_tags and the tag_ids filter of get_transactions.
+    """
+    await ensure_authenticated()
+    response = _json_object(await api_call_with_retry("get_transaction_tags"))
+    tags: list[JsonValue] = [
+        {
+            "id": tag.get("id"),
+            "name": tag.get("name"),
+            "color": tag.get("color"),
+            "transaction_count": tag.get("transactionCount"),
+        }
+        for tag in _objects(response.get("householdTransactionTags"))
+    ]
+    return TransactionTagsResult(tags=tags, count=len(tags))
+
+
+@mcp.tool(annotations=READONLY, title="Get Net Worth History")
+@track_usage
+async def get_net_worth_history(
+    start_date: str | None = None, end_date: str | None = None, by_account_type: bool = False
+) -> NetWorthHistoryResult:
+    """Get net worth over time: daily totals, or monthly balances per account type.
+
+    Args:
+        start_date: Inclusive start; ISO or natural language. Defaults to one year ago.
+        end_date: Inclusive end. Defaults to today.
+        by_account_type: False returns daily {date, balance} totals across all accounts.
+            True returns monthly {month, account_type, balance} rows plus account_types
+            with each type's group (asset or liability).
+    """
+    today = date.today()
+    start = parse_flexible_date(start_date) if start_date is not None else today - relativedelta(years=1)
+    end = parse_flexible_end_date(end_date) if end_date is not None else today
+    if start > end:
+        raise ValueError(f"Start date ({start.isoformat()}) cannot be after end date ({end.isoformat()})")
+    await ensure_authenticated()
+
+    if not by_account_type:
+        response = _json_object(
+            await api_call_with_retry("get_aggregate_snapshots", start_date=start.isoformat(), end_date=end.isoformat())
+        )
+        history: list[JsonValue] = [
+            {"date": row.get("date"), "balance": row.get("balance")}
+            for row in _objects(response.get("aggregateSnapshots"))
+        ]
+        return NetWorthHistoryResult(
+            start_date=start.isoformat(),
+            end_date=end.isoformat(),
+            by_account_type=False,
+            history=history,
+            count=len(history),
+        )
+
+    # Upstream takes only a start; months after end_date are dropped here.
+    response = _json_object(
+        await api_call_with_retry("get_account_snapshots_by_type", start_date=start.isoformat(), timeframe="month")
+    )
+    first_month, last_month = start.strftime("%Y-%m"), end.strftime("%Y-%m")
+    history = [
+        {"month": row.get("month"), "account_type": row.get("accountType"), "balance": row.get("balance")}
+        for row in _objects(response.get("snapshotsByAccountType"))
+        if isinstance(row.get("month"), str) and first_month <= str(row.get("month"))[:7] <= last_month
+    ]
+    account_types: list[JsonValue] = [
+        {"name": item.get("name"), "group": item.get("group")} for item in _objects(response.get("accountTypes"))
+    ]
+    return NetWorthHistoryResult(
+        start_date=start.isoformat(),
+        end_date=end.isoformat(),
+        by_account_type=True,
+        history=history,
+        count=len(history),
+        account_types=account_types,
+    )
+
+
+@mcp.tool(annotations=READONLY, title="Find Duplicate Transactions")
+@track_usage
+async def find_duplicate_transactions(
+    start_date: str | None = None, end_date: str | None = None, account_id: str | None = None
+) -> DuplicateTransactionsResult:
+    """Find possible duplicate transactions: same date, amount, statement name, and account.
+
+    Args:
+        start_date: Inclusive start; ISO or natural language. Defaults to 90 days before end_date.
+        end_date: Inclusive end. Defaults to today.
+        account_id: Optional account ID from get_accounts.
+
+    Groups are possible duplicates only; review before deleting. Each group lists
+    compact transactions oldest first. Hidden transactions and rows without a
+    statement name are skipped. scan_truncated is true when the range holds more
+    transactions than one scan reads; narrow the dates or account then.
+    """
+    today = date.today()
+    end = parse_flexible_end_date(end_date) if end_date is not None else today
+    start = parse_flexible_date(start_date) if start_date is not None else end - timedelta(days=90)
+    if start > end:
+        raise ValueError(f"Start date ({start.isoformat()}) cannot be after end date ({end.isoformat()})")
+    account_ids = [_require_text(account_id, "account_id")] if account_id is not None else []
+    await ensure_authenticated()
+
+    # The upstream scan does not say whether its page bound cut it short, so count first.
+    count_response = await api_call_with_retry(
+        "get_transactions", limit=1, start_date=start.isoformat(), end_date=end.isoformat(), account_ids=account_ids
+    )
+    total, _ = _transaction_paging(count_response, 0, 1, 0)
+    response = await api_call_with_retry(
+        "find_duplicate_transactions",
+        start_date=start.isoformat(),
+        end_date=end.isoformat(),
+        account_ids=account_ids or None,
+        page_size=DUPLICATE_SCAN_PAGE_SIZE,
+        max_pages=DUPLICATE_SCAN_MAX_PAGES,
+    )
+    groups: list[JsonValue] = []
+    for group in _objects(_JSON_LIST.validate_python(convert_dates_to_strings(response))):
+        transactions = _JSON_LIST.validate_python(format_transactions_compact(_objects(group.get("transactions"))))
+        groups.append(
+            {
+                "date": group.get("date"),
+                "amount": group.get("amount"),
+                "plaid_name": group.get("plaidName"),
+                "account_id": group.get("account_id"),
+                "account_name": group.get("account_name"),
+                "transactions": transactions,
+            }
+        )
+    return DuplicateTransactionsResult(
+        start_date=start.isoformat(),
+        end_date=end.isoformat(),
+        groups=groups,
+        count=len(groups),
+        transactions_in_range=total,
+        scan_truncated=total > DUPLICATE_SCAN_PAGE_SIZE * DUPLICATE_SCAN_MAX_PAGES if total is not None else None,
+    )
+
+
+@mcp.tool(annotations=READONLY, title="Get Savings Goals")
+@track_usage
+async def get_savings_goals(include_archived: bool = False, verbose: bool = False) -> SavingsGoalsResult:
+    """List savings goals with targets, balances, and progress.
+
+    Args:
+        include_archived: True also returns archived goals.
+        verbose: True returns the full upstream objects.
+
+    Compact goals keep whichever of these fields Monarch returns: id, name, type,
+    status, targetAmount, currentBalance, progress, targetDate,
+    plannedMonthlyContribution, forecastedCompletionDate, archivedAt.
+    Goal IDs feed set_savings_goal_budget_amount.
+    """
+    await ensure_authenticated()
+    response = await api_call_with_retry("get_savings_goals")
+    goals = _JSON_LIST.validate_python(convert_dates_to_strings(extract_list(response, "savingsGoals")))
+    if not include_archived:
+        goals = [goal for goal in goals if not _goal_archived(goal)]
+    if not verbose:
+        goals = [
+            {key: goal[key] for key in _GOAL_FIELDS if key in goal} if isinstance(goal, dict) else goal
+            for goal in goals
+        ]
+    return SavingsGoalsResult(goals=goals, count=len(goals), verbose=verbose)
+
+
+@mcp.tool(annotations=READONLY, title="Get Credit Score History")
+@track_usage
+async def get_credit_score_history() -> CreditScoreHistoryResult:
+    """Get household credit score snapshots, oldest first.
+
+    Returns enrolled (whether credit monitoring is set up), users [{id, name}],
+    and snapshots [{date, score, user_id}]; user_id matches a users entry.
+    """
+    await ensure_authenticated()
+    response = _json_object(await api_call_with_retry("get_credit_history"))
+    household = _obj(response.get("myHousehold"))
+    users: list[JsonValue] = [
+        {"id": user.get("id"), "name": user.get("displayName") or user.get("name")}
+        for user in _objects(household.get("users"))
+    ]
+    rows = [
+        {"date": row.get("reportedDate"), "score": row.get("score"), "user_id": _obj(row.get("user")).get("id")}
+        for row in _objects(response.get("creditScoreSnapshots"))
+    ]
+    rows.sort(key=lambda row: str(row["date"] or ""))
+    snapshots = _JSON_LIST.validate_python(rows)
+    return CreditScoreHistoryResult(
+        enrolled=response.get("spinwheelUser") is not None, users=users, snapshots=snapshots, count=len(snapshots)
+    )
+
+
+@mcp.tool(annotations=WRITE_IDEMPOTENT, title="Set Transaction Tags")
+@track_usage
+async def set_transaction_tags(transaction_id: str, tag_ids: list[str]) -> SetTransactionTagsResult:
+    """Replace all tags on a transaction; [] removes every tag. Returns the resulting tag IDs.
+
+    Args:
+        transaction_id: Transaction ID from get_transactions or search_transactions.
+        tag_ids: The complete tag list, as IDs from get_transaction_tags.
+    """
+    transaction_id = _require_text(transaction_id, "transaction_id")
+    tag_ids = [_require_text(tag_id, "tag_ids entries") for tag_id in tag_ids]
+    await ensure_authenticated()
+    result = await api_call_with_retry("set_transaction_tags", transaction_id=transaction_id, tag_ids=tag_ids)
+    transaction = _mutation_payload(result, "setTransactionTags", "tag update").get("transaction")
+    if not isinstance(transaction, dict):
+        raise ValueError("Monarch returned no transaction for the tag update")
+    # Monarch's response only includes tag IDs; names come from get_transaction_tags.
+    result_ids = [str(tag["id"]) for tag in _objects(transaction.get("tags")) if tag.get("id") is not None]
+    return SetTransactionTagsResult(transaction_id=transaction_id, tag_ids=result_ids)
+
+
+@mcp.tool(annotations=WRITE_CREATE, title="Create Transaction Tag")
+@track_usage
+async def create_transaction_tag(name: str, color: str = "#19D2A5") -> CreateTagResult:
+    """Create a household transaction tag and return it with its new ID.
+
+    Args:
+        name: Tag name.
+        color: Hex color as #RRGGBB.
+    """
+    name = _require_text(name, "name")
+    if not _HEX_COLOR.fullmatch(color):
+        raise ValueError("color must be a hex color like #19D2A5")
+    await ensure_authenticated()
+    result = await api_call_with_retry("create_transaction_tag", name=name, color=color)
+    tag = _mutation_payload(result, "createTransactionTag", "tag creation").get("tag")
+    if not isinstance(tag, dict) or not tag.get("id"):
+        raise ValueError("Monarch returned no tag")
+    return CreateTagResult(tag={key: value for key, value in tag.items() if key != "__typename"})
+
+
+@mcp.tool(annotations=WRITE_IDEMPOTENT, title="Update Account")
+@track_usage
+async def update_account(
+    account_id: str,
+    name: str | None = None,
+    balance: FiniteFloat | None = None,
+    include_in_net_worth: bool | None = None,
+    hide_from_summary_list: bool | None = None,
+    hide_transactions_from_reports: bool | None = None,
+) -> UpdateAccountResult:
+    """Update an account's settings, leaving omitted fields unchanged.
+
+    Args:
+        account_id: Account ID from get_accounts.
+        name: New display name.
+        balance: New balance; meant for manual accounts, since synced accounts refresh theirs.
+        include_in_net_worth: Whether the account counts toward net worth.
+        hide_from_summary_list: Whether to hide the account from the accounts list.
+        hide_transactions_from_reports: Whether to exclude its transactions from budgets and reports.
+
+    Provide at least one change. Returns the compact updated account.
+    """
+    account_id = _require_text(account_id, "account_id")
+    if name is not None:
+        name = _require_text(name, "name")
+    changes = (name, balance, include_in_net_worth, hide_from_summary_list, hide_transactions_from_reports)
+    if all(value is None for value in changes):
+        raise ValueError("Provide at least one account setting to change")
+    await ensure_authenticated()
+    result = await api_call_with_retry(
+        "update_account",
+        account_id=account_id,
+        account_name=name,
+        account_balance=balance,
+        include_in_net_worth=include_in_net_worth,
+        hide_from_summary_list=hide_from_summary_list,
+        hide_transactions_from_reports=hide_transactions_from_reports,
+    )
+    account = _mutation_payload(result, "updateAccount", "account update").get("account")
+    if not isinstance(account, dict) or not account.get("id"):
+        raise ValueError("Monarch returned no updated account")
+    return UpdateAccountResult(account=_compact_account(account))
+
+
+@mcp.tool(annotations=WRITE_DESTRUCTIVE, title="Delete Transaction")
+@track_usage
+async def delete_transaction(transaction_id: str) -> DeleteTransactionResult:
+    """Permanently delete a transaction by ID from get_transactions or find_duplicate_transactions."""
+    transaction_id = _require_text(transaction_id, "transaction_id")
+    await ensure_authenticated()
+    if await api_call_with_retry("delete_transaction", transaction_id=transaction_id) is not True:
+        raise ValueError("Monarch did not confirm the transaction deletion")
+    return DeleteTransactionResult(transaction_id=transaction_id, deleted=True)
+
+
+@mcp.tool(annotations=WRITE_DESTRUCTIVE, title="Delete Merchant")
+@track_usage
+async def delete_merchant(merchant_id: str, move_to_merchant_id: str | None = None) -> DeleteMerchantResult:
+    """Delete a merchant; irreversible.
+
+    Args:
+        merchant_id: Merchant ID from get_merchants.
+        move_to_merchant_id: Optional merchant ID from get_merchants. Moving merges the
+            deleted merchant's transactions into this merchant.
+    """
+    merchant_id = _require_text(merchant_id, "merchant_id")
+    if move_to_merchant_id is not None:
+        move_to_merchant_id = _require_text(move_to_merchant_id, "move_to_merchant_id")
+        if move_to_merchant_id == merchant_id:
+            raise ValueError("move_to_merchant_id must differ from merchant_id")
+    await ensure_authenticated()
+    result = await api_call_with_retry(
+        "delete_merchant", merchant_id=merchant_id, move_to_merchant_id=move_to_merchant_id
+    )
+    if _mutation_payload(result, "deleteMerchant", "merchant deletion").get("success") is not True:
+        raise ValueError("Monarch did not confirm the merchant deletion")
+    return DeleteMerchantResult(merchant_id=merchant_id, move_to_merchant_id=move_to_merchant_id, deleted=True)
+
+
+@mcp.tool(annotations=WRITE_IDEMPOTENT, title="Set Savings Goal Budget Amount")
+@track_usage
+async def set_savings_goal_budget_amount(
+    goal_id: str, amount: FiniteFloat, month: str | None = None, apply_to_future: bool = False
+) -> SavingsGoalBudgetResult:
+    """Set a savings goal's planned monthly contribution.
+
+    Args:
+        goal_id: Goal ID from get_savings_goals.
+        amount: Planned contribution for the month.
+        month: Any date in the target month; ISO or natural language. Defaults to the current month.
+        apply_to_future: True also applies the amount to later months.
+    """
+    goal_id = _require_text(goal_id, "goal_id")
+    month_start = _first_of_month(month)
+    await ensure_authenticated()
+    result = await api_call_with_retry(
+        "set_savings_goal_budget_amount",
+        goal_id=goal_id,
+        month=month_start,
+        amount=amount,
+        apply_to_future=apply_to_future,
+    )
+    if _mutation_payload(result, "setSavingsGoalBudgetAmount", "goal budget update").get("success") is not True:
+        raise ValueError("Monarch did not confirm the goal budget update")
+    return SavingsGoalBudgetResult(goal_id=goal_id, month=month_start, amount=amount, apply_to_future=apply_to_future)
 
 
 class _CancellableStdin(AsyncFile[str]):
