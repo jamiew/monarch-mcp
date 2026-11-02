@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.4 (2026-11-01)
 
 - Source installs now use `monarchmoneycommunity` 1.7.1 (and `gql` 4.4.0). It only adds new client methods, so no tool behavior changes. PyPI installs still accept 1.6.0 or later.
 
