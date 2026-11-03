@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Website
+
+- Rebuilt the project website as a shorter product overview, with a new original hero illustration and links to the README for setup, tools, and security details.
+
 ## 0.6.0 (2026-11-02)
 
 ### New tools
