@@ -70,7 +70,7 @@ See README for the tool catalog. Keep these less-obvious contracts intact:
 
 - `get_account_holdings` requires an account ID. `get_all_holdings` fetches brokerage accounts only, then their holdings concurrently; one failure fails the call.
 - Transaction splits are full-replace; an empty list removes all splits.
-- Bulk updates validate each item independently. Invalid types and unknown fields fail that item; omitted/null fields stay unchanged, while valid false and empty-string updates are preserved.
+- Bulk updates take a JSON array or a JSON string, reject more than 100 items before login, and run at most five requests at once. They validate each item independently. Invalid types and unknown fields fail that item; omitted/null fields stay unchanged, while valid false and empty-string updates are preserved.
 - `owner_user_id` assigns a household member; "" explicitly sets Shared, while omitted/null leaves ownership unchanged. Ownership updates override inheritance. Single/bulk mutations validate nested errors and require a returned transaction.
 - Account-history dates filter snapshots locally before paging; upstream accepts only account_id. Rules and history return `count`, `total_count`, and `next_offset`. Transaction/budget requests need ISO strings, not Python dates.
 - Transaction accounts use `displayName`, not `name`; count distinct accounts by ID. Cashflow `summary` is an aggregate list with one nested `summary`; budgets use `budgetData.totalsByMonth`.

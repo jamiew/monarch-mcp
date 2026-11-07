@@ -1954,34 +1954,46 @@ async def update_transaction(
         raise ValueError("Transaction update timed out. Please try again.") from e
 
 
+# Monarch has no bulk mutation, so each item is its own request. Cap both the
+# batch and the requests in flight so one call can't flood the API.
+BULK_UPDATE_MAX_ITEMS = 100
+BULK_UPDATE_CONCURRENCY = 5
+
+
 @mcp.tool(annotations=WRITE_IDEMPOTENT, title="Bulk Update Transactions")
 @track_usage
-async def update_transactions_bulk(updates: str) -> BulkUpdateResult:
-    """Update transactions concurrently, returning per-item results and counts.
+async def update_transactions_bulk(updates: list[JsonValue] | str) -> BulkUpdateResult:
+    """Update up to 100 transactions, returning per-item results and counts.
 
     Args:
-        updates: JSON array encoded as a string. Each item requires a nonempty
-            transaction_id and accepts amount, merchant_name, category_id, date
-            (YYYY-MM-DD), notes, goal_id, hide_from_reports, needs_review, and
-            owner_user_id. Fields have the same meaning as update_transaction;
-            omitted/null fields stay unchanged. Empty notes or goal_id clears that
-            value; empty owner_user_id makes the transaction Shared.
+        updates: Array of update objects, or the same array encoded as a JSON
+            string. Each item requires a nonempty transaction_id and accepts
+            amount, merchant_name, category_id, date (YYYY-MM-DD), notes,
+            goal_id, hide_from_reports, needs_review, and owner_user_id. Fields
+            have the same meaning as update_transaction; omitted/null fields
+            stay unchanged. Empty notes or goal_id clears that value; empty
+            owner_user_id makes the transaction Shared.
 
     Items reject unknown fields and wrong types without coercion; amounts must
     be finite nonzero numbers and flags must be booleans. Invalid items fail individually;
-    valid items still run. The batch is not atomic and does not roll back successes.
+    valid items still run, five at a time. The batch is not atomic and does not roll back successes.
 
     Example:
         [{"transaction_id": "txn_123", "category_id": "cat_456", "notes": ""},
          {"transaction_id": "txn_789", "needs_review": false}]
     """
-    try:
-        updates_list = json.loads(updates)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Invalid JSON in updates parameter: {e}") from e
+    updates_list: JsonValue = updates
+    if isinstance(updates, str):
+        try:
+            updates_list = json.loads(updates)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON in updates parameter: {e}") from e
 
     if not isinstance(updates_list, list):
         raise ValueError("updates parameter must be a JSON array of transaction updates")
+
+    if len(updates_list) > BULK_UPDATE_MAX_ITEMS:
+        raise ValueError(f"updates has {len(updates_list)} items; send at most {BULK_UPDATE_MAX_ITEMS} per call")
 
     if len(updates_list) == 0:
         return BulkUpdateResult(
@@ -1990,6 +2002,7 @@ async def update_transactions_bulk(updates: str) -> BulkUpdateResult:
 
     await ensure_authenticated()
     log.info("bulk_update_start", count=len(updates_list))
+    in_flight = asyncio.Semaphore(BULK_UPDATE_CONCURRENCY)
 
     async def update_single(update_data: object) -> BulkItemResult:
         """Validate and update one item, returning errors without aborting the batch."""
@@ -2003,9 +2016,11 @@ async def update_transactions_bulk(updates: str) -> BulkUpdateResult:
             if update.date is not None:
                 update_params["date"] = datetime.strptime(update.date, "%Y-%m-%d").date().isoformat()
 
-            result = await asyncio.wait_for(
-                api_call_with_retry("update_transaction", **update_params), timeout=WRITE_TIMEOUT_SECONDS
-            )
+            # Wait for a slot before starting the timeout so queued items don't time out.
+            async with in_flight:
+                result = await asyncio.wait_for(
+                    api_call_with_retry("update_transaction", **update_params), timeout=WRITE_TIMEOUT_SECONDS
+                )
             _check_transaction_update(result)
 
             return BulkItemResult(transaction_id=txn_id, status="success")

@@ -1,4 +1,4 @@
-"""Bulk transaction updates validate and fail per item, and run concurrently."""
+"""Bulk transaction updates validate and fail per item, and run with bounded concurrency."""
 
 import asyncio
 import json
@@ -10,6 +10,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from monarchmoney import RequestFailedException
 
 import server
+from tests.conftest import CallTool
 
 
 def updated(transaction_id: str) -> dict[str, Any]:
@@ -94,19 +95,44 @@ async def test_empty_array_updates_nothing(mock_api: AsyncMock) -> None:
     mock_api.assert_not_awaited()
 
 
-async def test_items_run_concurrently(mock_api: AsyncMock) -> None:
-    events: list[str] = []
+async def test_items_run_concurrently_up_to_the_cap(mock_api: AsyncMock) -> None:
+    active = 0
+    peak = 0
 
     async def update(method_name: str, **kwargs: Any) -> dict[str, Any]:
-        txn_id = kwargs["transaction_id"]
-        events.append(f"start_{txn_id}")
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
         await asyncio.sleep(0.01)
-        events.append(f"end_{txn_id}")
-        return updated(txn_id)
+        active -= 1
+        return updated(kwargs["transaction_id"])
 
     mock_api.side_effect = update
-    updates = [{"transaction_id": f"txn_{i}", "amount": float(i * 10 + 10)} for i in range(3)]
+    updates = [{"transaction_id": f"txn_{i}", "amount": 10.0} for i in range(server.BULK_UPDATE_CONCURRENCY * 3)]
 
-    await server.update_transactions_bulk(json.dumps(updates))
+    result = await server.update_transactions_bulk(updates)
 
-    assert events.index("start_txn_1") < events.index("end_txn_0")
+    assert result.summary.succeeded == len(updates)
+    assert peak == server.BULK_UPDATE_CONCURRENCY
+
+
+async def test_oversized_batch_is_rejected_before_login(mock_api: AsyncMock) -> None:
+    updates = [{"transaction_id": f"txn_{i}", "amount": 10.0} for i in range(server.BULK_UPDATE_MAX_ITEMS + 1)]
+
+    with pytest.raises(ToolError):
+        await server.update_transactions_bulk(updates)
+
+    assert isinstance(server.ensure_authenticated, AsyncMock)
+    server.ensure_authenticated.assert_not_awaited()
+    mock_api.assert_not_awaited()
+
+
+async def test_accepts_a_structured_array_over_mcp(mock_api: AsyncMock, call_tool: CallTool) -> None:
+    mock_api.return_value = updated("txn_1")
+
+    result = await call_tool(
+        "update_transactions_bulk", {"updates": [{"transaction_id": "txn_1", "notes": ""}, {"amount": 5}]}
+    )
+
+    assert result["summary"] == {"total": 2, "succeeded": 1, "failed": 1}
+    mock_api.assert_awaited_once_with("update_transaction", transaction_id="txn_1", notes="")

@@ -7,7 +7,7 @@ Use an AI assistant to read and update your [Monarch Money](https://www.monarchm
 
 This rewrite adds these tools to [colvint's original server](https://github.com/colvint/monarch-money-mcp):
 
-- **Search and bulk edits:** `search_transactions` finds merchants or keywords; `update_transactions_bulk` edits transactions in parallel with per-item results.
+- **Search and bulk edits:** `search_transactions` finds merchants or keywords; `update_transactions_bulk` edits up to 100 transactions per call, five at a time, with per-item results.
 - **Spending analysis:** `get_spending_summary` groups totals by category, account, or month; `analyze_spending_patterns` compares months.
 - **One-call overview:** `get_complete_financial_overview` combines accounts, budgets, cashflow, transactions, and categories.
 - **Splits and recurring schedules:** read and replace transaction splits, list every recurring stream with its next forecast, view scheduled occurrences, and edit merchant-wide recurrence.
