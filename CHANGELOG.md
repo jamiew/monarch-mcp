@@ -8,6 +8,7 @@
 - `analyze_spending_patterns` rejects a `lookback_months` below 1.
 - A bulk update item that fails with an unexpected internal error reports "Unexpected error", like a whole tool call does, instead of the internal error text.
 - Invalid dates, queries, and bulk payloads fail before the server logs in to Monarch.
+- Single-value amounts (`create_transaction`, `update_transaction`, `set_budget_amount`, `create_manual_account` balance, and split legs) reject NaN and infinity, as bulk items already did.
 - `scripts/analyze_logs.py` now reads the server's current log lines and Claude Desktop request lines in log files. It skipped both before. It also counts each call once.
 
 ### MCP
@@ -20,7 +21,9 @@
 - Dropped the unused `mcp[cli]` extra, so installs no longer pull in `typer`, `rich`, or `python-dotenv`.
 - `scripts/health_check.py` no longer reads `.env` itself. Run it with `uv run --env-file .env`.
 - CI cancels superseded runs, publishing never runs twice at once, and workflows no longer keep the checkout token.
-- `server.json` lists `MONARCH_SESSION_DIR`.
+- `server.json` lists `MONARCH_SESSION_DIR` and drops the `tools` and `securityConsiderations` fields, which the registry schema doesn't define.
+- The publish workflow pins `mcp-publisher` v1.8.8 and checks its SHA-256.
+- `scripts/analyze_logs.py` no longer reads the `[TOOL_CALL]`, `[ANALYTICS]`, and `[RESULT_SIZE]` markers that releases before 0.3.0 wrote. Nothing writes them now.
 
 ### Website
 

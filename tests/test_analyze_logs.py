@@ -21,11 +21,8 @@ from analyze_logs import (
     find_sequence_patterns,
     generate_recommendations,
     main,
-    parse_analytics_line,
     parse_log_file,
-    parse_result_size_line,
     parse_structlog_line,
-    parse_tool_call_line,
     parse_wrapper_line,
 )
 
@@ -71,87 +68,6 @@ class TestParseWrapperLine:
 
     def test_non_matching_line(self) -> None:
         assert parse_wrapper_line("some random log line") is None
-
-
-class TestParseToolCallLine:
-    """Tests for [TOOL_CALL] legacy marker parsing."""
-
-    def test_basic_tool_call(self) -> None:
-        line = "2025-10-19 10:13:44,068 - __main__ - INFO - [TOOL_CALL] get_transaction_categories | args: {}"
-        call = parse_tool_call_line(line)
-        assert call is not None
-        assert call.tool_name == "get_transaction_categories"
-        assert call.arguments == {}
-
-    def test_tool_call_with_args(self) -> None:
-        line = (
-            "2025-10-19 10:15:22,092 - __main__ - INFO - [TOOL_CALL] search_transactions | args: "
-            "{'query': 'restaurant', 'limit': 1000, 'offset': 0, 'start_date': None, 'end_date': None, "
-            "'account_id': None, 'category_id': None, 'verbose': False}"
-        )
-        call = parse_tool_call_line(line)
-        assert call is not None
-        assert call.tool_name == "search_transactions"
-        assert call.arguments["query"] == "restaurant"
-        assert call.arguments["limit"] == 1000
-        assert call.arguments["verbose"] is False
-        assert call.arguments["start_date"] is None
-
-    def test_non_matching_line(self) -> None:
-        assert parse_tool_call_line("not a tool call") is None
-
-
-class TestParseAnalyticsLine:
-    """Tests for [ANALYTICS] marker parsing."""
-
-    def test_success(self) -> None:
-        line = "2025-10-19 10:13:44,255 - __main__ - INFO - [ANALYTICS] tool_called: get_transaction_categories | time: 0.187s | status: success"
-        result = parse_analytics_line(line)
-        assert result is not None
-        ts_str, tool, time_s, status = result
-        assert tool == "get_transaction_categories"
-        assert time_s == 0.187
-        assert status == "success"
-
-    def test_error(self) -> None:
-        line = (
-            "2025-10-19 11:24:14,775 - __main__ - ERROR - [ANALYTICS] tool_error: update_transactions_bulk | "
-            "time: 0.000s | error: Authentication previously failed"
-        )
-        result = parse_analytics_line(line)
-        assert result is not None
-        ts_str, tool, time_s, status = result
-        assert tool == "update_transactions_bulk"
-        assert status == "error"
-
-    def test_non_matching(self) -> None:
-        assert parse_analytics_line("random line") is None
-
-
-class TestParseResultSizeLine:
-    """Tests for [RESULT_SIZE] marker parsing."""
-
-    def test_with_items(self) -> None:
-        line = "2025-10-19 10:13:44,255 - __main__ - INFO - [RESULT_SIZE] get_transaction_categories | chars: 33,123 | size: 32.35 KB | categories: 67 items"
-        result = parse_result_size_line(line)
-        assert result is not None
-        ts_str, tool, chars, kb, items = result
-        assert tool == "get_transaction_categories"
-        assert chars == 33123
-        assert kb == 32.35
-        assert items == 67
-
-    def test_without_items(self) -> None:
-        line = "2025-10-19 10:16:01,467 - __main__ - INFO - [RESULT_SIZE] get_transactions | chars: 57,090 | size: 55.75 KB"
-        result = parse_result_size_line(line)
-        assert result is not None
-        ts_str, tool, chars, kb, items = result
-        assert tool == "get_transactions"
-        assert chars == 57090
-        assert items is None
-
-    def test_non_matching(self) -> None:
-        assert parse_result_size_line("not a result size line") is None
 
 
 class TestParseStructlogLine:
@@ -218,29 +134,6 @@ def new_york_time(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 class TestParseLogFile:
     """Test the full log file parser with mixed formats."""
 
-    def test_mixed_format_log(self, tmp_path: Path) -> None:
-        log = tmp_path / "test.log"
-        log.write_text(
-            # Wrapper format
-            "2025-10-19T14:13:44.066Z [monarch-money] [info] Message from client: "
-            '{"method":"tools/call","params":{"name":"get_categories","arguments":{}},"jsonrpc":"2.0","id":4} '
-            "{ metadata: undefined }\n"
-            # Legacy TOOL_CALL
-            "2025-10-19 10:13:44,068 - __main__ - INFO - [TOOL_CALL] get_categories | args: {}\n"
-            # Analytics
-            "2025-10-19 10:13:44,255 - __main__ - INFO - [ANALYTICS] tool_called: get_categories | time: 0.187s | status: success\n"
-            # Result size
-            "2025-10-19 10:13:44,255 - __main__ - INFO - [RESULT_SIZE] get_categories | chars: 33,123 | size: 32.35 KB | categories: 67 items\n"
-        )
-        calls = parse_log_file(log)
-        # Wrapper and legacy for same tool should not duplicate
-        assert len(calls) == 1
-        call = calls[0]
-        assert call.tool_name == "get_categories"
-        assert call.execution_time_s == 0.187
-        assert call.status == "success"
-        assert call.result_chars == 33123
-
     def test_server_log_lines_pair_into_calls(self, tmp_path: Path) -> None:
         # The server's stdlib handler prefixes each structlog event with asctime.
         log = tmp_path / "test.log"
@@ -301,8 +194,8 @@ class TestParseLogFile:
     def test_since_filter(self, tmp_path: Path) -> None:
         log = tmp_path / "test.log"
         log.write_text(
-            "2025-10-18 09:00:00,000 - __main__ - INFO - [TOOL_CALL] old_tool | args: {}\n"
-            "2025-10-19 10:00:00,000 - __main__ - INFO - [TOOL_CALL] new_tool | args: {}\n"
+            '2025-10-18 09:00:00,000 - server - INFO - {"tool": "old_tool", "args": {}, "event": "tool_call"}\n'
+            '2025-10-19 10:00:00,000 - server - INFO - {"tool": "new_tool", "args": {}, "event": "tool_call"}\n'
         )
         since = datetime(2025, 10, 19)
         calls = parse_log_file(log, since=since)
@@ -357,7 +250,6 @@ class TestComputeToolStats:
                 arguments={"limit": 100},
                 execution_time_s=0.5,
                 result_chars=10240,
-                result_items=50,
                 status="success",
             ),
             ToolCall(
@@ -366,7 +258,6 @@ class TestComputeToolStats:
                 arguments={"limit": 200},
                 execution_time_s=1.0,
                 result_chars=20480,
-                result_items=100,
                 status="success",
             ),
         ]
@@ -375,7 +266,6 @@ class TestComputeToolStats:
         s = stats["get_tx"]
         assert s.call_count == 2
         assert s.total_chars == 30720
-        assert s.total_items == 150
         assert len(s.sizes_kb) == 2
         assert len(s.times_s) == 2
         assert s.error_count == 0
@@ -474,23 +364,6 @@ class TestRecommendations:
         repeated = [r for r in recs if r.category == "repeated_calls"]
         assert len(repeated) >= 1
 
-    def test_bulk_update_bloat(self) -> None:
-        """Bulk update with large per-item responses should trigger recommendation."""
-        stats = {
-            "update_transactions_bulk": ToolStats(
-                tool_name="update_transactions_bulk",
-                call_count=3,
-                total_chars=29031,
-                total_items=68,
-                sizes_kb=[3.71, 6.91, 17.73],
-                times_s=[5.4, 0.37, 0.9],
-            ),
-        }
-        recs = generate_recommendations(stats, [], [])
-        bloat = [r for r in recs if r.category == "response_bloat"]
-        assert len(bloat) >= 1
-        assert "update_transactions_bulk" in bloat[0].message
-
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -501,9 +374,8 @@ class TestCLI:
     def test_main_with_file(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         log = tmp_path / "test.log"
         log.write_text(
-            "2025-10-19 10:13:44,068 - __main__ - INFO - [TOOL_CALL] get_accounts | args: {}\n"
-            "2025-10-19 10:13:44,255 - __main__ - INFO - [ANALYTICS] tool_called: get_accounts | time: 0.2s | status: success\n"
-            "2025-10-19 10:13:44,255 - __main__ - INFO - [RESULT_SIZE] get_accounts | chars: 5,000 | size: 4.88 KB\n"
+            '2025-10-19 10:13:44,068 - server - INFO - {"tool": "get_accounts", "args": {}, "event": "tool_call"}\n'
+            '2025-10-19 10:13:44,255 - server - INFO - {"tool": "get_accounts", "time_s": 0.2, "result_chars": 5000, "event": "tool_success"}\n'
         )
         main(["--log", str(log)])
         captured = capsys.readouterr()
@@ -512,8 +384,8 @@ class TestCLI:
     def test_main_json(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         log = tmp_path / "test.log"
         log.write_text(
-            "2025-10-19 10:13:44,068 - __main__ - INFO - [TOOL_CALL] get_accounts | args: {}\n"
-            "2025-10-19 10:13:44,255 - __main__ - INFO - [ANALYTICS] tool_called: get_accounts | time: 0.2s | status: success\n"
+            '2025-10-19 10:13:44,068 - server - INFO - {"tool": "get_accounts", "args": {}, "event": "tool_call"}\n'
+            '2025-10-19 10:13:44,255 - server - INFO - {"tool": "get_accounts", "time_s": 0.2, "event": "tool_success"}\n'
         )
         main(["--log", str(log), "--json"])
         captured = capsys.readouterr()

@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Analyze Monarch Money MCP logs and suggest ways to reduce data usage.
 
-Supports 3 log formats:
+Supports 2 log formats:
   1. Claude Desktop wrapper: `Message from client: {"method":"tools/call",...}`
-  2. Legacy markers: `[TOOL_CALL]`, `[ANALYTICS]`, `[RESULT_SIZE]`
-  3. Structlog JSON, as the server writes it: `... - server - INFO - {"event": "tool_success", ...}`
+  2. Structlog JSON, as the server writes it: `... - server - INFO - {"event": "tool_success", ...}`
 
 Usage:
   uv run scripts/analyze_logs.py                     # full report
@@ -30,7 +29,6 @@ CHARS_PER_TOKEN = 4
 
 # Thresholds for recommendations
 LARGE_RESULT_KB = 100
-HIGH_ITEM_COUNT = 500
 LOW_VARIANCE_THRESHOLD = 0.1  # coefficient of variation
 
 
@@ -43,7 +41,6 @@ class ToolCall:
     arguments: dict[str, object]
     execution_time_s: float | None = None
     result_chars: int | None = None
-    result_items: int | None = None
     status: str = "unknown"
     line_number: int = 0
 
@@ -65,7 +62,6 @@ class ToolStats:
     tool_name: str
     call_count: int = 0
     total_chars: int = 0
-    total_items: int = 0
     sizes_kb: list[float] = field(default_factory=list)
     times_s: list[float] = field(default_factory=list)
     arg_patterns: dict[str, Counter[str]] = field(default_factory=lambda: defaultdict(Counter))
@@ -99,31 +95,15 @@ class Recommendation:
 # Claude Desktop wrapper format. The JSON message may be followed by a metadata suffix.
 _WRAPPER_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\s+\[.*?\]\s+\[info\]\s+Message from client:\s+(?=\{)")
 
-# Legacy marker formats
-_TOOL_CALL_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}\s+[\d:,]+)\s+.*\[TOOL_CALL\]\s+(\w+)\s+\|\s+args:\s+(.+)$")
-_ANALYTICS_RE = re.compile(
-    r"^(\d{4}-\d{2}-\d{2}\s+[\d:,]+)\s+.*\[ANALYTICS\]\s+tool_(?:called|error):\s+(\w+)\s+\|\s+"
-    r"time:\s+([\d.]+)s\s+\|\s+status:\s+(\w+)"
-)
-_ANALYTICS_ERROR_RE = re.compile(
-    r"^(\d{4}-\d{2}-\d{2}\s+[\d:,]+)\s+.*\[ANALYTICS\]\s+tool_error:\s+(\w+)\s+\|\s+"
-    r"time:\s+([\d.]+)s\s+\|\s+error:\s+(.+)$"
-)
-_RESULT_SIZE_RE = re.compile(
-    r"^(\d{4}-\d{2}-\d{2}\s+[\d:,]+)\s+.*\[RESULT_SIZE\]\s+(\w+)\s+\|\s+"
-    r"chars:\s+([\d,]+)\s+\|\s+size:\s+([\d.]+)\s+KB"
-)
-_RESULT_ITEMS_RE = re.compile(r"\|\s+(?:transactions|categories|results):\s+(\d+)\s+items")
-
 
 def parse_timestamp_wrapper(ts: str) -> datetime:
     """Parse a wrapper line's UTC timestamp as naive local time, like the server's own log times."""
     return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone().replace(tzinfo=None)
 
 
-def parse_timestamp_legacy(ts: str) -> datetime:
-    """Parse timestamp from legacy log lines (2025-10-19 10:13:44,068)."""
-    return datetime.strptime(ts.strip(), "%Y-%m-%d %H:%M:%S,%f")
+def parse_asctime(ts: str) -> datetime:
+    """Parse the stdlib logging timestamp that prefixes server lines (2025-10-19 10:13:44,068)."""
+    return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S,%f")
 
 
 def parse_wrapper_line(line: str) -> ToolCall | None:
@@ -149,53 +129,6 @@ def parse_wrapper_line(line: str) -> ToolCall | None:
     )
 
 
-def parse_tool_call_line(line: str) -> ToolCall | None:
-    """Parse a [TOOL_CALL] legacy marker line."""
-    m = _TOOL_CALL_RE.match(line)
-    if not m:
-        return None
-    ts_str, tool_name, args_str = m.group(1), m.group(2), m.group(3)
-
-    # Convert Python-style dict text to JSON; preserve unparseable input below.
-    try:
-        json_str = args_str.replace("None", "null").replace("True", "true").replace("False", "false")
-        json_str = json_str.replace("'", '"')
-        arguments = json.loads(json_str)
-    except (json.JSONDecodeError, ValueError):
-        arguments = {"_raw": args_str}
-
-    return ToolCall(
-        timestamp=parse_timestamp_legacy(ts_str),
-        tool_name=tool_name,
-        arguments=arguments,
-    )
-
-
-def parse_analytics_line(line: str) -> tuple[str, str, float, str] | None:
-    """Parse a [ANALYTICS] line → (timestamp_str, tool_name, time_s, status)."""
-    m = _ANALYTICS_ERROR_RE.match(line)
-    if m:
-        return (m.group(1), m.group(2), float(m.group(3)), "error")
-    m = _ANALYTICS_RE.match(line)
-    if m:
-        return (m.group(1), m.group(2), float(m.group(3)), m.group(4))
-    return None
-
-
-def parse_result_size_line(line: str) -> tuple[str, str, int, float, int | None] | None:
-    """Parse a [RESULT_SIZE] line → (timestamp_str, tool_name, chars, kb, items?)."""
-    m = _RESULT_SIZE_RE.match(line)
-    if not m:
-        return None
-    ts_str = m.group(1)
-    tool_name = m.group(2)
-    chars = int(m.group(3).replace(",", ""))
-    kb = float(m.group(4))
-    items_m = _RESULT_ITEMS_RE.search(line)
-    items = int(items_m.group(1)) if items_m else None
-    return (ts_str, tool_name, chars, kb, items)
-
-
 _WRAPPER_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}T[\d:.]+Z)")
 _ASCTIME_RE = re.compile(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3})")
 
@@ -218,7 +151,7 @@ def parse_structlog_line(line: str) -> ToolCall | None:
         return None
 
     event = data.get("event", "")
-    if event not in ("tool_called", "tool_success", "tool_error", "tool_call"):
+    if event not in ("tool_call", "tool_success", "tool_error"):
         return None
 
     tool_name = data.get("tool", "")
@@ -229,7 +162,7 @@ def parse_structlog_line(line: str) -> ToolCall | None:
     if m := _WRAPPER_TS_RE.match(line):
         ts = parse_timestamp_wrapper(m.group(1))
     elif m := _ASCTIME_RE.search(line[:start]):
-        ts = parse_timestamp_legacy(m.group(1))
+        ts = parse_asctime(m.group(1))
     elif ts_value := data.get("timestamp") or data.get("ts"):
         try:
             ts = datetime.fromisoformat(ts_value)
@@ -254,32 +187,21 @@ def parse_structlog_line(line: str) -> ToolCall | None:
 def parse_log_file(path: Path, since: datetime | None = None) -> list[ToolCall]:
     """Parse supported log formats and merge timing and size records.
 
-    Merge legacy [TOOL_CALL] records into the latest call for that tool when
-    their timestamps differ by less than two seconds. A structured tool_call
-    merges into a wrapper request for the same tool within two seconds, and each
-    tool_success or tool_error completes that tool's oldest open call. The logs
-    carry no request IDs, so overlapping calls to one tool may swap timings.
+    A structured tool_call merges into a wrapper request for the same tool within
+    two seconds, and each tool_success or tool_error completes that tool's oldest
+    open call. The logs carry no request IDs, so overlapping calls to one tool may
+    swap timings.
     """
     calls: list[ToolCall] = []
-    # Most recent ToolCall per tool_name, for attaching analytics/size data
-    pending_calls: dict[str, ToolCall] = {}
     # Wrapper requests not yet matched to a server tool_call, and calls awaiting a result.
     wrapper_calls: defaultdict[str, deque[ToolCall]] = defaultdict(deque)
     open_calls: defaultdict[str, deque[ToolCall]] = defaultdict(deque)
-
-    def _is_recent(ts: datetime, other: datetime) -> bool:
-        return abs((ts - other).total_seconds()) < 2.0
-
-    def _is_recent_dup(tool_name: str, ts: datetime) -> bool:
-        """Check if a call is a duplicate of the most recent pending call for this tool."""
-        prev = pending_calls.get(tool_name)
-        return prev is not None and _is_recent(ts, prev.timestamp)
 
     def _take_wrapper_call(tool_name: str, ts: datetime) -> ToolCall | None:
         queue = wrapper_calls[tool_name]
         while queue:
             candidate = queue.popleft()
-            if _is_recent(ts, candidate.timestamp):
+            if abs((ts - candidate.timestamp).total_seconds()) < 2.0:
                 return candidate
         return None
 
@@ -291,38 +213,7 @@ def parse_log_file(path: Path, since: datetime | None = None) -> list[ToolCall]:
                 if since and call.timestamp < since:
                     continue
                 calls.append(call)
-                pending_calls[call.tool_name] = call
                 wrapper_calls[call.tool_name].append(call)
-                continue
-
-            call = parse_tool_call_line(line)
-            if call:
-                call.line_number = line_num
-                if since and call.timestamp < since:
-                    continue
-                if _is_recent_dup(call.tool_name, call.timestamp):
-                    prev = pending_calls[call.tool_name]
-                    if not prev.arguments and call.arguments:
-                        prev.arguments = call.arguments
-                    continue
-                calls.append(call)
-                pending_calls[call.tool_name] = call
-                continue
-
-            analytics = parse_analytics_line(line)
-            if analytics:
-                ts_str, tool_name, time_s, status = analytics
-                if tool_name in pending_calls:
-                    pending_calls[tool_name].execution_time_s = time_s
-                    pending_calls[tool_name].status = status
-                continue
-
-            size_info = parse_result_size_line(line)
-            if size_info:
-                ts_str, tool_name, chars, kb, items = size_info
-                if tool_name in pending_calls:
-                    pending_calls[tool_name].result_chars = chars
-                    pending_calls[tool_name].result_items = items
                 continue
 
             call = parse_structlog_line(line)
@@ -346,7 +237,6 @@ def parse_log_file(path: Path, since: datetime | None = None) -> list[ToolCall]:
                     continue
                 else:
                     calls.append(call)
-                pending_calls[call.tool_name] = call
 
     return calls
 
@@ -412,8 +302,6 @@ def compute_tool_stats(calls: list[ToolCall]) -> dict[str, ToolStats]:
         if call.result_chars is not None:
             s.total_chars += call.result_chars
             s.sizes_kb.append(call.result_chars / 1024)
-            if call.result_items is not None:
-                s.total_items += call.result_items
 
         if call.execution_time_s is not None:
             s.times_s.append(call.execution_time_s)
@@ -544,21 +432,6 @@ def generate_recommendations(
                     )
                 )
 
-        # High item counts suggest reviewing limits.
-        if s.total_items > 0:
-            avg_items = s.total_items / s.call_count
-            if avg_items >= HIGH_ITEM_COUNT:
-                recs.append(
-                    Recommendation(
-                        priority="medium",
-                        category="missing_limits",
-                        message=(
-                            f"`{tool_name}` averages {avg_items:.0f} items per call. "
-                            f"Consider lower default limits or pagination."
-                        ),
-                    )
-                )
-
         # Rule 4: Verbose mode usage
         verbose_counts = s.arg_patterns.get("verbose", Counter())
         verbose_true = verbose_counts.get("True", 0) + verbose_counts.get("true", 0)
@@ -603,31 +476,6 @@ def generate_recommendations(
                             f"Pattern `{a}` → `{b}` seen {seq_pattern.count}x. "
                             f"Consider caching categories with invalidation when they change."
                         ),
-                    )
-                )
-
-    # Rule 7: Bulk update response bloat
-    bulk_stats = stats.get("update_transactions_bulk")
-    if bulk_stats and bulk_stats.sizes_kb:
-        avg_kb = mean(bulk_stats.sizes_kb)
-        avg_items = bulk_stats.total_items / bulk_stats.call_count if bulk_stats.call_count else 0
-        if avg_items > 0:
-            per_item_kb = avg_kb / avg_items
-            if per_item_kb > 0.2:  # more than 200 bytes per item is bloated for a status response
-                compact_kb = avg_items * 0.05  # ~50 bytes for {id, status}
-                savings = (avg_kb - compact_kb) * bulk_stats.call_count
-                recs.append(
-                    Recommendation(
-                        priority="high",
-                        category="response_bloat",
-                        message=(
-                            f"`update_transactions_bulk` returns large responses "
-                            f"(~{per_item_kb:.1f} KB/item, avg {avg_items:.0f} items). "
-                            f"If these include redundant fields, compact responses could save ~{savings:.0f} KB / "
-                            f"~{int(savings * 1024 / CHARS_PER_TOKEN):,} tokens."
-                        ),
-                        estimated_savings_kb=savings,
-                        estimated_savings_tokens=int(savings * 1024 / CHARS_PER_TOKEN),
                     )
                 )
 

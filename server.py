@@ -557,7 +557,7 @@ class TransactionSplit(BaseModel):
     sign convention: negative expenses, positive income.
     """
 
-    amount: float
+    amount: FiniteFloat
     category_id: str | None = None
     merchant_name: str | None = None
     notes: str | None = None
@@ -1816,7 +1816,7 @@ async def get_transaction_categories(verbose: bool = False) -> CategoriesResult:
 @mcp.tool(annotations=WRITE_CREATE, title="Create Transaction")
 @track_usage
 async def create_transaction(
-    amount: float,
+    amount: FiniteFloat,
     merchant_name: str,
     account_id: str,
     date: str,
@@ -1879,7 +1879,7 @@ async def create_transaction(
 @track_usage
 async def update_transaction(
     transaction_id: str,
-    amount: float | None = None,
+    amount: FiniteFloat | None = None,
     merchant_name: str | None = None,
     category_id: str | None = None,
     date: str | None = None,
@@ -2628,7 +2628,7 @@ async def update_recurring_transaction(
 @mcp.tool(annotations=WRITE_IDEMPOTENT, title="Set Budget Amount")
 @track_usage
 async def set_budget_amount(
-    category_id: str, amount: float, month: str | None = None, apply_to_future: bool = False
+    category_id: str, amount: FiniteFloat, month: str | None = None, apply_to_future: bool = False
 ) -> SetBudgetResult:
     """Set a category's monthly budget amount.
 
@@ -2664,7 +2664,7 @@ async def create_manual_account(
     account_name: str,
     account_type: str,
     account_sub_type: str,
-    balance: float,
+    balance: FiniteFloat,
     include_in_net_worth: bool = True,
 ) -> CreateAccountResult:
     """Create a manually tracked account and return its new ID.
