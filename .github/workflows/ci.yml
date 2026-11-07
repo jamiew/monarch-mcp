@@ -41,7 +41,12 @@ jobs:
         run: uv run --locked mypy server.py
 
       - name: Run tests with coverage
+        if: matrix.python-version == '3.12'
         run: uv run --locked python -m pytest tests/ -v --tb=short --cov=. --cov-report=term-missing --cov-report=xml
+
+      - name: Run tests
+        if: matrix.python-version != '3.12'
+        run: uv run --locked python -m pytest tests/ -v --tb=short
 
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.12'

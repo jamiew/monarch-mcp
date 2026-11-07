@@ -15,6 +15,7 @@
 ### Development
 
 - Tool result sizes are logged only when `MONARCH_LOG_RESULT_SIZE=true`, since measuring serializes each result a second time. `scripts/analyze_logs.py` reports sizes only from those logs.
+- CI collects coverage on Python 3.12 only. Other versions just run the tests.
 
 ## 0.7.0 (2026-11-07)
 
