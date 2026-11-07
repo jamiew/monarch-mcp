@@ -390,7 +390,7 @@ def caller_message(error: Exception) -> str:
 
 
 def track_usage(func: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
-    """Log tool arguments, timing, errors, and result sizes."""
+    """Log tool arguments, timing, errors, and (opt-in) result sizes."""
 
     @functools.wraps(func)
     async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
@@ -405,24 +405,20 @@ def track_usage(func: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
         try:
             result = await func(*args, **kwargs)
             execution_time = time.time() - start_time
+            size_fields: dict[str, int | float] = {}
 
-            # Measure serialized character count, not transport bytes.
-            if isinstance(result, BaseModel):
-                payload = result.model_dump_json()
-            elif isinstance(result, str):
-                payload = result
-            else:
-                payload = str(result) if result else ""
-            result_chars = len(payload)
-            result_kb = result_chars / 1024
+            # Measuring means serializing the result a second time, so it is opt-in.
+            # Count serialized characters, not transport bytes.
+            if os.getenv("MONARCH_LOG_RESULT_SIZE") == "true":
+                if isinstance(result, BaseModel):
+                    payload = result.model_dump_json()
+                elif isinstance(result, str):
+                    payload = result
+                else:
+                    payload = str(result) if result else ""
+                size_fields = {"result_chars": len(payload), "result_kb": round(len(payload) / 1024, 2)}
 
-            log.info(
-                "tool_success",
-                tool=tool_name,
-                time_s=round(execution_time, 3),
-                result_chars=result_chars,
-                result_kb=round(result_kb, 2),
-            )
+            log.info("tool_success", tool=tool_name, time_s=round(execution_time, 3), **size_fields)
 
             return result
 
