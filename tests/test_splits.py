@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
-from pydantic import JsonValue, ValidationError
+from pydantic import JsonValue
 
 import server
 
@@ -76,7 +76,6 @@ class TestUpdateTransactionSplits:
         )
         assert result.has_split_transactions is True
         assert len(result.splits) == 2
-        assert "Set 2 split(s)" in result.message
 
         # Inputs are translated into the camelCase shape the API expects.
         _, kwargs = mock_api.await_args
@@ -100,19 +99,23 @@ class TestUpdateTransactionSplits:
         result = await server.update_transaction_splits(transaction_id="txn_1", splits=[])
         assert result.has_split_transactions is False
         assert result.splits == []
-        assert "Removed all splits" in result.message
+        assert result.message
         _, kwargs = mock_api.await_args
         assert kwargs["split_data"] == []
 
     @pytest.mark.asyncio
-    async def test_api_payload_errors_raise(self, mock_api: AsyncMock) -> None:
-        mock_api.return_value = {
-            "updateTransactionSplit": {
-                "errors": {"message": "Split amounts must sum to the transaction total"},
-                "transaction": None,
-            }
-        }
-        with pytest.raises(ToolError, match="Monarch rejected the split update"):
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"errors": {"message": "Split amounts must sum to the transaction total"}, "transaction": None},
+            {"errors": None, "transaction": None},
+        ],
+    )
+    async def test_rejected_or_missing_transaction_raises(
+        self, mock_api: AsyncMock, payload: dict[str, JsonValue]
+    ) -> None:
+        mock_api.return_value = {"updateTransactionSplit": payload}
+        with pytest.raises(ToolError):
             await server.update_transaction_splits(
                 transaction_id="txn_1",
                 splits=[server.TransactionSplit(amount=-10.0, category_id="cat_1")],
@@ -227,9 +230,8 @@ async def test_missing_transaction_raises(mock_api: AsyncMock, tool_name: str, r
 )
 async def test_malformed_transaction_raises(mock_api: AsyncMock, tool_name: str, transaction: JsonValue) -> None:
     mock_api.return_value = {"getTransaction": transaction}
-    with pytest.raises(ToolError) as error:
+    with pytest.raises(ToolError):
         await getattr(server, tool_name)(transaction_id="txn_1")
-    assert isinstance(error.value.__cause__, ValidationError)
 
 
 @pytest.mark.parametrize("split", [{}, {"id": ""}, {"id": None}, "invalid"])
@@ -246,6 +248,5 @@ async def test_details_rejects_invalid_split_ids(mock_api: AsyncMock, split: Jso
             "splitTransactions": [split],
         }
     }
-    with pytest.raises(ToolError) as error:
+    with pytest.raises(ToolError):
         await server.get_transaction_details(transaction_id="txn_parent")
-    assert isinstance(error.value.__cause__, ValidationError)

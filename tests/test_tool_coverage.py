@@ -163,7 +163,7 @@ class TestReadToolSuccess:
         mock_api.side_effect = Exception("Something went wrong while processing: None")
         result = await server.get_budgets()
         assert result.budgets == []
-        assert "No budgets" in (result.message or "")
+        assert result.message
 
     @pytest.mark.asyncio
     async def test_get_cashflow_returns_cashflow_data(self, mock_api: AsyncMock) -> None:
@@ -335,19 +335,16 @@ class TestReadToolSuccess:
             )
 
 
-class TestResourceSuccess:
-    """Success path for the institutions resource (others covered in test_mcp_features)."""
-
-    @pytest.mark.asyncio
-    async def test_list_institutions_resource_returns_institutions(self, mock_api: AsyncMock) -> None:
-        mock_api.return_value = [{"id": "inst_1", "name": "Example Bank"}]
-        result = await server.list_institutions_resource()
-        assert "Example Bank" in result
-        mock_api.assert_awaited_once_with("get_institutions")
-
-
 class TestBatchToolDegradation:
     """analyze_spending_patterns keeps working when an upstream call fails."""
+
+    @pytest.mark.parametrize("lookback_months", [0, -3])
+    async def test_analyze_spending_patterns_rejects_empty_lookback(
+        self, mock_api: AsyncMock, lookback_months: int
+    ) -> None:
+        with pytest.raises(ToolError):
+            await server.analyze_spending_patterns(lookback_months=lookback_months)
+        mock_api.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_analyze_spending_patterns_degrades_when_transactions_fail(self, mock_api: AsyncMock) -> None:

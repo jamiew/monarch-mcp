@@ -1,19 +1,15 @@
 #!/usr/bin/env python3
 """Check Monarch Money authentication and API connectivity.
 
-Run with: uv run scripts/health_check.py
+Run with: uv run --env-file .env scripts/health_check.py
 
 Requires MONARCH_EMAIL and MONARCH_PASSWORD; MONARCH_MFA_SECRET is optional.
-Loads the repository's .env file if present, overriding exported values.
 Uses the upstream client's default session handling.
 """
 
 import asyncio
 import os
 import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from monarchmoney import MonarchMoney
 
@@ -26,7 +22,7 @@ async def health_check() -> bool:
 
     if not email or not password:
         print("❌ MONARCH_EMAIL and MONARCH_PASSWORD environment variables required")
-        print("   Set them in .env file or export them")
+        print("   Run with: uv run --env-file .env scripts/health_check.py")
         return False
 
     print("Testing Monarch Money API connectivity...")
@@ -79,20 +75,7 @@ async def health_check() -> bool:
 
 def main() -> int:
     """Run health check and return exit code."""
-    # Unlike the server and integration tests, this script loads .env.
-    env_file = Path(__file__).parent.parent / ".env"
-    if env_file.exists():
-        print(f"Loading credentials from {env_file}")
-        with open(env_file) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key, _, value = line.partition("=")
-                    value = value.strip().strip('"').strip("'")
-                    os.environ[key.strip()] = value
-
-    success = asyncio.run(health_check())
-    return 0 if success else 1
+    return 0 if asyncio.run(health_check()) else 1
 
 
 if __name__ == "__main__":

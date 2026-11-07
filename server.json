@@ -40,6 +40,12 @@
           "description": "Set to 'true' to skip the cached session",
           "isRequired": false,
           "isSecret": false
+        },
+        {
+          "name": "MONARCH_SESSION_DIR",
+          "description": "Directory for the cached session (default ~/.monarch-mcp)",
+          "isRequired": false,
+          "isSecret": false
         }
       ]
     }

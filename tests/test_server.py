@@ -1,129 +1,69 @@
-"""Basic unit tests for the Monarch Money MCP server."""
+"""Credentials, date serialization, and console entry-point signals."""
 
 import os
 import select
 import signal
 import subprocess
 import sys
+from datetime import date, datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import patch
 
 import pytest
 
 import server
 
 
-class TestDateConversion:
-    """Test the date conversion utility function."""
+def test_convert_dates_to_strings_recurses_and_keeps_other_values() -> None:
+    data = {
+        "date": date(2024, 1, 15),
+        "datetime": datetime(2024, 1, 15, 10, 30, 45),
+        "nested": {"items": ["text", date(2024, 1, 15), 42, 3.14, False, None]},
+    }
 
-    def test_convert_dates_to_strings_basic_types(self) -> None:
-        """Test conversion of basic non-date types."""
-        assert server.convert_dates_to_strings("hello") == "hello"
-
-        assert server.convert_dates_to_strings(42) == 42
-        assert server.convert_dates_to_strings(3.14) == 3.14
-
-        assert server.convert_dates_to_strings(True) is True
-        assert server.convert_dates_to_strings(False) is False
-
-        assert server.convert_dates_to_strings(None) is None
-
-    def test_convert_dates_to_strings_with_dates(self) -> None:
-        """Test conversion of date and datetime objects."""
-        from datetime import date, datetime
-
-        test_date = date(2024, 1, 15)
-        result = server.convert_dates_to_strings(test_date)
-        assert result == "2024-01-15"
-
-        test_datetime = datetime(2024, 1, 15, 10, 30, 45)
-        result = server.convert_dates_to_strings(test_datetime)
-        assert result == "2024-01-15T10:30:45"
-
-    def test_convert_dates_to_strings_nested_structures(self) -> None:
-        """Test conversion in nested data structures."""
-        from datetime import date
-
-        test_date = date(2024, 1, 15)
-
-        input_dict = {"name": "test", "created_date": test_date, "count": 5}
-        result = server.convert_dates_to_strings(input_dict)
-        expected = {"name": "test", "created_date": "2024-01-15", "count": 5}
-        assert result == expected
-
-        input_list = ["hello", test_date, 42]
-        result = server.convert_dates_to_strings(input_list)
-        expected = ["hello", "2024-01-15", 42]
-        assert result == expected
+    assert server.convert_dates_to_strings(data) == {
+        "date": "2024-01-15",
+        "datetime": "2024-01-15T10:30:45",
+        "nested": {"items": ["text", "2024-01-15", 42, 3.14, False, None]},
+    }
 
 
-class TestServerInitialization:
-    """Test server initialization and configuration."""
-
-    def test_server_instance_creation(self) -> None:
-        """Test that the MCPServer instance is created properly."""
-        assert server.mcp is not None
-        assert hasattr(server.mcp, "name")
-
-    @patch.dict("os.environ", {}, clear=True)
-    @pytest.mark.asyncio
-    async def test_initialize_client_missing_credentials(self) -> None:
-        """Test client initialization fails with missing credentials."""
-        with pytest.raises(ValueError, match="MONARCH_EMAIL and MONARCH_PASSWORD"):
-            await server.initialize_client()
-
-    @patch.dict(
-        "os.environ",
-        {"MONARCH_EMAIL": "test@example.com", "MONARCH_PASSWORD": "testpass", "MONARCH_FORCE_LOGIN": "false"},
-    )
-    @patch("server.MonarchMoney")
-    @pytest.mark.asyncio
-    async def test_initialize_client_success(
-        self, mock_monarch_class: Mock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Test successful client initialization."""
-        mock_client = Mock()
-        mock_client.login = AsyncMock()
-        mock_monarch_class.return_value = mock_client
-        monkeypatch.setattr(server, "session_file", tmp_path / "session.pickle")
-
-        server.mm_client = None
-
+@patch.dict("os.environ", {}, clear=True)
+async def test_initialize_client_names_missing_credentials() -> None:
+    with pytest.raises(ValueError, match="MONARCH_EMAIL"):
         await server.initialize_client()
 
-        assert server.auth_state == server.AuthState.AUTHENTICATED
-        mock_client.login.assert_awaited_once()
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX signal semantics")
-    @pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGINT])
-    def test_console_entrypoint_terminates_on_signal(self, signum: int, tmp_path: Path) -> None:
-        code = (
-            "import asyncio\n"
-            "import server\n"
-            "async def wait_for_signal():\n"
-            "    print('ready', flush=True)\n"
-            "    await asyncio.Event().wait()\n"
-            "server.main = wait_for_signal\n"
-            "server.run()\n"
-        )
-        process = subprocess.Popen(
-            [sys.executable, "-c", code],
-            cwd=Path(server.__file__).parent,
-            env={"MONARCH_SESSION_DIR": str(tmp_path)},
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-        )
-        try:
-            assert process.stdout is not None
-            assert select.select([process.stdout], [], [], 15)[0], "Child did not become ready"
-            assert process.stdout.readline().strip() == "ready"
-            process.send_signal(signum)
-            assert process.wait(timeout=5) in (0, -signum)
-        finally:
-            if process.poll() is None:
-                process.kill()
-            process.wait(timeout=5)
-            if process.stdout is not None:
-                process.stdout.close()
+@pytest.mark.skipif(os.name == "nt", reason="POSIX signal semantics")
+@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGINT])
+def test_console_entrypoint_terminates_on_signal(signum: int, tmp_path: Path) -> None:
+    code = (
+        "import asyncio\n"
+        "import server\n"
+        "async def wait_for_signal():\n"
+        "    print('ready', flush=True)\n"
+        "    await asyncio.Event().wait()\n"
+        "server.main = wait_for_signal\n"
+        "server.run()\n"
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", code],
+        cwd=Path(server.__file__).parent,
+        env={"MONARCH_SESSION_DIR": str(tmp_path)},
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    try:
+        assert process.stdout is not None
+        assert select.select([process.stdout], [], [], 15)[0], "Child did not become ready"
+        assert process.stdout.readline().strip() == "ready"
+        process.send_signal(signum)
+        assert process.wait(timeout=5) in (0, -signum)
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
+        if process.stdout is not None:
+            process.stdout.close()

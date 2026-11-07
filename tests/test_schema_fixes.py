@@ -1,4 +1,4 @@
-"""Transaction behavior through MCPServer and the real client, with offline GraphQL."""
+"""Transaction create/update/filter behavior through MCPServer, mostly via the real client with offline GraphQL."""
 
 import json
 from unittest.mock import AsyncMock
@@ -129,3 +129,45 @@ async def test_empty_merchant_name_fails_before_creation(graphql: AsyncMock) -> 
             amount=-50.00, merchant_name="", account_id="acc_123", date="2024-01-15", category_id="cat_456"
         )
     graphql.assert_not_awaited()
+
+
+async def test_create_transaction_sends_fields_without_changing_balance(
+    mock_api: AsyncMock, call_tool: CallTool
+) -> None:
+    mock_api.return_value = {"createTransaction": {"errors": None, "transaction": {"id": "txn_new"}}}
+    await call_tool(
+        "create_transaction",
+        {
+            "amount": -12.5,
+            "merchant_name": "Corner Deli",
+            "account_id": "acc_123",
+            "date": "2024-01-15",
+            "category_id": "cat_456",
+            "notes": "Lunch",
+        },
+    )
+    assert mock_api.await_args.kwargs == {
+        "amount": -12.5,
+        "merchant_name": "Corner Deli",
+        "category_id": "cat_456",
+        "account_id": "acc_123",
+        "date": "2024-01-15",
+        "notes": "Lunch",
+        "update_balance": False,
+    }
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"createTransaction": {"errors": {"message": "Invalid account", "code": "BAD_INPUT"}, "transaction": None}},
+        {"createTransaction": {"errors": None, "transaction": None}},
+    ],
+    ids=["rejected", "missing"],
+)
+async def test_create_transaction_fails_when_monarch_creates_nothing(mock_api: AsyncMock, response: JsonValue) -> None:
+    mock_api.return_value = response
+    with pytest.raises(ToolError):
+        await server.create_transaction(
+            amount=-12.5, merchant_name="Corner Deli", account_id="acc_123", date="2024-01-15", category_id="cat_456"
+        )

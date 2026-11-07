@@ -43,17 +43,14 @@ from mcp.types import (
 from monarchmoney import LoginFailedException, MonarchMoney, RequestFailedException, RequireMFAException
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, JsonValue, TypeAdapter, model_validator
 
-JsonSerializable = str | int | float | bool | None | list["JsonSerializable"] | dict[str, "JsonSerializable"]
-
-# Tools communicate only with the Monarch Money API.
-READONLY = ToolAnnotations(read_only_hint=True, open_world_hint=False)
+# Tools communicate only with the Monarch Money API. Destructive tools delete data,
+# replace a whole set (splits, tags), or can rewrite past transactions (rules).
+# Field edits that change only what the caller names are not destructive.
+READONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
 WRITE_IDEMPOTENT = ToolAnnotations(
     read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False
 )
 WRITE_CREATE = ToolAnnotations(
-    read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False
-)
-WRITE_SIDE_EFFECT = ToolAnnotations(
     read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False
 )
 WRITE_DESTRUCTIVE = ToolAnnotations(
@@ -461,7 +458,17 @@ def _server_version() -> str:
         return ""
 
 
-mcp = MCPServer("monarch-money", version=_server_version())
+mcp = MCPServer(
+    "monarch-money",
+    version=_server_version(),
+    instructions=(
+        "Reads and changes the user's real Monarch Money account. Amounts are negative for expenses "
+        "and positive for income. Get IDs from lookup tools such as get_accounts, "
+        "get_transaction_categories, get_transaction_tags, and get_household_members instead of guessing. "
+        "Confirm with the user before deleting data, replacing splits or tags, or applying a rule to "
+        "existing transactions. Recurring forecasts are not proof of payment."
+    ),
+)
 
 
 # Structured output models give MCP clients schemas and machine-readable content.
@@ -1041,14 +1048,28 @@ def _cashflow_summary(response: object, verbose: bool = False) -> JsonValue:
     return payload if verbose else _compact_payload(aggregate["summary"])
 
 
-def _transactions_truncated(response: object, returned: int) -> bool | None:
+def _transactions_total(response: object) -> int | None:
+    """Return allTransactions.totalCount, or None when Monarch omits it."""
     if isinstance(response, dict):
         transactions = response.get("allTransactions")
         if isinstance(transactions, dict):
             total = transactions.get("totalCount")
             if isinstance(total, int) and not isinstance(total, bool):
-                return total > returned
+                return total
     return None
+
+
+def _transactions_truncated(response: object, returned: int) -> bool | None:
+    total = _transactions_total(response)
+    return total > returned if total is not None else None
+
+
+def _transaction_paging(response: object, offset: int, limit: int, returned: int) -> tuple[int | None, int | None]:
+    """Return (total_count, next_offset) for one transaction page."""
+    total = _transactions_total(response)
+    # Without a total, a full page is the only hint that more rows exist.
+    more = offset + returned < total if total is not None else returned > 0 and returned == limit
+    return total, offset + returned if more else None
 
 
 class _CategoryGroupRef(BaseModel):
@@ -1317,8 +1338,7 @@ def clear_session(reason: str = "unknown") -> None:
 
     log.info("auth_reset", reason=reason, previous_state=auth_state.value)
 
-    if mm_client is not None:
-        mm_client = None
+    mm_client = None
 
     auth_state = AuthState.NOT_INITIALIZED
     auth_error = None
@@ -1414,9 +1434,7 @@ async def initialize_client() -> None:
     if session_file.exists() and not force_login:
         client = _new_client()
         try:
-            stdout_capture = io.StringIO()
-            stderr_capture = io.StringIO()
-            with contextlib.redirect_stdout(stdout_capture), contextlib.redirect_stderr(stderr_capture):
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 client.load_session(str(session_file))
         except Exception as e:
             log.warning("auth_session_load_failed", error=str(e))
@@ -1448,9 +1466,7 @@ async def initialize_client() -> None:
                 await client.login(email, password, use_saved_session=False, save_session=False)
 
             # Suppress library output so it cannot corrupt the stdio protocol.
-            stdout_capture = io.StringIO()
-            stderr_capture = io.StringIO()
-            with contextlib.redirect_stdout(stdout_capture), contextlib.redirect_stderr(stderr_capture):
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 client.save_session(str(session_file))
 
             if session_file.exists():
@@ -1545,14 +1561,10 @@ async def get_accounts() -> AccountsResult:
     """Retrieve all linked financial accounts."""
     await ensure_authenticated()
 
-    try:
-        accounts = await api_call_with_retry("get_accounts")
-        accounts = convert_dates_to_strings(accounts)
-        account_list = extract_list(accounts, "accounts")
-        return AccountsResult(accounts=account_list, count=len(account_list))
-    except Exception as e:
-        log.error("Failed to fetch accounts", error=str(e))
-        raise
+    accounts = await api_call_with_retry("get_accounts")
+    accounts = convert_dates_to_strings(accounts)
+    account_list = extract_list(accounts, "accounts")
+    return AccountsResult(accounts=account_list, count=len(account_list))
 
 
 @mcp.tool(annotations=READONLY, title="Get Transactions")
@@ -1610,47 +1622,41 @@ async def get_transactions(
     fields such as hideFromReports, reviewStatus, isSplitTransaction, isRecurring,
     attachments, tags, and timestamps.
     """
+    filters = _build_transaction_filters(
+        start_date,
+        end_date,
+        account_id,
+        category_id,
+        tag_ids,
+        has_attachments,
+        has_notes,
+        hidden_from_reports,
+        is_split,
+        is_recurring,
+        is_pending,
+        needs_review,
+    )
     await ensure_authenticated()
+    response = await api_call_with_retry("get_transactions", limit=limit, offset=offset, **filters)
+    transactions = extract_transactions_list(response)
+    transactions = convert_dates_to_strings(transactions)
 
-    try:
-        filters = _build_transaction_filters(
-            start_date,
-            end_date,
-            account_id,
-            category_id,
-            tag_ids,
-            has_attachments,
-            has_notes,
-            hidden_from_reports,
-            is_split,
-            is_recurring,
-            is_pending,
-            needs_review,
-        )
+    if not verbose:
+        transactions = format_transactions_compact(transactions)
 
-        response = await api_call_with_retry("get_transactions", limit=limit, offset=offset, **filters)
-        transactions = extract_transactions_list(response)
-        transactions = convert_dates_to_strings(transactions)
-
-        if not verbose and isinstance(transactions, list):
-            transactions = format_transactions_compact(transactions)
-
-        total_count, next_offset = _transaction_paging(response, offset, limit, len(transactions))
-        log.info("Transactions retrieved", count=len(transactions))
-        # model_validate (not the constructor) sidesteps mypy's list invariance:
-        # list[dict[str, Any]] is not assignable to the model's list[JsonValue].
-        return TransactionsResult.model_validate(
-            {
-                "transactions": transactions,
-                "count": len(transactions),
-                "total_count": total_count,
-                "next_offset": next_offset,
-                "verbose": verbose,
-            }
-        )
-    except Exception as e:
-        log.error("Failed to fetch transactions", error=str(e), limit=limit, start_date=start_date)
-        raise
+    total_count, next_offset = _transaction_paging(response, offset, limit, len(transactions))
+    log.info("Transactions retrieved", count=len(transactions))
+    # model_validate (not the constructor) sidesteps mypy's list invariance:
+    # list[dict[str, Any]] is not assignable to the model's list[JsonValue].
+    return TransactionsResult.model_validate(
+        {
+            "transactions": transactions,
+            "count": len(transactions),
+            "total_count": total_count,
+            "next_offset": next_offset,
+            "verbose": verbose,
+        }
+    )
 
 
 @mcp.tool(annotations=READONLY, title="Search Transactions")
@@ -1700,57 +1706,50 @@ async def search_transactions(
     plus total_count (all matches; null if Monarch omits it) and next_offset (null
     when no more pages). Pass next_offset as offset for the next page.
     """
-    await ensure_authenticated()
-
     if not query or not query.strip():
         raise ValueError("Query parameter cannot be empty")
 
-    try:
-        query_str = query.strip()
-        filters = _build_transaction_filters(
-            start_date,
-            end_date,
-            account_id,
-            category_id,
-            tag_ids,
-            has_attachments,
-            has_notes,
-            hidden_from_reports,
-            is_split,
-            is_recurring,
-            is_pending,
-            needs_review,
-        )
-        filters["search"] = query_str
+    query_str = query.strip()
+    filters = _build_transaction_filters(
+        start_date,
+        end_date,
+        account_id,
+        category_id,
+        tag_ids,
+        has_attachments,
+        has_notes,
+        hidden_from_reports,
+        is_split,
+        is_recurring,
+        is_pending,
+        needs_review,
+    )
+    filters["search"] = query_str
+    await ensure_authenticated()
+    response = await api_call_with_retry("get_transactions", limit=limit, offset=offset, **filters)
+    transactions = extract_transactions_list(response)
+    transactions = convert_dates_to_strings(transactions)
 
-        response = await api_call_with_retry("get_transactions", limit=limit, offset=offset, **filters)
-        transactions = extract_transactions_list(response)
-        transactions = convert_dates_to_strings(transactions)
+    if not verbose:
+        transactions = format_transactions_compact(transactions)
 
-        if not verbose:
-            transactions = format_transactions_compact(transactions)
+    metadata = SearchMetadata(
+        query=query_str,
+        result_count=len(transactions),
+        filters_applied={k: v for k, v in filters.items() if k != "search"},
+    )
 
-        metadata = SearchMetadata(
-            query=query_str,
-            result_count=len(transactions),
-            filters_applied={k: v for k, v in filters.items() if k != "search"},
-        )
-
-        total_count, next_offset = _transaction_paging(response, offset, limit, len(transactions))
-        log.info("Search complete", query=query_str, result_count=len(transactions))
-        # model_validate (not the constructor) sidesteps mypy's list invariance.
-        return SearchResult.model_validate(
-            {
-                "search_metadata": metadata,
-                "transactions": transactions,
-                "total_count": total_count,
-                "next_offset": next_offset,
-            }
-        )
-
-    except Exception as e:
-        log.error("Failed to search transactions", error=str(e), query=query)
-        raise
+    total_count, next_offset = _transaction_paging(response, offset, limit, len(transactions))
+    log.info("Search complete", query=query_str, result_count=len(transactions))
+    # model_validate (not the constructor) sidesteps mypy's list invariance.
+    return SearchResult.model_validate(
+        {
+            "search_metadata": metadata,
+            "transactions": transactions,
+            "total_count": total_count,
+            "next_offset": next_offset,
+        }
+    )
 
 
 @mcp.tool(annotations=READONLY, title="Get Budgets")
@@ -1761,9 +1760,8 @@ async def get_budgets(start_date: str | None = None, end_date: str | None = None
     Dates accept ISO strings or natural language such as 'last month'. A missing
     end defaults to today; a missing start to the first day of the end date's month.
     """
-    await ensure_authenticated()
-
     kwargs = build_date_filter(start_date, end_date)
+    await ensure_authenticated()
 
     try:
         budgets = await api_call_with_retry("get_budgets", **kwargs)  # type: ignore[arg-type]
@@ -1785,9 +1783,8 @@ async def get_cashflow(start_date: str | None = None, end_date: str | None = Non
     Dates accept ISO strings or natural language such as 'last month'. A missing
     end defaults to today; a missing start to the first day of the end date's month.
     """
-    await ensure_authenticated()
-
     kwargs = build_date_filter(start_date, end_date)
+    await ensure_authenticated()
 
     cashflow = await api_call_with_retry("get_cashflow", **kwargs)  # type: ignore[arg-type]
     cashflow = convert_dates_to_strings(cashflow)
@@ -1841,22 +1838,18 @@ async def create_transaction(
 
     Returns the created transaction details.
     """
+    if not merchant_name or merchant_name.strip() == "":
+        raise ValueError("merchant_name cannot be empty")
+    if not category_id:
+        raise ValueError("category_id is required when creating transactions")
+    try:
+        date_str = datetime.strptime(date, "%Y-%m-%d").date().isoformat()
+    except ValueError as e:
+        raise ValueError(f"Invalid date format. Use YYYY-MM-DD (e.g., 2024-01-15). Error: {e}") from e
     await ensure_authenticated()
 
+    log.info("creating_transaction", merchant=merchant_name, amount=amount, date=date_str)
     try:
-        if not merchant_name or merchant_name.strip() == "":
-            raise ValueError("merchant_name cannot be empty")
-        if not category_id:
-            raise ValueError("category_id is required when creating transactions")
-
-        try:
-            transaction_date = datetime.strptime(date, "%Y-%m-%d").date()
-            date_str = transaction_date.isoformat()
-        except ValueError as e:
-            raise ValueError(f"Invalid date format. Use YYYY-MM-DD (e.g., 2024-01-15). Error: {e}") from e
-
-        log.info("creating_transaction", merchant=merchant_name, amount=amount, date=date_str)
-
         result = await asyncio.wait_for(
             api_call_with_retry(
                 "create_transaction",
@@ -1870,19 +1863,16 @@ async def create_transaction(
             ),
             timeout=WRITE_TIMEOUT_SECONDS,
         )
-        result = convert_dates_to_strings(result)
-        return TransactionResult(transaction=result)
     except asyncio.TimeoutError as e:
         log.error("create_transaction_timeout")
         raise ValueError(
             "Transaction creation timed out, so its outcome is unknown: Monarch may have created it. "
             "Check get_transactions before retrying to avoid a duplicate."
         ) from e
-    except ValueError:
-        raise
-    except Exception as e:
-        log.error("create_transaction_failed", error=str(e))
-        raise
+    created = _mutation_payload(result, "createTransaction", "transaction creation").get("transaction")
+    if not isinstance(created, dict) or not created.get("id"):
+        raise ValueError("Monarch returned no created transaction")
+    return TransactionResult(transaction=convert_dates_to_strings(result))
 
 
 @mcp.tool(annotations=WRITE_IDEMPOTENT, title="Update Transaction")
@@ -1962,9 +1952,6 @@ async def update_transaction(
     except asyncio.TimeoutError as e:
         log.error("update_transaction_timeout", transaction_id=transaction_id)
         raise ValueError("Transaction update timed out. Please try again.") from e
-    except Exception as e:
-        log.error("update_transaction_failed", transaction_id=transaction_id, error=str(e))
-        raise
 
 
 @mcp.tool(annotations=WRITE_IDEMPOTENT, title="Bulk Update Transactions")
@@ -1988,70 +1975,68 @@ async def update_transactions_bulk(updates: str) -> BulkUpdateResult:
         [{"transaction_id": "txn_123", "category_id": "cat_456", "notes": ""},
          {"transaction_id": "txn_789", "needs_review": false}]
     """
-    await ensure_authenticated()
-
     try:
-        try:
-            updates_list = json.loads(updates)
-        except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid JSON in updates parameter: {e}") from e
+        updates_list = json.loads(updates)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON in updates parameter: {e}") from e
 
-        if not isinstance(updates_list, list):
-            raise ValueError("updates parameter must be a JSON array of transaction updates")
+    if not isinstance(updates_list, list):
+        raise ValueError("updates parameter must be a JSON array of transaction updates")
 
-        if len(updates_list) == 0:
-            return BulkUpdateResult(
-                summary=BulkSummary(total=0, succeeded=0, failed=0), results=[], message="No updates provided"
-            )
-
-        log.info("bulk_update_start", count=len(updates_list))
-
-        async def update_single(update_data: object) -> BulkItemResult:
-            """Validate and update one item, returning errors without aborting the batch."""
-            txn_id: str | None = None
-            if isinstance(update_data, dict) and isinstance(update_data.get("transaction_id"), str):
-                txn_id = update_data["transaction_id"]
-            try:
-                update = BulkTransactionUpdate.model_validate(update_data)
-                update_params = update.model_dump(exclude_none=True)
-                _require_nonzero_amount(update.amount)
-                if update.date is not None:
-                    update_params["date"] = datetime.strptime(update.date, "%Y-%m-%d").date().isoformat()
-
-                result = await asyncio.wait_for(
-                    api_call_with_retry("update_transaction", **update_params), timeout=WRITE_TIMEOUT_SECONDS
-                )
-                _check_transaction_update(result)
-
-                return BulkItemResult(transaction_id=txn_id, status="success")
-
-            except asyncio.TimeoutError:
-                return BulkItemResult(
-                    transaction_id=txn_id,
-                    status="error",
-                    error="Update timed out",
-                )
-            except Exception as e:
-                return BulkItemResult(transaction_id=txn_id, status="error", error=str(e))
-
-        results = await asyncio.gather(
-            *[update_single(update_data) for update_data in updates_list],
-            return_exceptions=False,
-        )
-
-        success_count = sum(1 for r in results if r.status == "success")
-        failure_count = len(results) - success_count
-
-        log.info("bulk_update_complete", succeeded=success_count, failed=failure_count)
-
+    if len(updates_list) == 0:
         return BulkUpdateResult(
-            summary=BulkSummary(total=len(results), succeeded=success_count, failed=failure_count),
-            results=list(results),
+            summary=BulkSummary(total=0, succeeded=0, failed=0), results=[], message="No updates provided"
         )
 
-    except Exception as e:
-        log.error("bulk_update_failed", error=str(e))
-        raise
+    await ensure_authenticated()
+    log.info("bulk_update_start", count=len(updates_list))
+
+    async def update_single(update_data: object) -> BulkItemResult:
+        """Validate and update one item, returning errors without aborting the batch."""
+        txn_id: str | None = None
+        if isinstance(update_data, dict) and isinstance(update_data.get("transaction_id"), str):
+            txn_id = update_data["transaction_id"]
+        try:
+            update = BulkTransactionUpdate.model_validate(update_data)
+            update_params = update.model_dump(exclude_none=True)
+            _require_nonzero_amount(update.amount)
+            if update.date is not None:
+                update_params["date"] = datetime.strptime(update.date, "%Y-%m-%d").date().isoformat()
+
+            result = await asyncio.wait_for(
+                api_call_with_retry("update_transaction", **update_params), timeout=WRITE_TIMEOUT_SECONDS
+            )
+            _check_transaction_update(result)
+
+            return BulkItemResult(transaction_id=txn_id, status="success")
+
+        except asyncio.TimeoutError:
+            return BulkItemResult(
+                transaction_id=txn_id,
+                status="error",
+                error="Update timed out",
+            )
+        except ANTICIPATED_ERRORS as e:
+            return BulkItemResult(transaction_id=txn_id, status="error", error=caller_message(e))
+        except Exception as e:
+            # Like track_usage, keep unexpected error details in the server log.
+            log.error("bulk_update_item_failed", transaction_id=txn_id, error=str(e))
+            return BulkItemResult(transaction_id=txn_id, status="error", error="Unexpected error")
+
+    results = await asyncio.gather(
+        *[update_single(update_data) for update_data in updates_list],
+        return_exceptions=False,
+    )
+
+    success_count = sum(1 for r in results if r.status == "success")
+    failure_count = len(results) - success_count
+
+    log.info("bulk_update_complete", succeeded=success_count, failed=failure_count)
+
+    return BulkUpdateResult(
+        summary=BulkSummary(total=len(results), succeeded=success_count, failed=failure_count),
+        results=list(results),
+    )
 
 
 @mcp.tool(annotations=READONLY, title="Get Transaction Splits")
@@ -2104,7 +2089,7 @@ async def get_transaction_details(transaction_id: str) -> TransactionDetailsResu
     )
 
 
-@mcp.tool(annotations=WRITE_IDEMPOTENT, title="Update Transaction Splits")
+@mcp.tool(annotations=WRITE_DESTRUCTIVE, title="Update Transaction Splits")
 @track_usage
 async def update_transaction_splits(transaction_id: str, splits: list[TransactionSplit]) -> UpdateSplitsResult:
     """Replace a transaction's entire set of splits, or remove all splits with [].
@@ -2170,9 +2155,6 @@ async def update_transaction_splits(transaction_id: str, splits: list[Transactio
     except asyncio.TimeoutError as e:
         log.error("update_transaction_splits_timeout", transaction_id=transaction_id)
         raise ValueError("Split update timed out. Please try again.") from e
-    except Exception as e:
-        log.error("update_transaction_splits_failed", transaction_id=transaction_id, error=str(e))
-        raise
 
 
 @mcp.tool(annotations=READONLY, title="Get All Brokerage Holdings")
@@ -2506,13 +2488,9 @@ async def get_account_holdings(account_id: str) -> HoldingsResult:
     """Get investment holdings for an account_id from get_accounts."""
     await ensure_authenticated()
 
-    try:
-        holdings = await api_call_with_retry("get_account_holdings", account_id=account_id)
-        holdings = convert_dates_to_strings(holdings)
-        return HoldingsResult(holdings=holdings)
-    except Exception as e:
-        log.error("Failed to fetch account holdings", error=str(e), account_id=account_id)
-        raise
+    holdings = await api_call_with_retry("get_account_holdings", account_id=account_id)
+    holdings = convert_dates_to_strings(holdings)
+    return HoldingsResult(holdings=holdings)
 
 
 @mcp.tool(annotations=READONLY, title="Get Account History")
@@ -2536,28 +2514,24 @@ async def get_account_history(
         raise ValueError("start_date must not be after end_date")
     await ensure_authenticated()
 
-    try:
-        history = await api_call_with_retry("get_account_history", account_id=account_id)
-        if start is not None or end is not None:
-            snapshots = TypeAdapter(list[AccountHistorySnapshot]).validate_python(history)
-            history = [
-                snapshot.model_dump(mode="json")
-                for snapshot in snapshots
-                if (start is None or snapshot.date >= start) and (end is None or snapshot.date <= end)
-            ]
-        matching = TypeAdapter(list[JsonValue]).validate_python(convert_dates_to_strings(history))
-        page = matching[offset : offset + limit]
-        return AccountHistoryResult(
-            account_id=account_id,
-            history=page,
-            count=len(page),
-            total_count=len(matching),
-            offset=offset,
-            next_offset=offset + len(page) if offset + len(page) < len(matching) else None,
-        )
-    except Exception as e:
-        log.error("Failed to fetch account history", error=str(e), account_id=account_id)
-        raise
+    history = await api_call_with_retry("get_account_history", account_id=account_id)
+    if start is not None or end is not None:
+        snapshots = TypeAdapter(list[AccountHistorySnapshot]).validate_python(history)
+        history = [
+            snapshot.model_dump(mode="json")
+            for snapshot in snapshots
+            if (start is None or snapshot.date >= start) and (end is None or snapshot.date <= end)
+        ]
+    matching = TypeAdapter(list[JsonValue]).validate_python(convert_dates_to_strings(history))
+    page = matching[offset : offset + limit]
+    return AccountHistoryResult(
+        account_id=account_id,
+        history=page,
+        count=len(page),
+        total_count=len(matching),
+        offset=offset,
+        next_offset=offset + len(page) if offset + len(page) < len(matching) else None,
+    )
 
 
 @mcp.tool(annotations=READONLY, title="Get Institutions")
@@ -2566,13 +2540,9 @@ async def get_institutions() -> InstitutionsResult:
     """Get linked financial institutions."""
     await ensure_authenticated()
 
-    try:
-        institutions = await api_call_with_retry("get_institutions")
-        institutions = convert_dates_to_strings(institutions)
-        return InstitutionsResult(institutions=institutions)
-    except Exception as e:
-        log.error("Failed to fetch institutions", error=str(e))
-        raise
+    institutions = await api_call_with_retry("get_institutions")
+    institutions = convert_dates_to_strings(institutions)
+    return InstitutionsResult(institutions=institutions)
 
 
 @mcp.tool(annotations=READONLY, title="Get Recurring Transactions")
@@ -2671,25 +2641,21 @@ async def set_budget_amount(
     month_start = _first_of_month(month)
     await ensure_authenticated()
 
-    try:
-        result = await api_call_with_retry(
-            "set_budget_amount",
-            category_id=category_id,
-            amount=amount,
-            start_date=month_start,
-            apply_to_future=apply_to_future,
-        )
-        result = convert_dates_to_strings(result)
-        payload = result.get("updateOrCreateBudgetItem") if isinstance(result, dict) else None
-        if not isinstance(payload, dict) or payload.get("budgetItem") is None:
-            raise ValueError("Monarch did not confirm the budget update")
-        log.info("Budget amount updated", category_id=category_id, amount=amount, month=month_start)
-        return SetBudgetResult(
-            category_id=category_id, amount=amount, month=month_start, apply_to_future=apply_to_future, result=result
-        )
-    except Exception as e:
-        log.error("Failed to set budget amount", error=str(e), category_id=category_id)
-        raise
+    result = await api_call_with_retry(
+        "set_budget_amount",
+        category_id=category_id,
+        amount=amount,
+        start_date=month_start,
+        apply_to_future=apply_to_future,
+    )
+    result = convert_dates_to_strings(result)
+    payload = result.get("updateOrCreateBudgetItem") if isinstance(result, dict) else None
+    if not isinstance(payload, dict) or payload.get("budgetItem") is None:
+        raise ValueError("Monarch did not confirm the budget update")
+    log.info("Budget amount updated", category_id=category_id, amount=amount, month=month_start)
+    return SetBudgetResult(
+        category_id=category_id, amount=amount, month=month_start, apply_to_future=apply_to_future, result=result
+    )
 
 
 @mcp.tool(annotations=WRITE_CREATE, title="Create Manual Account")
@@ -2713,25 +2679,21 @@ async def create_manual_account(
     """
     await ensure_authenticated()
 
-    try:
-        result = await api_call_with_retry(
-            "create_manual_account",
-            account_type=account_type,
-            account_sub_type=account_sub_type,
-            is_in_net_worth=include_in_net_worth,
-            account_name=account_name,
-            account_balance=balance,
-        )
-        payload = result.get("createManualAccount") if isinstance(result, dict) else None
-        account = payload.get("account") if isinstance(payload, dict) else None
-        if not isinstance(account, dict) or not account.get("id"):
-            errors = payload.get("errors") if isinstance(payload, dict) else None
-            raise ValueError(f"Monarch rejected the manual account: {errors}")
-        log.info("Manual account created", type=account_type, sub_type=account_sub_type)
-        return CreateAccountResult(account=convert_dates_to_strings(account))
-    except Exception as e:
-        log.error("Failed to create manual account", error=str(e), type=account_type)
-        raise
+    result = await api_call_with_retry(
+        "create_manual_account",
+        account_type=account_type,
+        account_sub_type=account_sub_type,
+        is_in_net_worth=include_in_net_worth,
+        account_name=account_name,
+        account_balance=balance,
+    )
+    payload = result.get("createManualAccount") if isinstance(result, dict) else None
+    account = payload.get("account") if isinstance(payload, dict) else None
+    if not isinstance(account, dict) or not account.get("id"):
+        errors = payload.get("errors") if isinstance(payload, dict) else None
+        raise ValueError(f"Monarch rejected the manual account: {errors}")
+    log.info("Manual account created", type=account_type, sub_type=account_sub_type)
+    return CreateAccountResult(account=convert_dates_to_strings(account))
 
 
 @mcp.tool(annotations=READONLY, title="Get Spending Summary")
@@ -2751,135 +2713,111 @@ async def get_spending_summary(
     (categories in Monarch's transfer group, such as credit card payments) are
     left out and counted in transfers_excluded. period holds the resolved ISO dates.
     """
+    filters = build_date_filter(start_date, end_date)
     await ensure_authenticated()
+    transfer_ids = _transfer_category_ids(await api_call_with_retry("get_transaction_categories"))
+    page_size = 1000
+    offset: int | None = 0
+    transactions: list[dict[str, Any]] = []
+    while offset is not None:
+        response = await api_call_with_retry(
+            "get_transactions",
+            limit=page_size,
+            offset=offset,
+            **filters,  # type: ignore[arg-type]
+        )
+        page = extract_transactions_list(response)
+        if not page:
+            break
+        transactions.extend(page)
+        _, offset = _transaction_paging(response, offset, page_size, len(page))
 
-    try:
-        log.info("Generating spending summary", start_date=start_date, end_date=end_date, group_by=group_by)
+    summary: dict[str, Any] = {
+        "groups": {},
+        "totals": {"income": 0, "expenses": 0, "net": 0},
+    }
 
-        filters = build_date_filter(start_date, end_date)
-        transfer_ids = _transfer_category_ids(await api_call_with_retry("get_transaction_categories"))
-        page_size = 1000
-        offset = 0
-        transactions: list[dict[str, Any]] = []
-        while True:
-            response = await api_call_with_retry(
-                "get_transactions",
-                limit=page_size,
-                offset=offset,
-                **filters,  # type: ignore[arg-type]
+    transfers_excluded = 0
+    for txn in transactions:
+        if _is_transfer(txn, transfer_ids):
+            transfers_excluded += 1
+            continue
+        amount = float(txn.get("amount", 0))
+
+        totals: dict[str, float] = summary["totals"]
+        if amount > 0:
+            totals["income"] += amount
+        else:
+            totals["expenses"] += abs(amount)
+
+        if group_by == "category":
+            key = (
+                txn.get("category", {}).get("name", "Uncategorized")
+                if isinstance(txn.get("category"), dict)
+                else "Uncategorized"
             )
-            page = extract_transactions_list(response)
-            if not page:
-                break
-            transactions.extend(page)
-            offset += len(page)
-            total_count: int | None = None
-            if isinstance(response, dict):
-                total_count = (response.get("allTransactions") or {}).get("totalCount")
-            if total_count is not None:
-                if len(transactions) >= total_count:
-                    break
-            elif len(page) < page_size:
-                # No totalCount available (e.g. a flat-list response) — a short
-                # page is the only signal that this was the last page.
-                break
+        elif group_by == "account":
+            key = (
+                (txn["account"].get("displayName") or "Unknown") if isinstance(txn.get("account"), dict) else "Unknown"
+            )
+        elif group_by == "month":
+            txn_date = txn.get("date", "")
+            key = txn_date[:7] if len(txn_date) >= 7 else "Unknown"  # YYYY-MM format
+        else:
+            key = "All"
 
-        summary: dict[str, Any] = {
-            "groups": {},
-            "totals": {"income": 0, "expenses": 0, "net": 0},
-        }
+        groups: dict[str, dict[str, float]] = summary["groups"]
+        if key not in groups:
+            groups[key] = {"income": 0, "expenses": 0, "net": 0, "count": 0}
 
-        transfers_excluded = 0
-        for txn in transactions:
-            if _is_transfer(txn, transfer_ids):
-                transfers_excluded += 1
-                continue
-            amount = float(txn.get("amount", 0))
+        group = groups[key]
+        if amount > 0:
+            group["income"] += amount
+        else:
+            group["expenses"] += abs(amount)
 
-            totals: dict[str, float] = summary["totals"]
-            if amount > 0:
-                totals["income"] += amount
-            else:
-                totals["expenses"] += abs(amount)
+        group["net"] += amount
+        group["count"] += 1
 
-            if group_by == "category":
-                key = (
-                    txn.get("category", {}).get("name", "Uncategorized")
-                    if isinstance(txn.get("category"), dict)
-                    else "Uncategorized"
-                )
-            elif group_by == "account":
-                key = (
-                    (txn["account"].get("displayName") or "Unknown")
-                    if isinstance(txn.get("account"), dict)
-                    else "Unknown"
-                )
-            elif group_by == "month":
-                txn_date = txn.get("date", "")
-                key = txn_date[:7] if len(txn_date) >= 7 else "Unknown"  # YYYY-MM format
-            else:
-                key = "All"
+    summary["totals"]["net"] = summary["totals"]["income"] - summary["totals"]["expenses"]
 
-            groups: dict[str, dict[str, float]] = summary["groups"]
-            if key not in groups:
-                groups[key] = {"income": 0, "expenses": 0, "net": 0, "count": 0}
+    sorted_groups = dict(sorted(summary["groups"].items(), key=lambda x: x[1]["expenses"], reverse=True))
 
-            group = groups[key]
-            if amount > 0:
-                group["income"] += amount
-            else:
-                group["expenses"] += abs(amount)
+    totals_data: dict[str, float] = summary["totals"]
+    result = SpendingSummaryResult(
+        period=Period(start=filters.get("start_date"), end=filters.get("end_date")),
+        group_by=group_by,
+        groups={
+            key: GroupSummary(income=g["income"], expenses=g["expenses"], net=g["net"], count=int(g["count"]))
+            for key, g in sorted_groups.items()
+        },
+        totals=Totals(income=totals_data["income"], expenses=totals_data["expenses"], net=totals_data["net"]),
+        transfers_excluded=transfers_excluded,
+    )
 
-            group["net"] += amount
-            group["count"] += 1
+    log.info(
+        "Spending summary generated",
+        total_transactions=len(transactions),
+        groups_count=len(result.groups),
+        net_amount=result.totals.net,
+    )
 
-        summary["totals"]["net"] = summary["totals"]["income"] - summary["totals"]["expenses"]
-
-        sorted_groups = dict(sorted(summary["groups"].items(), key=lambda x: x[1]["expenses"], reverse=True))
-
-        totals_data: dict[str, float] = summary["totals"]
-        result = SpendingSummaryResult(
-            period=Period(start=filters.get("start_date"), end=filters.get("end_date")),
-            group_by=group_by,
-            groups={
-                key: GroupSummary(income=g["income"], expenses=g["expenses"], net=g["net"], count=int(g["count"]))
-                for key, g in sorted_groups.items()
-            },
-            totals=Totals(income=totals_data["income"], expenses=totals_data["expenses"], net=totals_data["net"]),
-            transfers_excluded=transfers_excluded,
-        )
-
-        log.info(
-            "Spending summary generated",
-            total_transactions=len(transactions),
-            groups_count=len(result.groups),
-            net_amount=result.totals.net,
-        )
-
-        return result
-
-    except Exception as e:
-        log.error("Failed to generate spending summary", error=str(e))
-        raise
+    return result
 
 
-@mcp.tool(annotations=WRITE_SIDE_EFFECT, title="Refresh Accounts")
+@mcp.tool(annotations=WRITE_IDEMPOTENT, title="Refresh Accounts")
 @track_usage
 async def refresh_accounts() -> RefreshResult:
     """Request an institution refresh for all accounts; do not wait for completion."""
     await ensure_authenticated()
 
-    try:
-        # The library requires the ids; this is the same lookup its
-        # request_accounts_refresh_and_wait does, without the wait.
-        accounts = extract_list(await api_call_with_retry("get_accounts"), "accounts")
-        result = await api_call_with_retry("request_accounts_refresh", [a["id"] for a in accounts])
-        result = convert_dates_to_strings(result)
-        log.info("Account refresh requested")
-        return RefreshResult(result=result)
-    except Exception as e:
-        log.error("Failed to refresh accounts", error=str(e))
-        raise
+    # The library requires the ids; this is the same lookup its
+    # request_accounts_refresh_and_wait does, without the wait.
+    accounts = extract_list(await api_call_with_retry("get_accounts"), "accounts")
+    result = await api_call_with_retry("request_accounts_refresh", [a["id"] for a in accounts])
+    result = convert_dates_to_strings(result)
+    log.info("Account refresh requested")
+    return RefreshResult(result=result)
 
 
 @mcp.tool(annotations=READONLY, title="Complete Financial Overview")
@@ -2900,131 +2838,123 @@ async def get_complete_financial_overview(
     Summary income and expenses leave out transfers such as card payments;
     transfers_excluded counts them, or is null when categories could not be read.
     """
+    filters = build_date_filter(period, None)
     await ensure_authenticated()
 
-    try:
-        if ctx is not None:
-            await ctx.report_progress(0, 5, "Fetching accounts, budgets, cashflow, transactions, categories…")
+    if ctx is not None:
+        await ctx.report_progress(0, 5, "Fetching accounts, budgets, cashflow, transactions, categories…")
 
-        filters = build_date_filter(period, None)
+    accounts_task = api_call_with_retry("get_accounts")
+    budgets_task = api_call_with_retry("get_budgets", **filters)  # type: ignore[arg-type]
+    cashflow_task = api_call_with_retry("get_cashflow", **filters)  # type: ignore[arg-type]
+    transactions_task = api_call_with_retry("get_transactions", limit=500, **filters)  # type: ignore[arg-type]
+    categories_task = api_call_with_retry("get_transaction_categories")
 
-        accounts_task = api_call_with_retry("get_accounts")
-        budgets_task = api_call_with_retry("get_budgets", **filters)  # type: ignore[arg-type]
-        cashflow_task = api_call_with_retry("get_cashflow", **filters)  # type: ignore[arg-type]
-        transactions_task = api_call_with_retry("get_transactions", limit=500, **filters)  # type: ignore[arg-type]
-        categories_task = api_call_with_retry("get_transaction_categories")
+    api_results = await asyncio.gather(
+        accounts_task, budgets_task, cashflow_task, transactions_task, categories_task, return_exceptions=True
+    )
+    accounts, budgets, cashflow, transactions, categories = api_results
 
-        api_results = await asyncio.gather(
-            accounts_task, budgets_task, cashflow_task, transactions_task, categories_task, return_exceptions=True
-        )
-        accounts, budgets, cashflow, transactions, categories = api_results
+    results: dict[str, Any] = {}
 
-        results: dict[str, Any] = {}
-
-        if not isinstance(accounts, Exception):
-            if verbose:
-                results["accounts"] = convert_dates_to_strings(accounts)
-            else:
-                account_list = TypeAdapter(list[dict[str, JsonValue]]).validate_python(
-                    extract_list(accounts, "accounts")
-                )
-                results["accounts"] = [
-                    {key: account.get(key) for key in ("id", "displayName", "currentBalance", "type")}
-                    for account in account_list
-                ]
+    if not isinstance(accounts, Exception):
+        if verbose:
+            results["accounts"] = convert_dates_to_strings(accounts)
         else:
-            results["accounts"] = {"error": str(accounts)}
-
-        if not isinstance(budgets, Exception):
-            try:
-                results["budgets"] = _budget_totals(convert_dates_to_strings(budgets), verbose)
-            except ValueError as error:
-                results["budgets"] = {"error": str(error)}
-        else:
-            results["budgets"] = {"error": str(budgets)}
-
-        if not isinstance(cashflow, Exception):
-            try:
-                results["cashflow"] = _cashflow_summary(convert_dates_to_strings(cashflow), verbose)
-            except ValueError as error:
-                results["cashflow"] = {"error": str(error)}
-        else:
-            results["cashflow"] = {"error": str(cashflow)}
-
-        transfer_ids: set[str] | None = None
-        if not isinstance(categories, Exception):
-            try:
-                transfer_ids = _transfer_category_ids(categories)
-            except ValueError as error:
-                log.warning("overview_transfer_categories_unreadable", error=str(error))
-
-        if not isinstance(transactions, Exception):
-            transactions_list = extract_transactions_list(transactions)
-            results["transactions"] = convert_dates_to_strings(transactions_list) if verbose else None
-            amounts = [
-                float(t.get("amount", 0))
-                for t in transactions_list
-                if transfer_ids is None or not _is_transfer(t, transfer_ids)
+            account_list = TypeAdapter(list[dict[str, JsonValue]]).validate_python(extract_list(accounts, "accounts"))
+            results["accounts"] = [
+                {key: account.get(key) for key in ("id", "displayName", "currentBalance", "type")}
+                for account in account_list
             ]
-            results["transaction_summary"] = {
-                "total_count": len(transactions_list),
-                "total_income": sum(amount for amount in amounts if amount > 0),
-                "total_expenses": sum(abs(amount) for amount in amounts if amount < 0),
-                "transfers_excluded": len(transactions_list) - len(amounts) if transfer_ids is not None else None,
-                "unique_categories": len(
-                    {
-                        t.get("category", {}).get("name", "Unknown")
-                        for t in transactions_list
-                        if isinstance(t.get("category"), dict)
-                    }
-                ),
-                "unique_accounts": len(
-                    {
-                        t["account"]["id"]
-                        for t in transactions_list
-                        if isinstance(t.get("account"), dict) and t["account"].get("id")
-                    }
-                ),
-            }
-        else:
-            results["transactions"] = {"error": str(transactions)}
+    else:
+        results["accounts"] = {"error": str(accounts)}
 
-        if not isinstance(categories, Exception):
-            results["categories"] = convert_dates_to_strings(categories) if verbose else None
-        else:
-            results["categories"] = {"error": str(categories)}
+    if not isinstance(budgets, Exception):
+        try:
+            results["budgets"] = _budget_totals(convert_dates_to_strings(budgets), verbose)
+        except ValueError as error:
+            results["budgets"] = {"error": str(error)}
+    else:
+        results["budgets"] = {"error": str(budgets)}
 
-        if ctx is not None:
-            await ctx.report_progress(5, 5, "Assembled financial overview")
+    if not isinstance(cashflow, Exception):
+        try:
+            results["cashflow"] = _cashflow_summary(convert_dates_to_strings(cashflow), verbose)
+        except ValueError as error:
+            results["cashflow"] = {"error": str(error)}
+    else:
+        results["cashflow"] = {"error": str(cashflow)}
 
-        results["batch_metadata"] = {
-            "period": period,
-            "filters_applied": convert_dates_to_strings(filters),
-            "api_calls_made": 5,
-            "timestamp": datetime.now().isoformat(),
-            "transactions_truncated": (
-                _transactions_truncated(transactions, len(transactions_list))
-                if not isinstance(transactions, Exception)
-                else None
+    transfer_ids: set[str] | None = None
+    if not isinstance(categories, Exception):
+        try:
+            transfer_ids = _transfer_category_ids(categories)
+        except ValueError as error:
+            log.warning("overview_transfer_categories_unreadable", error=str(error))
+
+    if not isinstance(transactions, Exception):
+        transactions_list = extract_transactions_list(transactions)
+        results["transactions"] = convert_dates_to_strings(transactions_list) if verbose else None
+        amounts = [
+            float(t.get("amount", 0))
+            for t in transactions_list
+            if transfer_ids is None or not _is_transfer(t, transfer_ids)
+        ]
+        results["transaction_summary"] = {
+            "total_count": len(transactions_list),
+            "total_income": sum(amount for amount in amounts if amount > 0),
+            "total_expenses": sum(abs(amount) for amount in amounts if amount < 0),
+            "transfers_excluded": len(transactions_list) - len(amounts) if transfer_ids is not None else None,
+            "unique_categories": len(
+                {
+                    t.get("category", {}).get("name", "Unknown")
+                    for t in transactions_list
+                    if isinstance(t.get("category"), dict)
+                }
+            ),
+            "unique_accounts": len(
+                {
+                    t["account"]["id"]
+                    for t in transactions_list
+                    if isinstance(t.get("account"), dict) and t["account"].get("id")
+                }
             ),
         }
-        results["period"] = period
-        results["verbose"] = verbose
+    else:
+        results["transactions"] = {"error": str(transactions)}
 
-        accounts_val = results.get("accounts", [])
-        summary_val = results.get("transaction_summary")
-        log.info(
-            "Complete financial overview generated",
-            period=period,
-            accounts_count=len(accounts_val) if isinstance(accounts_val, list) else 0,
-            transactions_count=summary_val.get("total_count", 0) if isinstance(summary_val, dict) else 0,
-        )
+    if not isinstance(categories, Exception):
+        results["categories"] = convert_dates_to_strings(categories) if verbose else None
+    else:
+        results["categories"] = {"error": str(categories)}
 
-        return FinancialOverview.model_validate(results)
+    if ctx is not None:
+        await ctx.report_progress(5, 5, "Assembled financial overview")
 
-    except Exception as e:
-        log.error("Failed to generate financial overview", error=str(e), period=period)
-        raise
+    results["batch_metadata"] = {
+        "period": period,
+        "filters_applied": convert_dates_to_strings(filters),
+        "api_calls_made": 5,
+        "timestamp": datetime.now().isoformat(),
+        "transactions_truncated": (
+            _transactions_truncated(transactions, len(transactions_list))
+            if not isinstance(transactions, Exception)
+            else None
+        ),
+    }
+    results["period"] = period
+    results["verbose"] = verbose
+
+    accounts_val = results.get("accounts", [])
+    summary_val = results.get("transaction_summary")
+    log.info(
+        "Complete financial overview generated",
+        period=period,
+        accounts_count=len(accounts_val) if isinstance(accounts_val, list) else 0,
+        transactions_count=summary_val.get("total_count", 0) if isinstance(summary_val, dict) else 0,
+    )
+
+    return FinancialOverview.model_validate(results)
 
 
 @mcp.tool(annotations=READONLY, title="Analyze Spending Patterns")
@@ -3035,7 +2965,7 @@ async def analyze_spending_patterns(
     """Summarize monthly trends, category expenses, account usage, and budget data.
 
     Args:
-        lookback_months: Months before today to include (default: 6).
+        lookback_months: Months before today to include, at least 1 (default: 6).
         include_forecasting: Include average-based income and expense estimates.
         verbose: Include full budget details instead of monthly budget totals.
 
@@ -3049,179 +2979,170 @@ async def analyze_spending_patterns(
     metadata.transactions_truncated reports whether more transactions exist
     (null when unknown). Fetch narrower date ranges with get_transactions for detail.
     """
+    if lookback_months < 1:
+        raise ValueError("lookback_months must be at least 1")
     await ensure_authenticated()
 
-    try:
-        if ctx is not None:
-            await ctx.report_progress(0, 2, "Fetching transactions, categories, and budgets…")
+    if ctx is not None:
+        await ctx.report_progress(0, 2, "Fetching transactions, categories, and budgets…")
 
-        end_date = datetime.now().date()
-        start_date = end_date - relativedelta(months=lookback_months)
+    end_date = datetime.now().date()
+    start_date = end_date - relativedelta(months=lookback_months)
 
-        transactions_task = api_call_with_retry(
-            "get_transactions", limit=2000, start_date=start_date.isoformat(), end_date=end_date.isoformat()
-        )
-        budgets_task = api_call_with_retry(
-            "get_budgets", start_date=start_date.isoformat(), end_date=end_date.isoformat()
-        )
-        categories_task = api_call_with_retry("get_transaction_categories")
-        api_results: list[object] = await asyncio.gather(
-            transactions_task, budgets_task, categories_task, return_exceptions=True
-        )
-        transactions, budgets, categories = api_results
-        errors: dict[str, str] = {}
-        if isinstance(transactions, Exception):
-            errors["transactions"] = str(transactions)
-        if isinstance(budgets, Exception):
-            errors["budgets"] = str(budgets)
+    transactions_task = api_call_with_retry(
+        "get_transactions", limit=2000, start_date=start_date.isoformat(), end_date=end_date.isoformat()
+    )
+    budgets_task = api_call_with_retry("get_budgets", start_date=start_date.isoformat(), end_date=end_date.isoformat())
+    categories_task = api_call_with_retry("get_transaction_categories")
+    api_results: list[object] = await asyncio.gather(
+        transactions_task, budgets_task, categories_task, return_exceptions=True
+    )
+    transactions, budgets, categories = api_results
+    errors: dict[str, str] = {}
+    if isinstance(transactions, Exception):
+        errors["transactions"] = str(transactions)
+    if isinstance(budgets, Exception):
+        errors["budgets"] = str(budgets)
 
-        transfer_ids: set[str] | None = None
-        if isinstance(categories, Exception):
-            errors["categories"] = str(categories)
-        else:
-            try:
-                transfer_ids = _transfer_category_ids(categories)
-            except ValueError as error:
-                errors["categories"] = str(error)
-        transfers_excluded = 0
+    transfer_ids: set[str] | None = None
+    if isinstance(categories, Exception):
+        errors["categories"] = str(categories)
+    else:
+        try:
+            transfer_ids = _transfer_category_ids(categories)
+        except ValueError as error:
+            errors["categories"] = str(error)
+    transfers_excluded = 0
 
-        if ctx is not None:
-            await ctx.report_progress(1, 2, "Computing trends, category and account analysis…")
+    if ctx is not None:
+        await ctx.report_progress(1, 2, "Computing trends, category and account analysis…")
 
-        analysis: dict[str, object] = {
-            "analysis_period": {
-                "start_date": start_date.isoformat(),
-                "end_date": end_date.isoformat(),
-                "months_analyzed": lookback_months,
-            },
-            "monthly_trends": {},
-            "category_analysis": {},
-            "account_usage": {},
-            "budget_performance": {},
-        }
+    analysis: dict[str, object] = {
+        "analysis_period": {
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "months_analyzed": lookback_months,
+        },
+        "monthly_trends": {},
+        "category_analysis": {},
+        "account_usage": {},
+        "budget_performance": {},
+    }
 
-        if not isinstance(transactions, Exception):
-            transactions_list = extract_transactions_list(transactions)
+    if not isinstance(transactions, Exception):
+        transactions_list = extract_transactions_list(transactions)
 
-            monthly_data: dict[str, dict[str, float]] = {}
-            category_totals: dict[str, dict[str, float]] = {}
-            category_expense_counts: dict[str, int] = {}
-            account_usage: dict[str, dict[str, float]] = {}
+        monthly_data: dict[str, dict[str, float]] = {}
+        category_totals: dict[str, dict[str, float]] = {}
+        category_expense_counts: dict[str, int] = {}
+        account_usage: dict[str, dict[str, float]] = {}
 
-            for txn in transactions_list:
-                if transfer_ids is not None and _is_transfer(txn, transfer_ids):
-                    transfers_excluded += 1
-                    continue
-                txn_date = txn.get("date", "")
-                amount = float(txn.get("amount", 0))
-                category_name = (
-                    txn.get("category", {}).get("name", "Uncategorized")
-                    if isinstance(txn.get("category"), dict)
-                    else "Uncategorized"
-                )
-                account_name = (
-                    (txn["account"].get("displayName") or "Unknown")
-                    if isinstance(txn.get("account"), dict)
-                    else "Unknown"
-                )
-
-                month_key = txn_date[:7] if len(txn_date) >= 7 else "Unknown"
-                if month_key not in monthly_data:
-                    monthly_data[month_key] = {"income": 0.0, "expenses": 0.0, "net": 0.0, "transaction_count": 0.0}
-
-                if amount > 0:
-                    monthly_data[month_key]["income"] += amount
-                else:
-                    monthly_data[month_key]["expenses"] += abs(amount)
-                monthly_data[month_key]["net"] += amount
-                monthly_data[month_key]["transaction_count"] += 1
-
-                if category_name not in category_totals:
-                    category_totals[category_name] = {"total": 0.0, "transactions": 0.0, "avg_amount": 0.0}
-                    category_expense_counts[category_name] = 0
-                if amount < 0:
-                    category_totals[category_name]["total"] += abs(amount)
-                    category_expense_counts[category_name] += 1
-                category_totals[category_name]["transactions"] += 1
-
-                if account_name not in account_usage:
-                    account_usage[account_name] = {"total_volume": 0.0, "transactions": 0.0}
-                account_usage[account_name]["total_volume"] += abs(amount)
-                account_usage[account_name]["transactions"] += 1
-
-            # Average expense size; income and refunds would otherwise dilute it.
-            for category, expense_count in category_expense_counts.items():
-                if expense_count > 0:
-                    category_totals[category]["avg_amount"] = category_totals[category]["total"] / expense_count
-
-            analysis["monthly_trends"] = dict(sorted(monthly_data.items()))
-            analysis["category_analysis"] = dict(
-                sorted(category_totals.items(), key=lambda x: x[1]["total"], reverse=True)
+        for txn in transactions_list:
+            if transfer_ids is not None and _is_transfer(txn, transfer_ids):
+                transfers_excluded += 1
+                continue
+            txn_date = txn.get("date", "")
+            amount = float(txn.get("amount", 0))
+            category_name = (
+                txn.get("category", {}).get("name", "Uncategorized")
+                if isinstance(txn.get("category"), dict)
+                else "Uncategorized"
             )
-            analysis["account_usage"] = dict(
-                sorted(account_usage.items(), key=lambda x: x[1]["total_volume"], reverse=True)
+            account_name = (
+                (txn["account"].get("displayName") or "Unknown") if isinstance(txn.get("account"), dict) else "Unknown"
             )
 
-            # Upstream returns newest first, so pick months by key, not response order.
-            # Leave out partial months: the current one, the first one when the window
-            # starts mid-month, and the oldest one when the 2,000-row page was truncated.
-            current_month = end_date.strftime("%Y-%m")
-            first_month = start_date.strftime("%Y-%m")
-            complete_months = sorted(
-                key
-                for key in monthly_data
-                if key != "Unknown" and key < current_month and (key > first_month or start_date.day == 1)
-            )
-            if _transactions_truncated(transactions, len(transactions_list)) and complete_months:
-                complete_months = complete_months[1:]
-            if include_forecasting and complete_months:
-                forecast_months = complete_months[-3:]
-                recent_months = [monthly_data[key] for key in forecast_months]
-                avg_monthly_expenses = sum(m["expenses"] for m in recent_months) / len(recent_months)
-                avg_monthly_income = sum(m["income"] for m in recent_months) / len(recent_months)
+            month_key = txn_date[:7] if len(txn_date) >= 7 else "Unknown"
+            if month_key not in monthly_data:
+                monthly_data[month_key] = {"income": 0.0, "expenses": 0.0, "net": 0.0, "transaction_count": 0.0}
 
-                next_month = (end_date + relativedelta(months=1)).strftime("%Y-%m")
-                analysis["forecast"] = {
-                    "next_month": next_month,
-                    "predicted_expenses": round(avg_monthly_expenses, 2),
-                    "predicted_income": round(avg_monthly_income, 2),
-                    "predicted_net": round(avg_monthly_income - avg_monthly_expenses, 2),
-                    "confidence": "medium",
-                    "note": f"Forecast averages complete months {', '.join(forecast_months)}",
-                }
+            if amount > 0:
+                monthly_data[month_key]["income"] += amount
+            else:
+                monthly_data[month_key]["expenses"] += abs(amount)
+            monthly_data[month_key]["net"] += amount
+            monthly_data[month_key]["transaction_count"] += 1
 
-        if not isinstance(budgets, Exception):
-            try:
-                analysis["budget_performance"] = _budget_totals(convert_dates_to_strings(budgets), verbose)
-            except ValueError as error:
-                errors["budgets"] = str(error)
+            if category_name not in category_totals:
+                category_totals[category_name] = {"total": 0.0, "transactions": 0.0, "avg_amount": 0.0}
+                category_expense_counts[category_name] = 0
+            if amount < 0:
+                category_totals[category_name]["total"] += abs(amount)
+                category_expense_counts[category_name] += 1
+            category_totals[category_name]["transactions"] += 1
 
-        txn_count = len(transactions_list) if not isinstance(transactions, Exception) else 0
-        analysis["metadata"] = {
-            "api_calls_made": 3,
-            "transfers_excluded": transfers_excluded if transfer_ids is not None else None,
-            "total_transactions_analyzed": txn_count,
-            "analysis_timestamp": datetime.now().isoformat(),
-            "transactions_truncated": (
-                _transactions_truncated(transactions, txn_count) if not isinstance(transactions, Exception) else None
-            ),
-        }
+            if account_name not in account_usage:
+                account_usage[account_name] = {"total_volume": 0.0, "transactions": 0.0}
+            account_usage[account_name]["total_volume"] += abs(amount)
+            account_usage[account_name]["transactions"] += 1
 
-        if ctx is not None:
-            await ctx.report_progress(2, 2, "Spending pattern analysis complete")
+        # Average expense size; income and refunds would otherwise dilute it.
+        for category, expense_count in category_expense_counts.items():
+            if expense_count > 0:
+                category_totals[category]["avg_amount"] = category_totals[category]["total"] / expense_count
 
-        log.info(
-            "Spending pattern analysis completed",
-            lookback_months=lookback_months,
-            transactions_analyzed=txn_count,
-            include_forecasting=include_forecasting,
+        analysis["monthly_trends"] = dict(sorted(monthly_data.items()))
+        analysis["category_analysis"] = dict(sorted(category_totals.items(), key=lambda x: x[1]["total"], reverse=True))
+        analysis["account_usage"] = dict(
+            sorted(account_usage.items(), key=lambda x: x[1]["total_volume"], reverse=True)
         )
 
-        return SpendingPatterns.model_validate({**analysis, "errors": errors, "verbose": verbose})
+        # Upstream returns newest first, so pick months by key, not response order.
+        # Leave out partial months: the current one, the first one when the window
+        # starts mid-month, and the oldest one when the 2,000-row page was truncated.
+        current_month = end_date.strftime("%Y-%m")
+        first_month = start_date.strftime("%Y-%m")
+        complete_months = sorted(
+            key
+            for key in monthly_data
+            if key != "Unknown" and key < current_month and (key > first_month or start_date.day == 1)
+        )
+        if _transactions_truncated(transactions, len(transactions_list)) and complete_months:
+            complete_months = complete_months[1:]
+        if include_forecasting and complete_months:
+            forecast_months = complete_months[-3:]
+            recent_months = [monthly_data[key] for key in forecast_months]
+            avg_monthly_expenses = sum(m["expenses"] for m in recent_months) / len(recent_months)
+            avg_monthly_income = sum(m["income"] for m in recent_months) / len(recent_months)
 
-    except Exception as e:
-        log.error("Failed to analyze spending patterns", error=str(e), lookback_months=lookback_months)
-        raise
+            next_month = (end_date + relativedelta(months=1)).strftime("%Y-%m")
+            analysis["forecast"] = {
+                "next_month": next_month,
+                "predicted_expenses": round(avg_monthly_expenses, 2),
+                "predicted_income": round(avg_monthly_income, 2),
+                "predicted_net": round(avg_monthly_income - avg_monthly_expenses, 2),
+                "confidence": "medium",
+                "note": f"Forecast averages complete months {', '.join(forecast_months)}",
+            }
+
+    if not isinstance(budgets, Exception):
+        try:
+            analysis["budget_performance"] = _budget_totals(convert_dates_to_strings(budgets), verbose)
+        except ValueError as error:
+            errors["budgets"] = str(error)
+
+    txn_count = len(transactions_list) if not isinstance(transactions, Exception) else 0
+    analysis["metadata"] = {
+        "api_calls_made": 3,
+        "transfers_excluded": transfers_excluded if transfer_ids is not None else None,
+        "total_transactions_analyzed": txn_count,
+        "analysis_timestamp": datetime.now().isoformat(),
+        "transactions_truncated": (
+            _transactions_truncated(transactions, txn_count) if not isinstance(transactions, Exception) else None
+        ),
+    }
+
+    if ctx is not None:
+        await ctx.report_progress(2, 2, "Spending pattern analysis complete")
+
+    log.info(
+        "Spending pattern analysis completed",
+        lookback_months=lookback_months,
+        transactions_analyzed=txn_count,
+        include_forecasting=include_forecasting,
+    )
+
+    return SpendingPatterns.model_validate({**analysis, "errors": errors, "verbose": verbose})
 
 
 # Community client 1.7.x reads and mutations.
@@ -3272,20 +3193,6 @@ def _mutation_payload(result: object, key: str, action: str) -> dict[str, JsonVa
     if _has_errors(payload.get("errors")):
         raise ValueError(f"Monarch rejected the {action}: {payload['errors']}")
     return payload
-
-
-def _transaction_paging(response: object, offset: int, limit: int, returned: int) -> tuple[int | None, int | None]:
-    """Return (total_count, next_offset) for one transaction page."""
-    total: int | None = None
-    if isinstance(response, dict):
-        transactions = response.get("allTransactions")
-        if isinstance(transactions, dict):
-            count = transactions.get("totalCount")
-            if isinstance(count, int) and not isinstance(count, bool):
-                total = count
-    # Without a total, a full page is the only hint that more rows exist.
-    more = offset + returned < total if total is not None else returned > 0 and returned == limit
-    return total, offset + returned if more else None
 
 
 def _compact_stream(item: dict[str, JsonValue]) -> dict[str, JsonValue]:
@@ -3616,7 +3523,7 @@ async def find_duplicate_transactions(
     count_response = await api_call_with_retry(
         "get_transactions", limit=1, start_date=start.isoformat(), end_date=end.isoformat(), account_ids=account_ids
     )
-    total, _ = _transaction_paging(count_response, 0, 1, 0)
+    total = _transactions_total(count_response)
     response = await api_call_with_retry(
         "find_duplicate_transactions",
         start_date=start.isoformat(),
@@ -3701,7 +3608,7 @@ async def get_credit_score_history() -> CreditScoreHistoryResult:
     )
 
 
-@mcp.tool(annotations=WRITE_IDEMPOTENT, title="Set Transaction Tags")
+@mcp.tool(annotations=WRITE_DESTRUCTIVE, title="Set Transaction Tags")
 @track_usage
 async def set_transaction_tags(transaction_id: str, tag_ids: list[str]) -> SetTransactionTagsResult:
     """Replace all tags on a transaction; [] removes every tag. Returns the resulting tag IDs.
@@ -3924,9 +3831,6 @@ async def main() -> None:
         if not interrupted:
             raise
         log.info("interrupted")
-    except Exception as e:
-        log.error("server_error", error=str(e))
-        raise
 
 
 def run() -> None:

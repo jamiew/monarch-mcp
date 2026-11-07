@@ -24,6 +24,24 @@ async def test_every_tool_advertises_title_annotations_and_output_schema() -> No
     assert [name for name, tool in tools.items() if tool.annotations is None] == []
 
 
+async def test_annotations_state_read_only_and_destructive_hints() -> None:
+    tools = await list_tools()
+    unset = [
+        name
+        for name, tool in tools.items()
+        if tool.annotations is None
+        or tool.annotations.read_only_hint is None
+        or tool.annotations.destructive_hint is None
+    ]
+    assert unset == []
+    assert [
+        name for name, tool in tools.items() if tool.annotations.read_only_hint and tool.annotations.destructive_hint
+    ] == []
+    # Replacing a whole set or deleting data removes what the caller didn't name.
+    for name in ("update_transaction_splits", "set_transaction_tags", "delete_transaction", "delete_merchant"):
+        assert tools[name].annotations.destructive_hint is True, name
+
+
 @pytest.mark.parametrize(
     ("tool_name", "schema_props"),
     [

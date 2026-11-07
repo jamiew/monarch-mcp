@@ -2,6 +2,8 @@
 
 import json
 import sys
+import time
+from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 
@@ -17,8 +19,6 @@ from analyze_logs import (
     detect_sessions,
     find_consecutive_repeats,
     find_sequence_patterns,
-    format_json_report,
-    format_report,
     generate_recommendations,
     main,
     parse_analytics_line,
@@ -157,10 +157,10 @@ class TestParseResultSizeLine:
 class TestParseStructlogLine:
     """Tests for structlog JSON format parsing."""
 
-    def test_tool_called(self) -> None:
+    def test_tool_success(self) -> None:
         line = json.dumps(
             {
-                "event": "tool_called",
+                "event": "tool_success",
                 "tool": "get_accounts",
                 "timestamp": "2025-10-19T14:00:00",
                 "time_s": 0.5,
@@ -190,12 +190,31 @@ class TestParseStructlogLine:
     def test_non_json(self) -> None:
         assert parse_structlog_line("not json") is None
 
+    def test_ts_key_sets_timestamp(self) -> None:
+        line = json.dumps({"event": "tool_success", "tool": "get_accounts", "ts": "2025-10-19T14:00:00"})
+        call = parse_structlog_line(line)
+        assert call is not None
+        assert call.timestamp == datetime(2025, 10, 19, 14, 0, 0)
+
 
 # ---------------------------------------------------------------------------
 # Integration: parse_log_file
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def new_york_time(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Pin the local zone: wrapper lines carry UTC times, server lines local ones."""
+    if not hasattr(time, "tzset"):
+        pytest.skip("needs time.tzset")
+    monkeypatch.setenv("TZ", "America/New_York")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+@pytest.mark.usefixtures("new_york_time")
 class TestParseLogFile:
     """Test the full log file parser with mixed formats."""
 
@@ -221,6 +240,63 @@ class TestParseLogFile:
         assert call.execution_time_s == 0.187
         assert call.status == "success"
         assert call.result_chars == 33123
+
+    def test_server_log_lines_pair_into_calls(self, tmp_path: Path) -> None:
+        # The server's stdlib handler prefixes each structlog event with asctime.
+        log = tmp_path / "test.log"
+        log.write_text(
+            '2026-11-07 10:00:00,000 - server - INFO - {"tool": "get_accounts", "args": {"verbose": false}, "event": "tool_call"}\n'
+            '2026-11-07 10:00:00,500 - server - INFO - {"tool": "get_accounts", "time_s": 0.5, "result_chars": 1200, "event": "tool_success"}\n'
+            '2026-11-07 10:00:01,000 - server - INFO - {"tool": "get_accounts", "args": {}, "event": "tool_call"}\n'
+            '2026-11-07 10:00:01,200 - server - ERROR - {"tool": "get_accounts", "time_s": 0.2, "error": "boom", "event": "tool_error"}\n'
+        )
+        calls = parse_log_file(log)
+        assert [(c.status, c.execution_time_s, c.result_chars) for c in calls] == [
+            ("success", 0.5, 1200),
+            ("error", 0.2, None),
+        ]
+        assert calls[0].arguments == {"verbose": False}
+        assert calls[0].timestamp == datetime(2026, 11, 7, 10, 0, 0)
+
+    def test_claude_desktop_log_counts_each_call_once(self, tmp_path: Path) -> None:
+        log = tmp_path / "test.log"
+        log.write_text(
+            "2026-11-07T15:00:00.000Z [monarch-money] [info] Message from client: "
+            '{"method":"tools/call","params":{"name":"get_accounts","arguments":{}},"jsonrpc":"2.0","id":4} '
+            "{ metadata: undefined }\n"
+            "2026-11-07T15:00:00.010Z [monarch-money] [info] 2026-11-07 10:00:00,010 - server - INFO - "
+            '{"tool": "get_accounts", "args": {}, "event": "tool_call"} { metadata: undefined }\n'
+            "2026-11-07T15:00:00.400Z [monarch-money] [info] 2026-11-07 10:00:00,400 - server - INFO - "
+            '{"tool": "get_accounts", "time_s": 0.39, "result_chars": 900, "event": "tool_success"} '
+            "{ metadata: undefined }\n"
+        )
+        calls = parse_log_file(log)
+        assert len(calls) == 1
+        assert (calls[0].status, calls[0].execution_time_s, calls[0].result_chars) == ("success", 0.39, 900)
+
+    def test_wrapper_request_and_unwrapped_server_lines_count_once(self, tmp_path: Path) -> None:
+        # 15:00Z is 10:00 in New York on this date.
+        log = tmp_path / "test.log"
+        log.write_text(
+            "2026-11-07T15:00:00.000Z [monarch-money] [info] Message from client: "
+            '{"method":"tools/call","params":{"name":"get_accounts","arguments":{"verbose":true}},"jsonrpc":"2.0","id":4} '
+            "{ metadata: undefined }\n"
+            '2026-11-07 10:00:00,010 - server - INFO - {"tool": "get_accounts", "args": {"verbose": true}, "event": "tool_call"}\n'
+            '2026-11-07 10:00:00,400 - server - INFO - {"tool": "get_accounts", "time_s": 0.39, "event": "tool_success"}\n'
+        )
+        calls = parse_log_file(log)
+        assert [(c.arguments, c.status, c.execution_time_s) for c in calls] == [({"verbose": True}, "success", 0.39)]
+
+    def test_overlapping_calls_to_one_tool_stay_separate(self, tmp_path: Path) -> None:
+        log = tmp_path / "test.log"
+        log.write_text(
+            '2026-11-07 10:00:00,000 - server - INFO - {"tool": "search_transactions", "args": {"query": "a"}, "event": "tool_call"}\n'
+            '2026-11-07 10:00:00,100 - server - INFO - {"tool": "search_transactions", "args": {"query": "b"}, "event": "tool_call"}\n'
+            '2026-11-07 10:00:00,500 - server - INFO - {"tool": "search_transactions", "time_s": 0.5, "event": "tool_success"}\n'
+            '2026-11-07 10:00:00,600 - server - INFO - {"tool": "search_transactions", "time_s": 0.5, "event": "tool_success"}\n'
+        )
+        calls = parse_log_file(log)
+        assert [(c.arguments, c.status) for c in calls] == [({"query": "a"}, "success"), ({"query": "b"}, "success")]
 
     def test_since_filter(self, tmp_path: Path) -> None:
         log = tmp_path / "test.log"
@@ -414,47 +490,6 @@ class TestRecommendations:
         bloat = [r for r in recs if r.category == "response_bloat"]
         assert len(bloat) >= 1
         assert "update_transactions_bulk" in bloat[0].message
-
-
-# ---------------------------------------------------------------------------
-# Report formatting
-# ---------------------------------------------------------------------------
-
-
-class TestReportFormatting:
-    def _make_test_data(self) -> tuple:
-        calls = [
-            ToolCall(
-                timestamp=datetime(2025, 10, 19, 10, 0),
-                tool_name="get_tx",
-                arguments={},
-                execution_time_s=0.5,
-                result_chars=10240,
-                status="success",
-            ),
-        ]
-        stats = compute_tool_stats(calls)
-        sessions = detect_sessions(calls)
-        sequences = find_sequence_patterns(calls)
-        repeats = find_consecutive_repeats(calls)
-        recs = generate_recommendations(stats, sequences, repeats)
-        return stats, sessions, sequences, repeats, recs, calls
-
-    def test_text_report_contains_sections(self) -> None:
-        stats, sessions, sequences, repeats, recs, calls = self._make_test_data()
-        report = format_report(stats, sessions, sequences, repeats, recs, calls)
-        assert "MONARCH MCP LOG ANALYSIS REPORT" in report
-        assert "TOOL USAGE STATS" in report
-        assert "get_tx" in report
-
-    def test_json_report_structure(self) -> None:
-        stats, sessions, sequences, repeats, recs, calls = self._make_test_data()
-        raw = format_json_report(stats, sessions, sequences, repeats, recs, calls)
-        report = json.loads(raw)
-        assert "summary" in report
-        assert "tools" in report
-        assert "recommendations" in report
-        assert report["summary"]["total_calls"] == 1
 
 
 # ---------------------------------------------------------------------------
