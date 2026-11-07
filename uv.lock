@@ -1286,7 +1286,7 @@ wheels = [
 
 [[package]]
 name = "monarch-mcp-jamiew"
-version = "0.6.0"
+version = "0.7.0"
 source = { editable = "." }
 dependencies = [
     { name = "anyio" },
