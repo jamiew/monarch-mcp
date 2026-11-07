@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Fixes
+
+- `create_transaction` now fails when Monarch rejects the transaction or returns none. Before, it reported success.
+- `analyze_spending_patterns` rejects a `lookback_months` below 1.
+- A bulk update item that fails with an unexpected internal error reports "Unexpected error", like a whole tool call does, instead of the internal error text.
+- Invalid dates, queries, and bulk payloads fail before the server logs in to Monarch.
+- `scripts/analyze_logs.py` now reads the server's current log lines and Claude Desktop request lines in log files. It skipped both before. It also counts each call once.
+
+### MCP
+
+- `update_transaction_splits` and `set_transaction_tags` are marked destructive, since they replace the whole set. Read-only tools now state that they are not destructive, and `refresh_accounts` is marked idempotent.
+- The server sends short instructions to clients: amounts are signed, IDs come from lookup tools, and destructive changes need the user's confirmation.
+
+### Development
+
+- Dropped the unused `mcp[cli]` extra, so installs no longer pull in `typer`, `rich`, or `python-dotenv`.
+- `scripts/health_check.py` no longer reads `.env` itself. Run it with `uv run --env-file .env`.
+- CI cancels superseded runs, publishing never runs twice at once, and workflows no longer keep the checkout token.
+- `server.json` lists `MONARCH_SESSION_DIR`.
+
 ### Website
 
 - Rebuilt the project website as a shorter product overview, with a new original hero illustration and links to the README for setup, tools, and security details.

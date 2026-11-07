@@ -1,362 +1,137 @@
-"""Tests for authentication error handling and retry logic."""
+"""Session loading, re-login recovery, and retry boundaries."""
 
+import asyncio
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import server
 
-class TestAuthenticationRetry:
-    """Test authentication error handling and automatic session clearing."""
 
-    @pytest.mark.asyncio
-    async def test_api_call_with_retry_handles_401(self):
-        """Test that 401 errors trigger session clear and retry."""
-        from server import api_call_with_retry
+async def test_other_errors_propagate_without_relogin(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = MagicMock()
+    client.get_accounts = AsyncMock(side_effect=Exception("Network timeout error"))
+    relogin = AsyncMock()
+    monkeypatch.setattr(server, "mm_client", client)
+    monkeypatch.setattr(server, "ensure_authenticated", relogin)
 
-        mock_method = AsyncMock()
-        mock_method.side_effect = [Exception("401 Unauthorized"), {"success": True}]
+    with pytest.raises(Exception, match="Network timeout"):
+        await server.api_call_with_retry("get_accounts")
 
+    assert client.get_accounts.await_count == 1
+    relogin.assert_not_awaited()
+    assert server.mm_client is client
+
+
+async def test_initialize_client_loads_session_without_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(server, "auth_state", server.AuthState.NOT_INITIALIZED)
+    with (
+        patch.dict(os.environ, {"MONARCH_EMAIL": "test@example.com", "MONARCH_PASSWORD": "testpass"}, clear=True),
+        patch("server.session_file") as mock_session_file,
+        patch("server.MonarchMoney") as mock_mm_class,
+    ):
+        mock_session_file.exists.return_value = True
         mock_client = MagicMock()
-        mock_client.test_method = mock_method
-
-        with (
-            patch("server.mm_client", mock_client),
-            patch("server.clear_session") as mock_clear,
-            patch("server.ensure_authenticated") as mock_auth,
-        ):
-            result = await api_call_with_retry("test_method")
-
-            assert mock_clear.called
-            assert mock_auth.called
-            assert result == {"success": True}
-            assert mock_method.call_count == 2
-
-    @pytest.mark.asyncio
-    async def test_api_call_with_retry_handles_bad_credentials(self):
-        """Test that bad credentials error triggers session clear and retry."""
-        from server import api_call_with_retry
-
-        mock_method = AsyncMock()
-        mock_method.side_effect = [Exception("bad credentials provided"), {"success": True}]
-
-        mock_client = MagicMock()
-        mock_client.test_method = mock_method
-
-        with (
-            patch("server.mm_client", mock_client),
-            patch("server.clear_session") as mock_clear,
-            patch("server.ensure_authenticated") as mock_auth,
-        ):
-            result = await api_call_with_retry("test_method")
-
-            assert mock_clear.called
-            assert mock_auth.called
-            assert result == {"success": True}
-
-    @pytest.mark.asyncio
-    async def test_api_call_with_retry_handles_unauthorized(self):
-        """Test that 'unauthorized' error triggers session clear and retry."""
-        from server import api_call_with_retry
-
-        mock_method = AsyncMock()
-        mock_method.side_effect = [Exception("Request unauthorized - invalid session"), {"success": True}]
-
-        mock_client = MagicMock()
-        mock_client.test_method = mock_method
-
-        with (
-            patch("server.mm_client", mock_client),
-            patch("server.clear_session") as mock_clear,
-            patch("server.ensure_authenticated") as mock_auth,
-        ):
-            result = await api_call_with_retry("test_method")
-
-            assert mock_clear.called
-            assert mock_auth.called
-
-    @pytest.mark.asyncio
-    async def test_api_call_with_retry_handles_403(self):
-        """Test that 403 Forbidden errors trigger session clear and retry."""
-        from server import api_call_with_retry
-
-        mock_method = AsyncMock()
-        mock_method.side_effect = [Exception("403 Forbidden - not authenticated"), {"success": True}]
-
-        mock_client = MagicMock()
-        mock_client.test_method = mock_method
-
-        with (
-            patch("server.mm_client", mock_client),
-            patch("server.clear_session") as mock_clear,
-            patch("server.ensure_authenticated") as mock_auth,
-        ):
-            result = await api_call_with_retry("test_method")
-
-            assert mock_clear.called
-            assert mock_auth.called
-
-    @pytest.mark.asyncio
-    async def test_api_call_with_retry_handles_session_expired(self):
-        """Test that 'session' errors trigger session clear and retry."""
-        from server import api_call_with_retry
-
-        mock_method = AsyncMock()
-        mock_method.side_effect = [Exception("Session has expired, please login again"), {"success": True}]
-
-        mock_client = MagicMock()
-        mock_client.test_method = mock_method
-
-        with (
-            patch("server.mm_client", mock_client),
-            patch("server.clear_session") as mock_clear,
-            patch("server.ensure_authenticated") as mock_auth,
-        ):
-            result = await api_call_with_retry("test_method")
-
-            assert mock_clear.called
-            assert mock_auth.called
-
-    @pytest.mark.asyncio
-    async def test_api_call_with_retry_ignores_other_errors(self):
-        """Test that non-auth errors are re-raised without retry."""
-        from server import api_call_with_retry
-
-        mock_method = AsyncMock()
-        mock_method.side_effect = Exception("Network timeout error")
-
-        mock_client = MagicMock()
-        mock_client.test_method = mock_method
-
-        with (
-            patch("server.mm_client", mock_client),
-            patch("server.clear_session") as mock_clear,
-            patch("server.ensure_authenticated") as mock_auth,
-        ):
-            with pytest.raises(Exception, match="Network timeout"):
-                await api_call_with_retry("test_method")
-
-            assert not mock_clear.called
-            assert not mock_auth.called
-
-    @pytest.mark.asyncio
-    async def test_initialize_client_loads_session_without_validation(self):
-        """Test that initialize_client loads existing sessions without validating them."""
-        import os
-
-        import server
-
-        original_auth_state = server.auth_state
-        server.auth_state = server.AuthState.NOT_INITIALIZED
-
-        try:
-            with (
-                patch.dict(
-                    os.environ,
-                    {"MONARCH_EMAIL": "test@example.com", "MONARCH_PASSWORD": "testpass"},
-                    clear=True,
-                ),
-                patch("server.session_file") as mock_session_file,
-                patch("server.MonarchMoney") as mock_mm_class,
-            ):
-                mock_session_file.exists.return_value = True
-
-                mock_client = MagicMock()
-                mock_client.login = AsyncMock()
-                mock_mm_class.return_value = mock_client
-
-                await server.initialize_client()
-
-                assert mock_client.load_session.called
-                assert not mock_client.login.called
-                assert server.auth_state == server.AuthState.AUTHENTICATED
-        finally:
-            server.auth_state = original_auth_state
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("reset_during", ["forced_login", "session_load", "login_retry"])
-    async def test_initialization_recovers_client_after_session_reset(self, reset_during: str, tmp_path: Path) -> None:
-        import server
-
-        initial_client = MagicMock()
-        initial_client.login = AsyncMock(side_effect=ValueError("invalid credentials"))
-        initial_client.load_session.side_effect = ValueError("session expired")
-        fresh_client = MagicMock()
-        fresh_client.login = AsyncMock()
-        session_file = tmp_path / "session.pickle"
-        if reset_during == "session_load":
-            session_file.touch()
-
-        with (
-            patch.dict(
-                "os.environ",
-                {
-                    "MONARCH_EMAIL": "test@example.com",
-                    "MONARCH_PASSWORD": "testpass",
-                    "MONARCH_FORCE_LOGIN": "true" if reset_during == "forced_login" else "false",
-                },
-                clear=True,
-            ),
-            patch("server.session_file", session_file),
-            patch("server.session_dir", tmp_path),
-            patch("server.MonarchMoney", side_effect=[initial_client, fresh_client]),
-            patch("server.asyncio.sleep", new_callable=AsyncMock),
-        ):
-            await server.initialize_client()
-
-        assert server.auth_state == server.AuthState.AUTHENTICATED
-        assert server.mm_client is fresh_client
-        fresh_client.login.assert_awaited_once()
-
-    async def test_login_saves_only_the_private_session(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        import server
-
-        client = server.MonarchMoney(token="synthetic-session-token")
-        monkeypatch.setattr(client, "_login_user", AsyncMock())
-        monkeypatch.setattr(server, "MonarchMoney", lambda **_: client)
-        monkeypatch.chdir(tmp_path)
-        private_dir = tmp_path / "private"
-        session_file = private_dir / "session.pickle"
-        monkeypatch.setattr(server, "session_dir", private_dir)
-        monkeypatch.setattr(server, "session_file", session_file)
-        monkeypatch.setenv("MONARCH_EMAIL", "example@example.invalid")
-        monkeypatch.setenv("MONARCH_PASSWORD", "synthetic-password")
-        monkeypatch.setenv("MONARCH_FORCE_LOGIN", "false")
+        mock_client.login = AsyncMock()
+        mock_mm_class.return_value = mock_client
 
         await server.initialize_client()
 
-        assert session_file.is_file()
-        assert session_file.stat().st_mode & 0o777 == 0o600
-        assert not (tmp_path / ".mm").exists()
+        assert mock_client.load_session.called
+        assert not mock_client.login.called
+        assert server.auth_state == server.AuthState.AUTHENTICATED
 
-    def test_clear_session_removes_both_session_files(self):
-        """Clearing the session removes the configured session file."""
-        from server import clear_session
 
-        with patch("server.session_file") as mock_custom_session, patch("server.session_dir") as mock_session_dir:
-            mock_custom_session.exists.return_value = True
-            mock_custom_session.unlink = MagicMock()
+@pytest.mark.parametrize("reset_during", ["forced_login", "session_load", "login_retry"])
+async def test_initialization_recovers_client_after_session_reset(reset_during: str, tmp_path: Path) -> None:
+    initial_client = MagicMock()
+    initial_client.login = AsyncMock(side_effect=ValueError("invalid credentials"))
+    initial_client.load_session.side_effect = ValueError("session expired")
+    fresh_client = MagicMock()
+    fresh_client.login = AsyncMock()
+    session_file = tmp_path / "session.pickle"
+    if reset_during == "session_load":
+        session_file.touch()
 
-            mock_mm_session = MagicMock()
-            mock_mm_session.exists.return_value = True
-            mock_session_dir.__truediv__ = MagicMock(return_value=mock_mm_session)
+    with (
+        patch.dict(
+            "os.environ",
+            {
+                "MONARCH_EMAIL": "test@example.com",
+                "MONARCH_PASSWORD": "testpass",
+                "MONARCH_FORCE_LOGIN": "true" if reset_during == "forced_login" else "false",
+            },
+            clear=True,
+        ),
+        patch("server.session_file", session_file),
+        patch("server.session_dir", tmp_path),
+        patch("server.MonarchMoney", side_effect=[initial_client, fresh_client]),
+        patch("server.asyncio.sleep", new_callable=AsyncMock),
+    ):
+        await server.initialize_client()
 
-            clear_session()
+    assert server.auth_state == server.AuthState.AUTHENTICATED
+    assert server.mm_client is fresh_client
+    fresh_client.login.assert_awaited_once()
 
-            assert mock_custom_session.unlink.called
 
-    @pytest.mark.asyncio
-    async def test_auth_error_indicators_comprehensive(self):
-        """Test that all auth error indicators are properly detected."""
-        from server import api_call_with_retry
+async def test_login_saves_only_the_private_session(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    client = server.MonarchMoney(token="synthetic-session-token")
+    monkeypatch.setattr(client, "_login_user", AsyncMock())
+    monkeypatch.setattr(server, "MonarchMoney", lambda **_: client)
+    monkeypatch.chdir(tmp_path)
+    private_dir = tmp_path / "private"
+    session_file = private_dir / "session.pickle"
+    monkeypatch.setattr(server, "session_dir", private_dir)
+    monkeypatch.setattr(server, "session_file", session_file)
+    monkeypatch.setenv("MONARCH_EMAIL", "example@example.invalid")
+    monkeypatch.setenv("MONARCH_PASSWORD", "synthetic-password")
+    monkeypatch.setenv("MONARCH_FORCE_LOGIN", "false")
 
-        auth_error_messages = [
-            "Request failed with status 401",
-            "Unauthorized access denied",
-            "Session has expired",
-            "Bad credentials provided",
-            "Invalid credentials for user",
-            "Authentication failed - check password",
-            "Auth failed for this request",
-            "403 Forbidden",
-            "Not authenticated - please login",
-        ]
+    await server.initialize_client()
 
-        for error_msg in auth_error_messages:
-            mock_method = AsyncMock()
-            mock_method.side_effect = [Exception(error_msg), {"success": True}]
+    assert server.auth_state == server.AuthState.AUTHENTICATED
+    assert session_file.is_file()
+    assert session_file.stat().st_mode & 0o777 == 0o600
+    assert not (tmp_path / ".mm").exists()
 
-            mock_client = MagicMock()
-            mock_client.test_method = mock_method
 
-            with (
-                patch("server.mm_client", mock_client),
-                patch("server.clear_session") as mock_clear,
-                patch("server.ensure_authenticated") as mock_auth,
-            ):
-                result = await api_call_with_retry("test_method")
+def test_clear_session_removes_session_files_and_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    session_file = tmp_path / "session.pickle"
+    library_session = tmp_path / "mm_session.pickle"
+    session_file.write_bytes(b"synthetic")
+    library_session.write_bytes(b"synthetic")
+    monkeypatch.setattr(server, "session_file", session_file)
+    monkeypatch.setattr(server, "session_dir", tmp_path)
 
-                assert mock_clear.called, f"Failed to detect auth error: {error_msg}"
-                assert mock_auth.called, f"Failed to reinitialize after: {error_msg}"
-                assert result == {"success": True}
+    server.clear_session()
 
-    @pytest.mark.asyncio
-    async def test_stale_client_after_reauth(self):
-        """Retry with the new client after reauthentication, not a stale method."""
-        import server
+    assert not session_file.exists()
+    assert not library_session.exists()
+    assert server.mm_client is None
+    assert server.auth_state is server.AuthState.NOT_INITIALIZED
 
-        old_client = MagicMock()
-        new_client = MagicMock()
 
-        old_method = AsyncMock(side_effect=Exception("401 Unauthorized"))
-        old_client.get_accounts = old_method
+async def test_concurrent_ensure_authenticated_calls_share_one_initialization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(server, "auth_state", server.AuthState.NOT_INITIALIZED)
+    monkeypatch.setattr(server, "mm_client", None)
+    monkeypatch.setattr(server, "auth_lock", None)
+    init_count = 0
 
-        new_method = AsyncMock(return_value=[{"id": "account1", "name": "Test Account"}])
-        new_client.get_accounts = new_method
+    async def slow_initialize_client() -> None:
+        nonlocal init_count
+        init_count += 1
+        await asyncio.sleep(0.05)
+        server.mm_client = MagicMock()
+        server.auth_state = server.AuthState.AUTHENTICATED
 
-        current_client = old_client
+    monkeypatch.setattr(server, "initialize_client", slow_initialize_client)
 
-        async def mock_ensure_authenticated():
-            """Simulate re-auth by switching to new client."""
-            nonlocal current_client
-            current_client = new_client
-            server.mm_client = new_client
+    await asyncio.gather(*(server.ensure_authenticated() for _ in range(10)))
 
-        def get_client():
-            """Return current client for mm_client."""
-            return current_client
-
-        with (
-            patch("server.mm_client", new_callable=lambda: property(lambda self: get_client())),
-            patch("server.clear_session"),
-            patch("server.ensure_authenticated", side_effect=mock_ensure_authenticated),
-        ):
-            server.mm_client = old_client
-
-            result = await server.api_call_with_retry("get_accounts")
-
-            assert old_method.call_count == 1
-
-            assert new_method.call_count == 1
-
-            assert result == [{"id": "account1", "name": "Test Account"}]
-
-    @pytest.mark.asyncio
-    async def test_concurrent_ensure_authenticated_calls(self):
-        """Concurrent authentication requests share one initialization."""
-        import asyncio
-
-        import server
-
-        original_state = server.auth_state
-        original_client = server.mm_client
-        original_lock = server.auth_lock
-
-        server.auth_state = server.AuthState.NOT_INITIALIZED
-        server.mm_client = None
-        server.auth_lock = None  # Will be created on first call
-
-        try:
-            init_count = 0
-
-            async def mock_initialize_client():
-                nonlocal init_count
-                init_count += 1
-                await asyncio.sleep(0.05)  # Simulate slow auth
-                server.mm_client = MagicMock()
-                server.auth_state = server.AuthState.AUTHENTICATED
-
-            with (
-                patch.dict("os.environ", {"MONARCH_EMAIL": "test@example.com", "MONARCH_PASSWORD": "test123"}),
-                patch("server.initialize_client", side_effect=mock_initialize_client),
-            ):
-                tasks = [server.ensure_authenticated() for _ in range(10)]
-                await asyncio.gather(*tasks)
-
-                assert init_count == 1, f"Expected 1 init, got {init_count}"
-
-                assert server.auth_state == server.AuthState.AUTHENTICATED
-        finally:
-            server.auth_state = original_state
-            server.mm_client = original_client
-            server.auth_lock = original_lock
+    assert init_count == 1
+    assert server.auth_state == server.AuthState.AUTHENTICATED

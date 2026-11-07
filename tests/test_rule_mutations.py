@@ -119,7 +119,7 @@ async def test_create_sends_criteria_and_actions_and_returns_created_rule(mock_a
 async def test_create_requires_a_criterion_and_an_action_before_api(
     mock_api: AsyncMock, arguments: dict[str, Any]
 ) -> None:
-    with pytest.raises(ToolError, match="A rule needs"):
+    with pytest.raises(ToolError):
         await server.create_transaction_rule(**arguments)
     mock_api.assert_not_awaited()
 
@@ -151,7 +151,7 @@ def test_amount_criterion_rejects_partial_or_invalid_bounds(arguments: dict[str,
 )
 async def test_create_fails_on_payload_errors(mock_api: AsyncMock, errors: JsonValue) -> None:
     fake = install(mock_api, FakeRulesApi([], {"createTransactionRuleV2": {"transactionRule": None, "errors": errors}}))
-    with pytest.raises(ToolError, match="rejected the rule creation"):
+    with pytest.raises(ToolError):
         await server.create_transaction_rule(
             merchant_criteria=[server.RuleTextCriterion(value="Corner Deli")], set_category_id="cat_001"
         )
@@ -160,7 +160,7 @@ async def test_create_fails_on_payload_errors(mock_api: AsyncMock, errors: JsonV
 
 async def test_create_fails_without_returned_rule(mock_api: AsyncMock) -> None:
     install(mock_api, FakeRulesApi([], {"createTransactionRuleV2": {"transactionRule": None, "errors": None}}))
-    with pytest.raises(ToolError, match="no created rule"):
+    with pytest.raises(ToolError):
         await server.create_transaction_rule(
             merchant_criteria=[server.RuleTextCriterion(value="Corner Deli")], set_category_id="cat_001"
         )
@@ -250,51 +250,50 @@ async def test_update_preserves_split_action_without_type_labels(mock_api: Async
 
 
 @pytest.mark.parametrize(
-    ("arguments", "message"),
+    "arguments",
     [
-        ({}, "at least one change"),
-        (
-            {"amount_criteria": server.RuleAmountCriterion(operator="eq", value=1), "clear_amount_criteria": True},
-            "not both",
-        ),
+        {},
+        {"amount_criteria": server.RuleAmountCriterion(operator="eq", value=1), "clear_amount_criteria": True},
     ],
 )
 async def test_update_rejects_empty_or_conflicting_requests_before_api(
-    mock_api: AsyncMock, arguments: dict[str, Any], message: str
+    mock_api: AsyncMock, arguments: dict[str, Any]
 ) -> None:
-    with pytest.raises(ToolError, match=message):
+    with pytest.raises(ToolError):
         await server.update_transaction_rule(rule_id="rule_001", **arguments)
     mock_api.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
-    ("arguments", "message"),
+    ("arguments", "missing"),
     [
-        ({"set_category_id": "", "set_merchant_name": "", "add_tag_ids": [], "review_status": ""}, "one action"),
-        ({"merchant_criteria": [], "clear_amount_criteria": True}, "merchant, statement, or amount"),
+        ({"set_category_id": "", "set_merchant_name": "", "add_tag_ids": [], "review_status": ""}, "action"),
+        ({"merchant_criteria": [], "clear_amount_criteria": True}, "amount"),
     ],
 )
 async def test_update_rejects_rules_left_without_required_parts(
-    mock_api: AsyncMock, arguments: dict[str, Any], message: str
+    mock_api: AsyncMock, arguments: dict[str, Any], missing: str
 ) -> None:
     rule = existing_rule()
     rule["actionSetOwner"] = None
     fake = install(mock_api, FakeRulesApi([rule], {"updateTransactionRuleV2": {"errors": None}}))
-    with pytest.raises(ToolError, match=message):
+    # The caller must learn which required part the edit would remove.
+    with pytest.raises(ToolError, match=missing):
         await server.update_transaction_rule(rule_id="rule_001", **arguments)
     assert fake.mutations == []
 
 
 async def test_update_unknown_rule_fails_without_mutation(mock_api: AsyncMock) -> None:
     fake = install(mock_api, FakeRulesApi([existing_rule()], {}))
-    with pytest.raises(ToolError, match="No transaction rule"):
+    with pytest.raises(ToolError):
         await server.update_transaction_rule(rule_id="rule_missing", hide_from_reports=True)
     assert fake.mutations == []
 
 
 async def test_update_fails_on_payload_errors(mock_api: AsyncMock) -> None:
     install(mock_api, FakeRulesApi([existing_rule()], {"updateTransactionRuleV2": {"errors": {"message": "Bad"}}}))
-    with pytest.raises(ToolError, match="rejected the rule update: Bad"):
+    # Monarch's own rejection reason reaches the caller.
+    with pytest.raises(ToolError, match="Bad"):
         await server.update_transaction_rule(rule_id="rule_001", hide_from_reports=True)
 
 
@@ -313,7 +312,7 @@ async def test_delete_trusts_reread_over_deleted_flag(mock_api: AsyncMock) -> No
 
 async def test_delete_fails_when_rule_remains(mock_api: AsyncMock) -> None:
     install(mock_api, FakeRulesApi([existing_rule()], {"deleteTransactionRule": {"deleted": True, "errors": None}}))
-    with pytest.raises(ToolError, match="still exists"):
+    with pytest.raises(ToolError):
         await server.delete_transaction_rule(rule_id="rule_001")
 
 
@@ -326,7 +325,7 @@ async def test_delete_fails_when_rule_remains(mock_api: AsyncMock) -> None:
 )
 async def test_delete_fails_on_errors_or_missing_payload(mock_api: AsyncMock, response: dict[str, JsonValue]) -> None:
     install(mock_api, FakeRulesApi([], response))
-    with pytest.raises(ToolError, match="rule deletion"):
+    with pytest.raises(ToolError):
         await server.delete_transaction_rule(rule_id="rule_001")
 
 

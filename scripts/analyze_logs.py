@@ -4,7 +4,7 @@
 Supports 3 log formats:
   1. Claude Desktop wrapper: `Message from client: {"method":"tools/call",...}`
   2. Legacy markers: `[TOOL_CALL]`, `[ANALYTICS]`, `[RESULT_SIZE]`
-  3. Structlog JSON: `{"event": "tool_success", ...}`
+  3. Structlog JSON, as the server writes it: `... - server - INFO - {"event": "tool_success", ...}`
 
 Usage:
   uv run scripts/analyze_logs.py                     # full report
@@ -17,7 +17,7 @@ import argparse
 import json
 import re
 import sys
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -96,11 +96,8 @@ class Recommendation:
 # Log Parsers
 # ---------------------------------------------------------------------------
 
-# Claude Desktop wrapper format
-_WRAPPER_RE = re.compile(
-    r"^(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\s+\[.*?\]\s+\[info\]\s+"
-    r'Message from client:\s+(\{.*"method"\s*:\s*"tools/call".*\})\s',
-)
+# Claude Desktop wrapper format. The JSON message may be followed by a metadata suffix.
+_WRAPPER_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\s+\[.*?\]\s+\[info\]\s+Message from client:\s+(?=\{)")
 
 # Legacy marker formats
 _TOOL_CALL_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}\s+[\d:,]+)\s+.*\[TOOL_CALL\]\s+(\w+)\s+\|\s+args:\s+(.+)$")
@@ -120,8 +117,8 @@ _RESULT_ITEMS_RE = re.compile(r"\|\s+(?:transactions|categories|results):\s+(\d+
 
 
 def parse_timestamp_wrapper(ts: str) -> datetime:
-    """Parse ISO timestamp from Claude Desktop wrapper lines."""
-    return datetime.fromisoformat(ts.replace("Z", "+00:00").replace("+00:00", ""))
+    """Parse a wrapper line's UTC timestamp as naive local time, like the server's own log times."""
+    return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone().replace(tzinfo=None)
 
 
 def parse_timestamp_legacy(ts: str) -> datetime:
@@ -134,22 +131,21 @@ def parse_wrapper_line(line: str) -> ToolCall | None:
     m = _WRAPPER_RE.match(line)
     if not m:
         return None
-    ts_str, json_str = m.group(1), m.group(2)
     try:
-        msg = json.loads(json_str)
+        msg, _ = json.JSONDecoder().raw_decode(line, m.end())
     except json.JSONDecodeError:
         return None
+    if not isinstance(msg, dict) or msg.get("method") != "tools/call":
+        return None
 
-    params = msg.get("params", {})
-    tool_name = params.get("name", "")
-    arguments = params.get("arguments", {})
-    if not tool_name:
+    params = msg.get("params")
+    if not isinstance(params, dict) or not params.get("name"):
         return None
 
     return ToolCall(
-        timestamp=parse_timestamp_wrapper(ts_str),
-        tool_name=tool_name,
-        arguments=arguments,
+        timestamp=parse_timestamp_wrapper(m.group(1)),
+        tool_name=params["name"],
+        arguments=params.get("arguments", {}),
     )
 
 
@@ -200,14 +196,25 @@ def parse_result_size_line(line: str) -> tuple[str, str, int, float, int | None]
     return (ts_str, tool_name, chars, kb, items)
 
 
+_WRAPPER_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}T[\d:.]+Z)")
+_ASCTIME_RE = re.compile(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3})")
+
+
 def parse_structlog_line(line: str) -> ToolCall | None:
-    """Parse a structlog JSON line."""
-    line = line.strip()
-    if not line.startswith("{"):
+    """Parse a structlog JSON event, alone or after a stdlib or Claude Desktop prefix.
+
+    A tool_call event starts a call (status "unknown"); tool_success and tool_error
+    carry its timing and result size.
+    """
+    start = line.find("{")
+    if start < 0:
         return None
     try:
-        data = json.loads(line)
+        # raw_decode ignores text after the object, such as Claude Desktop's metadata suffix.
+        data, _ = json.JSONDecoder().raw_decode(line, start)
     except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
         return None
 
     event = data.get("event", "")
@@ -218,19 +225,24 @@ def parse_structlog_line(line: str) -> ToolCall | None:
     if not tool_name:
         return None
 
-    ts_str = data.get("timestamp", data.get("ts", ""))
-    try:
-        ts = datetime.fromisoformat(ts_str) if ts_str else datetime.now()
-    except (ValueError, TypeError):
-        ts = datetime.now()
+    ts: datetime | None = None
+    if m := _WRAPPER_TS_RE.match(line):
+        ts = parse_timestamp_wrapper(m.group(1))
+    elif m := _ASCTIME_RE.search(line[:start]):
+        ts = parse_timestamp_legacy(m.group(1))
+    elif ts_value := data.get("timestamp") or data.get("ts"):
+        try:
+            ts = datetime.fromisoformat(ts_value)
+        except (ValueError, TypeError):
+            ts = None
 
     return ToolCall(
-        timestamp=ts,
+        timestamp=ts or datetime.now(),
         tool_name=tool_name,
         arguments=data.get("args", {}),
         execution_time_s=data.get("time_s"),
         result_chars=data.get("result_chars"),
-        status="error" if "error" in event else "success",
+        status="unknown" if event == "tool_call" else "error" if event == "tool_error" else "success",
     )
 
 
@@ -243,19 +255,33 @@ def parse_log_file(path: Path, since: datetime | None = None) -> list[ToolCall]:
     """Parse supported log formats and merge timing and size records.
 
     Merge legacy [TOOL_CALL] records into the latest call for that tool when
-    their timestamps differ by less than two seconds.
+    their timestamps differ by less than two seconds. A structured tool_call
+    merges into a wrapper request for the same tool within two seconds, and each
+    tool_success or tool_error completes that tool's oldest open call. The logs
+    carry no request IDs, so overlapping calls to one tool may swap timings.
     """
     calls: list[ToolCall] = []
     # Most recent ToolCall per tool_name, for attaching analytics/size data
     pending_calls: dict[str, ToolCall] = {}
+    # Wrapper requests not yet matched to a server tool_call, and calls awaiting a result.
+    wrapper_calls: defaultdict[str, deque[ToolCall]] = defaultdict(deque)
+    open_calls: defaultdict[str, deque[ToolCall]] = defaultdict(deque)
+
+    def _is_recent(ts: datetime, other: datetime) -> bool:
+        return abs((ts - other).total_seconds()) < 2.0
 
     def _is_recent_dup(tool_name: str, ts: datetime) -> bool:
         """Check if a call is a duplicate of the most recent pending call for this tool."""
         prev = pending_calls.get(tool_name)
-        if prev is None:
-            return False
-        gap = abs((ts - prev.timestamp).total_seconds())
-        return gap < 2.0
+        return prev is not None and _is_recent(ts, prev.timestamp)
+
+    def _take_wrapper_call(tool_name: str, ts: datetime) -> ToolCall | None:
+        queue = wrapper_calls[tool_name]
+        while queue:
+            candidate = queue.popleft()
+            if _is_recent(ts, candidate.timestamp):
+                return candidate
+        return None
 
     with open(path) as f:
         for line_num, line in enumerate(f, 1):
@@ -266,6 +292,7 @@ def parse_log_file(path: Path, since: datetime | None = None) -> list[ToolCall]:
                     continue
                 calls.append(call)
                 pending_calls[call.tool_name] = call
+                wrapper_calls[call.tool_name].append(call)
                 continue
 
             call = parse_tool_call_line(line)
@@ -303,7 +330,22 @@ def parse_log_file(path: Path, since: datetime | None = None) -> list[ToolCall]:
                 call.line_number = line_num
                 if since and call.timestamp < since:
                     continue
-                calls.append(call)
+                if call.status == "unknown":
+                    wrapper = _take_wrapper_call(call.tool_name, call.timestamp)
+                    if wrapper is not None:
+                        wrapper.arguments = wrapper.arguments or call.arguments
+                        call = wrapper
+                    else:
+                        calls.append(call)
+                    open_calls[call.tool_name].append(call)
+                elif open_calls[call.tool_name]:
+                    started = open_calls[call.tool_name].popleft()
+                    started.execution_time_s = call.execution_time_s
+                    started.result_chars = call.result_chars
+                    started.status = call.status
+                    continue
+                else:
+                    calls.append(call)
                 pending_calls[call.tool_name] = call
 
     return calls

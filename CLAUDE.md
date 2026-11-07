@@ -4,7 +4,7 @@
 
 Never put real financial data in code, tests, docs, or commits. This includes account and merchant names from a user's history, transaction/category/account IDs, amounts, and spending patterns. Use synthetic examples such as `Corner Deli`, `cat_001`, and `txn_123`. A generic brand example is fine; data copied from an account is not.
 
-Do not read or commit credentials, `.env`, `.mcp.json`, saved sessions, or financial logs. Logs can contain tool arguments and API error details. Review and redact them before sharing.
+Do not read or commit credentials, `.env`, saved sessions, or financial logs. The tracked `.mcp.json` reads credentials from `.env`; keep secrets out of it. Logs can contain tool arguments and API error details. Review and redact them before sharing.
 
 ## Development
 
@@ -33,7 +33,7 @@ Live integration tests are opt-in and never load `.env` or saved sessions themse
 MONARCH_RUN_INTEGRATION=true uv run --env-file .env pytest tests/test_integration.py -v
 ```
 
-That command contacts Monarch. Ordinary tests use synthetic data and skip live calls. `scripts/health_check.py` is a separate live diagnostic that loads `.env` and uses the client's session defaults.
+That command contacts Monarch. Ordinary tests use synthetic data and skip live calls. `scripts/health_check.py` is a separate live diagnostic. Run it with `uv run --env-file .env`; it uses the client's session defaults.
 
 ### Workflow
 
@@ -54,13 +54,14 @@ That command contacts Monarch. Ordinary tests use synthetic data and skip live c
 
 `server.py` contains the MCP server, response models, authentication, tools, resources, and prompts. It uses MCP Python SDK 2.x `MCPServer` (`mcp>=2.3,<3`), JSON-RPC over stdio, and structlog on stderr. Reserve stdout for the protocol. The SDK serves both 2025-era clients and the 2026-07-28 protocol.
 
-- Tools use `@mcp.tool()` and `@track_usage`, return Pydantic models, and advertise read/write annotations and titles. The SDK emits structured content with a text fallback.
-- SDK 2 shows the model only `ToolError` messages; any other exception becomes `Error executing tool <name>`. `@track_usage` converts known failures (ValueError and Pydantic validation, timeouts, Monarch, gql, aiohttp) to `ToolError`, and `@resource_errors` does the same for resources. Raise `ValueError` with a useful message for expected failures; don't put secrets in it.
+- Tools use `@mcp.tool()` and `@track_usage`, return Pydantic models, and have titles. The SDK emits structured content with a text fallback. The server also sends short `instructions` to clients.
+- Every tool sets read-only and destructive hints. Destructive tools delete data, replace a whole set (splits, tags), or can rewrite past transactions (rules). Field edits that change only what the caller names are not destructive.
+- SDK 2 shows the model only `ToolError` messages; any other exception becomes `Error executing tool <name>`. `@track_usage` converts known failures (ValueError and Pydantic validation, timeouts, session-file `OSError`, Monarch, gql, aiohttp) to `ToolError`, and `@resource_errors` does the same for resources. Bulk update items follow the same rule. Raise `ValueError` with a useful message for expected failures; don't put secrets in it. Validate input before `ensure_authenticated()` so bad input never triggers a login.
 - Monarch responses are GraphQL envelopes, not usually bare lists. Use `extract_list(response, key)` or `extract_transactions_list()` before counting or processing rows.
 - Use `JsonValue` for evolving upstream payloads and explicit models for shapes constructed here. Convert dates to ISO strings before serialization.
-- Authentication uses one `mm_client` and a lock. It starts lazily on the first data call; loading a session does not validate it immediately. A new client is published only after login succeeds. Requests use a 30-second client timeout; write tools wrap calls in a 60-second limit so they fire only when a re-login and retry run long.
+- Authentication uses one `mm_client` and a lock. It starts lazily on the first data call; loading a session does not validate it immediately. A new client is published only after login succeeds. Requests use a 30-second client timeout. Transaction create, update, and split tools wrap calls in a 60-second limit, so it fires only when a re-login and retry run long.
 - `api_call_with_retry()` retries recognized authentication failures with reauthentication. A failed call remembers its client; under the lock it re-logs in only if that client is still current, so several failures from one expiry cause one login. `is_auth_error` uses HTTP status codes from gql/aiohttp errors and narrow text, never a bare "401"/"403" substring. It is not a general network retry or rate-limit policy.
-- Four static resources expose accounts, categories, institutions, and account types (`accounts://types`). Two resource templates expose account holdings/history and reject blank IDs. Four prompts support completions; batch analysis reports progress through `Context`.
+- Four static resources expose accounts, categories, institutions, and account types (`accounts://types`). Two resource templates expose account holdings/history and reject blank IDs. There are four prompts. The prompt `category` argument and the template `account_id` complete from live data. Batch analysis reports progress through `Context`.
 - POSIX pipe input uses a cancellable asyncio reader with SDK framing, so SIGINT works without EOF. SDK 2's `stdio_server` still reads stdin on a worker thread and hangs on SIGINT with stdin open (checked on 3.10 and 3.13 with 2.3.0), so keep the workaround. It runs through the private `mcp._lowlevel_server`, since `MCPServer` has no public way to serve custom streams. On POSIX, SIGINT cancels the main task instead of raising `KeyboardInterrupt`. On Python 3.10, an interrupt inside a loop callback could lose a task wakeup and freeze shutdown. Windows and regular-file input keep the SDK transport; Windows signal behavior is not verified.
 
 See README for the tool catalog. Keep these less-obvious contracts intact:
@@ -96,7 +97,7 @@ Credentials are `MONARCH_EMAIL`, `MONARCH_PASSWORD`, and optional `MONARCH_MFA_S
 
 For expired sessions, force a fresh login or remove the configured cached session. TOTP requires an accurate system clock. Preserve third-party output suppression and normal SIGTERM/SIGINT handling when changing startup.
 
-`@track_usage` records tool calls, elapsed time, and result sizes. Use `scripts/analyze_logs.py` or `scripts/eval_session.py` for reports. There is no analytics MCP tool. Current logs use structured `tool_call`, `tool_success`, and `tool_error` events; the analyzer also accepts older marker formats.
+`@track_usage` records tool calls, elapsed time, and result sizes. Use `scripts/analyze_logs.py` or `scripts/eval_session.py` for reports. There is no analytics MCP tool. Current logs use structured `tool_call`, `tool_success`, and `tool_error` events after a stdlib prefix; the analyzer pairs them into one call and also accepts older marker formats.
 
 ### Releases
 

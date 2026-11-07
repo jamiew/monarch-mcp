@@ -74,3 +74,6 @@ logs.sh
 
 # MCP Registry
 .mcpregistry_*
+
+# scripts/eval_session.py state
+scripts/.eval_snapshot

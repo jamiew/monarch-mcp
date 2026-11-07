@@ -1,258 +1,62 @@
-"""Tests for search_transactions tool."""
+"""search_transactions forwards Monarch's text search and shares get_transactions' row formats."""
 
-import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 
 import server
+from tests.conftest import CallTool
+
+ROW = {
+    "id": "txn_1",
+    "date": "2024-01-15",
+    "amount": -50.0,
+    "merchant": {"name": "Corner Deli", "id": "merchant_1"},
+    "plaidName": "CORNER DELI #123",
+    "category": {"name": "Dining", "id": "cat_1"},
+    "account": {"displayName": "Everyday Checking", "id": "acc_1"},
+    "pending": False,
+    "needsReview": False,
+    "extraField": "extra data",
+}
 
 
-@pytest.mark.asyncio
-class TestSearchTransactions:
-    """Test suite for search_transactions functionality."""
+@pytest.mark.parametrize("tool_name", ["get_transactions", "search_transactions"])
+async def test_filters_reach_monarch_as_strings_and_ids(
+    mock_api: AsyncMock, call_tool: CallTool, tool_name: str
+) -> None:
+    mock_api.return_value = [ROW]
+    arguments = {"start_date": "2024-01-01", "end_date": "2024-01-31", "account_id": "acc_1", "category_id": "cat_1"}
+    if tool_name == "search_transactions":
+        arguments["query"] = "Corner"
 
-    async def test_search_transactions_basic(self):
-        """Test basic transaction search."""
-        # The API will return only matching transactions (server-side filtering)
-        mock_transactions = [
-            {
-                "id": "1",
-                "date": "2024-01-15",
-                "amount": -50.0,
-                "merchant": {"name": "Apple Store"},
-                "plaidName": "APPLE.COM/BILL",
-                "category": {"name": "Shopping"},
-                "account": {"displayName": "Chase Checking"},
-                "pending": False,
-                "needsReview": False,
-            },
-            {
-                "id": "3",
-                "date": "2024-01-17",
-                "amount": -99.0,
-                "merchant": {"name": "Apple Music"},
-                "plaidName": "APPLE.COM/MUSIC",
-                "notes": "Monthly subscription",
-                "category": {"name": "Entertainment"},
-                "account": {"displayName": "Chase Checking"},
-                "pending": False,
-                "needsReview": False,
-            },
-        ]
+    await call_tool(tool_name, arguments)
 
-        with patch.object(server, "mm_client") as mock_client:
-            mock_client.get_transactions = AsyncMock(return_value=mock_transactions)
-
-            result = await server.search_transactions(query="Apple")
-
-            result_data = json.loads(result.model_dump_json())
-
-            assert result_data["search_metadata"]["result_count"] == 2
-            assert result_data["search_metadata"]["query"] == "Apple"
-            assert len(result_data["transactions"]) == 2
-
-            mock_client.get_transactions.assert_called_once()
-            call_kwargs = mock_client.get_transactions.call_args[1]
-            assert call_kwargs["search"] == "Apple"
-
-    async def test_search_transactions_returns_api_results(self):
-        """Test that search returns results from the API."""
-        mock_transactions = [
-            {
-                "id": "1",
-                "date": "2024-01-15",
-                "amount": -50.0,
-                "merchant": {"name": "Generic Store"},
-                "plaidName": "STORE #123",
-                "notes": "Bought an Apple laptop",
-                "category": {"name": "Shopping"},
-                "account": {"displayName": "Chase Checking"},
-                "pending": False,
-                "needsReview": False,
-            }
-        ]
-
-        with patch.object(server, "mm_client") as mock_client:
-            mock_client.get_transactions = AsyncMock(return_value=mock_transactions)
-
-            result = await server.search_transactions(query="laptop")
-            result_data = json.loads(result.model_dump_json())
-            assert result_data["search_metadata"]["result_count"] == 1
-            assert len(result_data["transactions"]) == 1
-
-    async def test_search_transactions_with_date_filter(self):
-        """Test searching with date filters."""
-        mock_transactions = [
-            {
-                "id": "1",
-                "date": "2024-01-15",
-                "amount": -50.0,
-                "merchant": {"name": "Apple Store"},
-                "plaidName": "APPLE.COM/BILL",
-                "category": {"name": "Shopping"},
-                "account": {"displayName": "Chase Checking"},
-                "pending": False,
-                "needsReview": False,
-            }
-        ]
-
-        with patch.object(server, "mm_client") as mock_client:
-            mock_client.get_transactions = AsyncMock(return_value=mock_transactions)
-
-            result = await server.search_transactions(query="Apple", start_date="2024-01-01", end_date="2024-01-31")
-
-            result_data = json.loads(result.model_dump_json())
-            assert result_data["search_metadata"]["result_count"] == 1
-
-            call_kwargs = mock_client.get_transactions.call_args[1]
-            assert "start_date" in call_kwargs
-            assert "end_date" in call_kwargs
-            assert call_kwargs["search"] == "Apple"
-
-    async def test_search_transactions_no_matches(self):
-        """Test search with no matching results (API returns empty list)."""
-        mock_transactions = []
-
-        with patch.object(server, "mm_client") as mock_client:
-            mock_client.get_transactions = AsyncMock(return_value=mock_transactions)
-
-            result = await server.search_transactions(query="Apple")
-            result_data = json.loads(result.model_dump_json())
-
-            assert result_data["search_metadata"]["result_count"] == 0
-            assert len(result_data["transactions"]) == 0
-
-    async def test_search_transactions_empty_query(self):
-        """Test that empty query raises error."""
-        with patch.object(server, "mm_client") as mock_client:
-            with pytest.raises(ToolError, match="Query parameter cannot be empty"):
-                await server.search_transactions(query="")
-
-            with pytest.raises(ToolError, match="Query parameter cannot be empty"):
-                await server.search_transactions(query="   ")
-
-    async def test_search_transactions_verbose_format(self):
-        """Test search with verbose output format."""
-        mock_transactions = [
-            {
-                "id": "1",
-                "date": "2024-01-15",
-                "amount": -50.0,
-                "merchant": {"name": "Apple Store", "id": "merchant123"},
-                "plaidName": "APPLE.COM/BILL",
-                "category": {"name": "Shopping", "id": "cat123"},
-                "account": {"displayName": "Chase Checking", "id": "acc123"},
-                "pending": False,
-                "needsReview": False,
-                "extraField": "extra data",
-            }
-        ]
-
-        with patch.object(server, "mm_client") as mock_client:
-            mock_client.get_transactions = AsyncMock(return_value=mock_transactions)
-
-            result = await server.search_transactions(query="Apple", verbose=True)
-            result_data = json.loads(result.model_dump_json())
-            txn = result_data["transactions"][0]
-
-            assert "extraField" in txn
-            assert isinstance(txn["merchant"], dict)
-            assert "id" in txn["merchant"]
-
-            result = await server.search_transactions(query="Apple", verbose=False)
-            result_data = json.loads(result.model_dump_json())
-            txn = result_data["transactions"][0]
-
-            assert "extraField" not in txn
-            assert isinstance(txn["merchant"], str)
-
-    async def test_search_api_handles_query(self):
-        """Test that API search handles the query."""
-        mock_transactions = [
-            {
-                "id": "1",
-                "date": "2024-01-15",
-                "amount": -50.0,
-                "merchant": {"name": "Applebee's Restaurant"},
-                "plaidName": "APPLEBEES #456",
-                "category": {"name": "Food & Dining"},
-                "account": {"displayName": "Chase Checking"},
-                "pending": False,
-                "needsReview": False,
-            }
-        ]
-
-        with patch.object(server, "mm_client") as mock_client:
-            mock_client.get_transactions = AsyncMock(return_value=mock_transactions)
-
-            # API does the matching
-            result = await server.search_transactions(query="Apple")
-            result_data = json.loads(result.model_dump_json())
-            assert result_data["search_metadata"]["result_count"] == 1
-
-            call_kwargs = mock_client.get_transactions.call_args[1]
-            assert call_kwargs["search"] == "Apple"
-
-    async def test_search_transactions_with_account_filter(self):
-        """Test search with account filter."""
-        mock_transactions = [
-            {
-                "id": "1",
-                "date": "2024-01-15",
-                "amount": -50.0,
-                "merchant": {"name": "Apple Store"},
-                "plaidName": "APPLE.COM/BILL",
-                "category": {"name": "Shopping"},
-                "account": {"displayName": "Chase Checking"},
-                "pending": False,
-                "needsReview": False,
-            }
-        ]
-
-        with patch.object(server, "mm_client") as mock_client:
-            mock_client.get_transactions = AsyncMock(return_value=mock_transactions)
-
-            result = await server.search_transactions(query="Apple", account_id="acc123")
-
-            result_data = json.loads(result.model_dump_json())
-            assert result_data["search_metadata"]["result_count"] == 1
-
-            mock_client.get_transactions.assert_called_once()
-            call_kwargs = mock_client.get_transactions.call_args[1]
-            assert call_kwargs["account_ids"] == ["acc123"]
-            assert call_kwargs["search"] == "Apple"
+    sent = mock_api.await_args.kwargs
+    assert (sent["start_date"], sent["end_date"]) == ("2024-01-01", "2024-01-31")
+    assert (sent["account_ids"], sent["category_ids"]) == (["acc_1"], ["cat_1"])
+    if tool_name == "search_transactions":
+        assert sent["search"] == "Corner"
 
 
-@pytest.mark.asyncio
-class TestSearchTransactionsIntegration:
-    """Integration tests for search with other tools."""
+@pytest.mark.parametrize("query", ["", "   "])
+async def test_blank_query_is_rejected_before_api(mock_api: AsyncMock, query: str) -> None:
+    with pytest.raises(ToolError):
+        await server.search_transactions(query=query)
+    mock_api.assert_not_awaited()
 
-    async def test_search_returns_same_format_as_get_transactions(self):
-        """Test that search results match get_transactions format."""
-        mock_transactions = [
-            {
-                "id": "1",
-                "date": "2024-01-15",
-                "amount": -50.0,
-                "merchant": {"name": "Apple Store"},
-                "plaidName": "APPLE.COM/BILL",
-                "category": {"name": "Shopping"},
-                "account": {"displayName": "Chase Checking"},
-                "pending": False,
-                "needsReview": False,
-            }
-        ]
 
-        with patch.object(server, "mm_client") as mock_client:
-            mock_client.get_transactions = AsyncMock(return_value=mock_transactions)
+async def test_compact_rows_match_get_transactions_and_verbose_keeps_objects(
+    mock_api: AsyncMock, call_tool: CallTool
+) -> None:
+    mock_api.return_value = [ROW]
 
-            search_result = await server.search_transactions(query="Apple", verbose=False)
-            search_txns = json.loads(search_result.model_dump_json())["transactions"]
+    compact = (await call_tool("search_transactions", {"query": "Corner"}))["transactions"][0]
+    listed = (await call_tool("get_transactions", {}))["transactions"][0]
+    verbose = (await call_tool("search_transactions", {"query": "Corner", "verbose": True}))["transactions"][0]
 
-            get_result = await server.get_transactions(limit=100, verbose=False)
-            get_txns = json.loads(get_result.model_dump_json())["transactions"]
-
-            assert search_txns and get_txns, "both queries should return the mocked transaction"
-            assert set(search_txns[0].keys()) == set(get_txns[0].keys())
+    assert compact == listed
+    assert compact["merchant"] == "Corner Deli"
+    assert "extraField" not in compact
+    assert verbose == ROW

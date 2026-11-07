@@ -14,10 +14,10 @@ import server
 
 
 class TestUsageAnalytics:
-    """Tool calls are logged, not accumulated in memory."""
+    """scripts/analyze_logs.py reads these structured events."""
 
     @pytest.mark.asyncio
-    async def test_track_usage_logs_events_without_retaining_calls(self, mock_api: AsyncMock) -> None:
+    async def test_track_usage_logs_call_and_success_events(self, mock_api: AsyncMock) -> None:
         mock_api.return_value = [{"id": "acc_001", "displayName": "Test Account"}]
 
         with patch.object(server, "log") as log:

@@ -1,7 +1,6 @@
 """Regression tests for authentication, date, analysis, and write-validation fixes."""
 
 import asyncio
-import json
 import pickle
 from datetime import date
 from pathlib import Path
@@ -114,6 +113,7 @@ class TestAuthentication:
         [
             Exception("Transaction 1984015 not found"),
             ValueError("Invalid amount 403.20 for split"),
+            Exception("Network timeout error"),
             TransportServerError("upstream unauthorized proxy message", 500),
             aiohttp.ClientResponseError(MagicMock(), (), status=404, message="Not Found"),
             asyncio.TimeoutError(),
@@ -129,6 +129,15 @@ class TestAuthentication:
             TransportServerError("Forbidden", 403),
             aiohttp.ClientResponseError(MagicMock(), (), status=401, message="Unauthorized"),
             RequestFailedException("HTTP Code 401: Unauthorized"),
+            Exception("Request failed with status 401"),
+            Exception("Request unauthorized - invalid session"),
+            Exception("403 Forbidden"),
+            Exception("Bad credentials provided"),
+            Exception("Invalid credentials for user"),
+            Exception("Authentication failed - check password"),
+            Exception("Auth failed for this request"),
+            Exception("Not authenticated - please login"),
+            Exception("Session has expired, please login again"),
         ],
     )
     def test_auth_errors_are_recognized(self, error: Exception) -> None:
@@ -205,6 +214,22 @@ class TestDateRanges:
             "start_date": f"{year}-01-01",
             "end_date": f"{year}-12-31",
         }
+
+    def test_single_bound_fills_the_other(self) -> None:
+        today = date.today()
+        assert server.build_date_filter("2024-01-01", None) == {
+            "start_date": "2024-01-01",
+            "end_date": today.isoformat(),
+        }
+        assert server.build_date_filter(None, "2024-12-31") == {"start_date": "2024-12-01", "end_date": "2024-12-31"}
+        assert server.build_date_filter(None, "today") == {
+            "start_date": today.replace(day=1).isoformat(),
+            "end_date": today.isoformat(),
+        }
+        assert server.build_date_filter("last month", None)["end_date"] == today.isoformat()
+
+    def test_no_bounds_means_no_filter(self) -> None:
+        assert server.build_date_filter(None, None) == {}
 
     async def test_spending_summary_reports_resolved_period(self, mock_api: AsyncMock) -> None:
         mock_api.side_effect = dispatch({"get_transaction_categories": {"categories": []}, "get_transactions": []})
@@ -385,22 +410,3 @@ class TestTransactionWrites:
             await server.update_transaction(transaction_id="txn_123", amount=0)
 
         mock_api.assert_not_awaited()
-
-    async def test_bulk_update_rejects_zero_amount_per_item(self, mock_api: AsyncMock) -> None:
-        mock_api.return_value = {"updateTransaction": {"errors": None, "transaction": {"id": "txn_456"}}}
-        updates = [{"transaction_id": "txn_123", "amount": 0.0}, {"transaction_id": "txn_456", "amount": 5.0}]
-
-        result = await server.update_transactions_bulk(json.dumps(updates))
-
-        assert [item.status for item in result.results] == ["error", "success"]
-        assert mock_api.await_count == 1
-        assert mock_api.await_args is not None
-        assert mock_api.await_args.kwargs["transaction_id"] == "txn_456"
-
-    async def test_split_update_without_transaction_fails(self, mock_api: AsyncMock) -> None:
-        mock_api.return_value = {"updateTransactionSplit": {"errors": None, "transaction": None}}
-
-        with pytest.raises(ToolError):
-            await server.update_transaction_splits(
-                transaction_id="txn_123", splits=[server.TransactionSplit(amount=-10.0, category_id="cat_food")]
-            )
