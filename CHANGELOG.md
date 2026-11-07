@@ -12,6 +12,10 @@
 
 - `update_transactions_bulk` accepts a JSON array as well as the JSON string it took before.
 
+### Development
+
+- Tool result sizes are logged only when `MONARCH_LOG_RESULT_SIZE=true`, since measuring serializes each result a second time. `scripts/analyze_logs.py` reports sizes only from those logs.
+
 ## 0.7.0 (2026-11-07)
 
 ### Fixes

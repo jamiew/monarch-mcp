@@ -27,6 +27,23 @@ class TestUsageAnalytics:
         assert "tool_call" in events
         assert "tool_success" in events
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("opt_in", [False, True])
+    async def test_result_size_is_logged_only_when_opted_in(
+        self, mock_api: AsyncMock, monkeypatch: pytest.MonkeyPatch, opt_in: bool
+    ) -> None:
+        if opt_in:
+            monkeypatch.setenv("MONARCH_LOG_RESULT_SIZE", "true")
+        else:
+            monkeypatch.delenv("MONARCH_LOG_RESULT_SIZE", raising=False)
+        mock_api.return_value = [{"id": "acc_001", "displayName": "Test Account"}]
+
+        with patch.object(server, "log") as log:
+            await server.get_accounts()
+
+        success = next(call for call in log.info.call_args_list if call.args[0] == "tool_success")
+        assert ("result_chars" in success.kwargs) is opt_in
+
 
 @pytest.fixture
 def overview_client(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:

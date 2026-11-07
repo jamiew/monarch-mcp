@@ -99,7 +99,7 @@ Credentials are `MONARCH_EMAIL`, `MONARCH_PASSWORD`, and optional `MONARCH_MFA_S
 
 For expired sessions, force a fresh login or remove the configured cached session. TOTP requires an accurate system clock. Preserve third-party output suppression and normal SIGTERM/SIGINT handling when changing startup.
 
-`@track_usage` records tool calls, elapsed time, and result sizes. Use `scripts/analyze_logs.py` or `scripts/eval_session.py` for reports. There is no analytics MCP tool. Logs use structured `tool_call`, `tool_success`, and `tool_error` events after a stdlib prefix; the analyzer pairs them into one call and also reads Claude Desktop's request lines.
+`@track_usage` records tool calls and elapsed time. It records result sizes only with `MONARCH_LOG_RESULT_SIZE=true`, because measuring serializes each result again. Use `scripts/analyze_logs.py` or `scripts/eval_session.py` for reports. There is no analytics MCP tool. Logs use structured `tool_call`, `tool_success`, and `tool_error` events after a stdlib prefix; the analyzer pairs them into one call and also reads Claude Desktop's request lines.
 
 ### Releases
 

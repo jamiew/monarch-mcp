@@ -345,7 +345,7 @@ Use `/release` to bump `pyproject.toml`, commit, tag `vX.Y.Z`, push, and create 
 
 ### Log analysis
 
-Measure tool calls and output sizes:
+Measure tool calls and timing. Output sizes need `MONARCH_LOG_RESULT_SIZE=true` in the server's env, since measuring serializes each result a second time.
 
 ```bash
 uv run scripts/analyze_logs.py                    # full report

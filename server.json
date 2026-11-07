@@ -46,6 +46,12 @@
           "description": "Directory for the cached session (default ~/.monarch-mcp)",
           "isRequired": false,
           "isSecret": false
+        },
+        {
+          "name": "MONARCH_LOG_RESULT_SIZE",
+          "description": "Set to 'true' to log each tool result's size",
+          "isRequired": false,
+          "isSecret": false
         }
       ]
     }
