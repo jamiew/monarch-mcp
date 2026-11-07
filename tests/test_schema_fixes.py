@@ -171,3 +171,31 @@ async def test_create_transaction_fails_when_monarch_creates_nothing(mock_api: A
         await server.create_transaction(
             amount=-12.5, merchant_name="Corner Deli", account_id="acc_123", date="2024-01-15", category_id="cat_456"
         )
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf")], ids=["nan", "inf"])
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        (
+            "create_transaction",
+            {"merchant_name": "Corner Deli", "account_id": "acc_123", "date": "2024-01-15", "category_id": "cat_456"},
+        ),
+        ("update_transaction", {"transaction_id": "txn_123"}),
+        ("set_budget_amount", {"category_id": "cat_456"}),
+        ("create_manual_account", {"account_name": "Loan", "account_type": "loan", "account_sub_type": "auto"}),
+        ("update_transaction_splits", {"transaction_id": "txn_123"}),
+    ],
+)
+async def test_amounts_must_be_finite(
+    mock_api: AsyncMock, tool_name: str, arguments: dict[str, JsonValue], bad: float
+) -> None:
+    if tool_name == "update_transaction_splits":
+        arguments = {**arguments, "splits": [{"amount": bad}, {"amount": -10.0}]}
+    elif tool_name == "create_manual_account":
+        arguments = {**arguments, "balance": bad}
+    else:
+        arguments = {**arguments, "amount": bad}
+    with pytest.raises(ToolError):
+        await server.mcp.call_tool(tool_name, arguments)
+    mock_api.assert_not_awaited()
