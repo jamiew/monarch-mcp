@@ -2733,7 +2733,11 @@ async def get_spending_summary(
     transfer_ids = _transfer_category_ids(await api_call_with_retry("get_transaction_categories"))
     page_size = 1000
     offset: int | None = 0
-    transactions: list[dict[str, Any]] = []
+    # Aggregate each page as it arrives so memory stays bounded by one page.
+    totals = {"income": 0.0, "expenses": 0.0}
+    groups: dict[str, dict[str, float]] = {}
+    transfers_excluded = 0
+    transaction_count = 0
     while offset is not None:
         response = await api_call_with_retry(
             "get_transactions",
@@ -2744,61 +2748,52 @@ async def get_spending_summary(
         page = extract_transactions_list(response)
         if not page:
             break
-        transactions.extend(page)
+        transaction_count += len(page)
         _, offset = _transaction_paging(response, offset, page_size, len(page))
 
-    summary: dict[str, Any] = {
-        "groups": {},
-        "totals": {"income": 0, "expenses": 0, "net": 0},
-    }
+        for txn in page:
+            if _is_transfer(txn, transfer_ids):
+                transfers_excluded += 1
+                continue
+            amount = float(txn.get("amount", 0))
 
-    transfers_excluded = 0
-    for txn in transactions:
-        if _is_transfer(txn, transfer_ids):
-            transfers_excluded += 1
-            continue
-        amount = float(txn.get("amount", 0))
+            if amount > 0:
+                totals["income"] += amount
+            else:
+                totals["expenses"] += abs(amount)
 
-        totals: dict[str, float] = summary["totals"]
-        if amount > 0:
-            totals["income"] += amount
-        else:
-            totals["expenses"] += abs(amount)
+            if group_by == "category":
+                key = (
+                    txn.get("category", {}).get("name", "Uncategorized")
+                    if isinstance(txn.get("category"), dict)
+                    else "Uncategorized"
+                )
+            elif group_by == "account":
+                key = (
+                    (txn["account"].get("displayName") or "Unknown")
+                    if isinstance(txn.get("account"), dict)
+                    else "Unknown"
+                )
+            elif group_by == "month":
+                txn_date = txn.get("date", "")
+                key = txn_date[:7] if len(txn_date) >= 7 else "Unknown"  # YYYY-MM format
+            else:
+                key = "All"
 
-        if group_by == "category":
-            key = (
-                txn.get("category", {}).get("name", "Uncategorized")
-                if isinstance(txn.get("category"), dict)
-                else "Uncategorized"
-            )
-        elif group_by == "account":
-            key = (
-                (txn["account"].get("displayName") or "Unknown") if isinstance(txn.get("account"), dict) else "Unknown"
-            )
-        elif group_by == "month":
-            txn_date = txn.get("date", "")
-            key = txn_date[:7] if len(txn_date) >= 7 else "Unknown"  # YYYY-MM format
-        else:
-            key = "All"
+            if key not in groups:
+                groups[key] = {"income": 0, "expenses": 0, "net": 0, "count": 0}
 
-        groups: dict[str, dict[str, float]] = summary["groups"]
-        if key not in groups:
-            groups[key] = {"income": 0, "expenses": 0, "net": 0, "count": 0}
+            group = groups[key]
+            if amount > 0:
+                group["income"] += amount
+            else:
+                group["expenses"] += abs(amount)
 
-        group = groups[key]
-        if amount > 0:
-            group["income"] += amount
-        else:
-            group["expenses"] += abs(amount)
+            group["net"] += amount
+            group["count"] += 1
 
-        group["net"] += amount
-        group["count"] += 1
+    sorted_groups = dict(sorted(groups.items(), key=lambda x: x[1]["expenses"], reverse=True))
 
-    summary["totals"]["net"] = summary["totals"]["income"] - summary["totals"]["expenses"]
-
-    sorted_groups = dict(sorted(summary["groups"].items(), key=lambda x: x[1]["expenses"], reverse=True))
-
-    totals_data: dict[str, float] = summary["totals"]
     result = SpendingSummaryResult(
         period=Period(start=filters.get("start_date"), end=filters.get("end_date")),
         group_by=group_by,
@@ -2806,13 +2801,13 @@ async def get_spending_summary(
             key: GroupSummary(income=g["income"], expenses=g["expenses"], net=g["net"], count=int(g["count"]))
             for key, g in sorted_groups.items()
         },
-        totals=Totals(income=totals_data["income"], expenses=totals_data["expenses"], net=totals_data["net"]),
+        totals=Totals(income=totals["income"], expenses=totals["expenses"], net=totals["income"] - totals["expenses"]),
         transfers_excluded=transfers_excluded,
     )
 
     log.info(
         "Spending summary generated",
-        total_transactions=len(transactions),
+        total_transactions=transaction_count,
         groups_count=len(result.groups),
         net_amount=result.totals.net,
     )

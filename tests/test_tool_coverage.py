@@ -3,6 +3,8 @@
 The offline ``mock_api`` fixture isolates API calls and authentication.
 """
 
+import gc
+import weakref
 from collections.abc import Awaitable, Callable
 from typing import Any
 from unittest.mock import AsyncMock
@@ -281,6 +283,35 @@ class TestReadToolSuccess:
 
         assert result.groups["Misc"].count == 1003
         assert [call.args[0] for call in mock_api.await_args_list].count("get_transactions") == 2
+
+    @pytest.mark.asyncio
+    async def test_get_spending_summary_releases_each_page_after_aggregating(self, mock_api: AsyncMock) -> None:
+        """Memory stays bounded by one page: earlier pages are freed while later ones load."""
+
+        class Row(dict[str, object]):
+            """A dict that can be weakly referenced."""
+
+        first_page_rows: list[weakref.ref[Row]] = []
+        live_when_page_three_loads: list[int] = []
+
+        def _side_effect(method_name: str, *args: object, **kwargs: object) -> object:
+            if method_name == "get_transaction_categories":
+                return {"categories": []}
+            offset = kwargs.get("offset", 0)
+            if offset == 2000:
+                gc.collect()
+                live_when_page_three_loads.append(sum(ref() is not None for ref in first_page_rows))
+            size = 1 if offset == 2000 else 1000
+            rows = [Row(amount=-1.0, category={"name": "Misc"}, date="2024-01-01") for _ in range(size)]
+            if offset == 0:
+                first_page_rows.extend(weakref.ref(row) for row in rows)
+            return {"allTransactions": {"totalCount": 2001, "results": rows}}
+
+        mock_api.side_effect = _side_effect
+        result = await server.get_spending_summary(group_by="category")
+
+        assert result.groups["Misc"].count == 2001
+        assert live_when_page_three_loads == [0]
 
     @pytest.mark.asyncio
     async def test_refresh_accounts_sends_every_account_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
