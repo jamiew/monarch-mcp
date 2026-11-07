@@ -6,10 +6,42 @@ import os
 import signal
 import sys
 from collections.abc import AsyncIterator
+from importlib.metadata import version
 from pathlib import Path
 
 import pytest
 import pytest_asyncio
+from mcp import Client, StdioServerParameters
+from mcp.types import TextContent
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason=".mcp.json launches through sh")
+@pytest.mark.parametrize(("mode", "protocol"), [("legacy", "2025-11-25"), ("auto", "2026-07-28")])
+async def test_mcp_json_launches_checkout(tmp_path: Path, mode: str, protocol: str) -> None:
+    """Launch every .mcp.json server exactly as configured; never contacts Monarch."""
+    servers = json.loads((ROOT / ".mcp.json").read_text())["mcpServers"]
+    # Keep UV_PYTHON etc. so uv reuses the venv under test instead of rebuilding it.
+    env = {key: value for key, value in os.environ.items() if key in ("PATH", "HOME") or key.startswith("UV_")}
+    env["MONARCH_SESSION_DIR"] = str(tmp_path / "session")
+    for name, config in servers.items():
+        args = [arg.replace("${CLAUDE_PROJECT_DIR:-.}", str(ROOT)) for arg in config["args"]]
+        params = StdioServerParameters(command=config["command"], args=args, env=env, cwd=tmp_path)
+        async with Client(params, mode=mode, read_timeout_seconds=30) as client:
+            assert client.protocol_version == protocol, name
+            assert client.server_info is not None
+            assert client.server_info.version == version("monarch-mcp-jamiew")
+            tools = (await client.list_tools()).tools
+            assert tools and (await client.list_prompts()).prompts and (await client.list_resources()).resources
+            for tool in tools:
+                hints = tool.annotations
+                assert hints is not None and hints.read_only_hint is not None, tool.name
+                assert hints.read_only_hint or hints.destructive_hint is not None, tool.name
+            # Rejected before authentication, so this proves tools/call without a Monarch request.
+            result = await client.call_tool("get_transaction_rules", {"limit": 0})
+            assert result.is_error
+            assert isinstance(result.content[0], TextContent) and "limit" in result.content[0].text
 
 
 @pytest_asyncio.fixture
@@ -18,7 +50,7 @@ async def stdio_process(tmp_path: Path) -> AsyncIterator[asyncio.subprocess.Proc
     env["MONARCH_SESSION_DIR"] = str(tmp_path / "session")
     process = await asyncio.create_subprocess_exec(
         sys.executable,
-        str(Path(__file__).resolve().parents[1] / "server.py"),
+        str(ROOT / "server.py"),
         env=env,
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,

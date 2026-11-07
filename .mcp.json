@@ -1,14 +1,12 @@
 {
   "mcpServers": {
     "monarch": {
-      "command": "uv",
+      "command": "sh",
       "args": [
-        "--directory",
-        "${CLAUDE_PROJECT_DIR:-.}",
-        "run",
-        "--env-file",
-        "${CLAUDE_PROJECT_DIR:-.}/.env",
-        "monarch-mcp-jamiew"
+        "-c",
+        "cd \"$1\" && if [ -f .env ]; then exec uv run --env-file .env monarch-mcp-jamiew; else exec uv run monarch-mcp-jamiew; fi",
+        "sh",
+        "${CLAUDE_PROJECT_DIR:-.}"
       ]
     }
   }
