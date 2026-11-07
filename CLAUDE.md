@@ -4,7 +4,7 @@
 
 Never put real financial data in code, tests, docs, or commits. This includes account and merchant names from a user's history, transaction/category/account IDs, amounts, and spending patterns. Use synthetic examples such as `Corner Deli`, `cat_001`, and `txn_123`. A generic brand example is fine; data copied from an account is not.
 
-Do not read or commit credentials, `.env`, saved sessions, or financial logs. The tracked `.mcp.json` reads credentials from `.env`; keep secrets out of it. Logs can contain tool arguments and API error details. Review and redact them before sharing.
+Do not read or commit credentials, `.env`, saved sessions, or financial logs. The tracked `.mcp.json` loads credentials from `.env` when it exists; keep secrets out of it. Logs can contain tool arguments and API error details. Review and redact them before sharing.
 
 ## Development
 
@@ -26,6 +26,8 @@ uv run pytest tests/ -v --tb=short
 ```
 
 Use `uv run ruff format .` to format and `uv add` / `uv remove` to change dependencies. CI selects Python 3.10 through 3.15 explicitly and uses locked installs.
+
+`.mcp.json` is the headless dev entry (`claude -p --mcp-config .mcp.json --strict-mcp-config`). It runs this checkout from any directory and starts without `.env`. `tests/test_stdio.py::test_mcp_json_launches_checkout` launches it in both protocol eras.
 
 Live integration tests are opt-in and never load `.env` or saved sessions themselves:
 
