@@ -6,6 +6,7 @@
 
 - `update_transactions_bulk` runs at most five updates at once. Before, a batch sent every request at the same time.
 - `update_transactions_bulk` rejects batches over 100 items before logging in, with an error that names the limit.
+- `get_spending_summary` totals each page as it arrives instead of holding every transaction in memory first.
 
 ### MCP
 
