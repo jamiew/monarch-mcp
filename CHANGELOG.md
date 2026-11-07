@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- `update_transactions_bulk` runs at most five updates at once. Before, a batch sent every request at the same time.
+- `update_transactions_bulk` rejects batches over 100 items before logging in, with an error that names the limit.
+
+### MCP
+
+- `update_transactions_bulk` accepts a JSON array as well as the JSON string it took before.
+
 ## 0.7.0 (2026-11-07)
 
 ### Fixes
