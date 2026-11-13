@@ -151,5 +151,6 @@ exclude_lines = [
 ]
 
 [tool.uv.sources]
-# Exact dev HEAD, checked 2026-11-02. Same source tree as the published 1.7.1 release.
-monarchmoneycommunity = { git = "https://github.com/bradleyseanf/monarchmoneycommunity", rev = "2f9730ea46150e544dec9684ee180dfec7675ca4" }
+# Exact dev HEAD, checked 2026-11-13. 1.7.1 plus optional tag, merchant and statement
+# arguments on create_transaction_rule, which this server does not call.
+monarchmoneycommunity = { git = "https://github.com/bradleyseanf/monarchmoneycommunity", rev = "286a962c17a9eff330d4f26b9649745dd180ea92" }
