@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Dependencies
+
+- Source installs now pin `monarchmoneycommunity` dev `286a962c`: 1.7.1 plus optional tag, merchant, and statement arguments on its `create_transaction_rule`. This server sends rule mutations itself, so no tool behavior changes. PyPI installs are unchanged.
+
 ## 0.7.1 (2026-11-07)
 
 ### Fixes
